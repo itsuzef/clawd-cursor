@@ -696,6 +696,8 @@ async function runSingleProviderFlow(
   // Save Config
   if (opts.save !== false) {
     const configPath = path.join(path.resolve(__dirname, '..'), CONFIG_FILE);
+    // SECURITY: this file stores provider/model names and base URLs only.
+    // API keys are NEVER written here; they must live in env vars or .env files.
     const singleTextEntry = {
       enabled: pipeline.layer2.enabled,
       model: pipeline.layer2.model,

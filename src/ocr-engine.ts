@@ -144,6 +144,8 @@ export class OcrEngine {
       const pngBuffer = await sharp(img.data, {
         raw: { width: img.width, height: img.height, channels: 4 },
       }).png().toBuffer();
+      // Release the raw RGBA buffer immediately after processing
+      (img as any).data = null;
 
       // Save to temp file — OS OCR reads from disk
       const tmpPath = path.join(os.tmpdir(), `clawdcursor-ocr-${process.pid}-${crypto.randomUUID().slice(0, 8)}.png`);
@@ -195,6 +197,8 @@ export class OcrEngine {
         .extract({ left: rx, top: ry, width: rw, height: rh })
         .png()
         .toBuffer();
+      // Release the raw RGBA buffer immediately after processing
+      (img as any).data = null;
 
       const tmpPath = path.join(os.tmpdir(), `clawdcursor-ocr-region-${process.pid}-${crypto.randomUUID().slice(0, 8)}.png`);
       fs.writeFileSync(tmpPath, pngBuffer);

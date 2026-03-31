@@ -591,7 +591,10 @@ done
         const path = await import('path');
         const tmpScript = path.join(os.tmpdir(), `clawdcursor-task-${Date.now()}.sh`);
         fs.writeFileSync(tmpScript, scriptContent, { mode: 0o755 });
-        spawnExec('x-terminal-emulator', ['-e', tmpScript], { detached: true, stdio: 'ignore' } as any);
+        // $TERMINAL may be set with surrounding quotes on some distros — strip them before use.
+        const termEnv = (process.env.TERMINAL || '').replace(/^["']|["']$/g, '').trim();
+        const termExec = termEnv || 'x-terminal-emulator';
+        spawnExec(termExec, ['-e', tmpScript], { detached: true, stdio: 'ignore' } as any);
       }
 
       console.log(`${e('🐾', '>')} Task console opened in a new terminal window.`);
