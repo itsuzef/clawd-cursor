@@ -1,19 +1,12 @@
 /**
- * Generic Computer Use — Universal L3 Vision Fallback
+ * Generic Computer Use — Stage 3 Vision Filler (v0.7.5)
  *
- * Implements the same screenshot → action → screenshot loop as the
- * Anthropic Computer Use adapter, but using OpenAI function-calling
- * format so it works with ANY vision-capable provider:
- *   OpenAI (gpt-4o, gpt-4o-mini)
- *   Google Gemini (via OpenAI-compat endpoint)
- *   Groq (llama-3.2-90b-vision-preview)
- *   Together AI, DeepSeek, Ollama, and any OpenAI-compat provider
+ * ONLY activated when the TextNavigator (Stage 2) signals cannot_proceed.
+ * Takes screenshots, sends to vision LLM, returns coordinates + action.
+ * Max 5 iterations — fills gaps, does NOT plan or decompose.
  *
- * The LLM is given one tool: `desktop_action` with a discriminated
- * union of action types. It calls the tool with a structured action,
- * we execute it, take another screenshot, and repeat.
- *
- * When the LLM returns { action: "done" } the loop ends.
+ * Works with ANY vision-capable provider via OpenAI function-calling:
+ *   OpenAI (gpt-4o), Google Gemini, Groq, Together AI, DeepSeek, Ollama
  */
 
 import os from 'os';
@@ -27,7 +20,8 @@ import { supportsOpenAiToolCalls, type PipelineConfig } from './providers';
 import type { TaskLogger } from './task-logger';
 import type { TaskVerifier } from './verifiers';
 
-const MAX_ITERATIONS = 25;
+// v0.7.5: Vision Filler — max 5 iterations. It fills gaps, doesn't plan.
+const MAX_ITERATIONS = 5;
 const IS_MAC = os.platform() === 'darwin';
 const LLM_TARGET_WIDTH = 1280;
 

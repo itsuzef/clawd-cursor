@@ -24,7 +24,8 @@ import type { ClawdConfig, StepResult } from './types';
 import { getBrowserProcessNames } from './browser-config';
 
 const BETA_HEADER = 'computer-use-2025-01-24';
-const MAX_ITERATIONS = 20;
+// v0.7.5: Vision Filler — max 5 iterations when used as gap filler
+const MAX_ITERATIONS = 5;
 const IS_MAC = os.platform() === 'darwin';
 
 const SYSTEM_PROMPT_MAC = `You are Clawd Cursor, an AI desktop agent on macOS. Complete tasks fast and reliably.

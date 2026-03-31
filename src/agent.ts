@@ -4,19 +4,25 @@
 /**
  * Agent — the main orchestration loop.
  *
- * v3 Flow (API key optional):
- * 1. Decompose task:
- *    a. Try LocalTaskParser first (regex, no LLM, instant)
- *    b. If parser returns null AND API key is set → LLM decomposition
- *    c. If parser returns null AND no API key → error: task too complex
- * 2. For each subtask:
- *    a. Try Action Router (accessibility + native desktop, NO LLM) ← handles 80%+ of tasks
- *    b. If router can't handle it AND API key set → LLM vision fallback
- *    c. If router can't handle it AND no API key → skip subtask
- * 3. Track what approach worked for each subtask
+ * v0.7.5 Pipeline ("Two Brains, One Compilation"):
  *
- * No API key = works for 80% of tasks (regex + accessibility)
- * With API key = unlocks LLM fallback for complex/unknown tasks
+ * Stage 0: ShortcutResolver (zero LLM)
+ *   → Simple commands: open app, press key, type text
+ *
+ * Stage 1: SnapshotBuilder (parallel, zero LLM)
+ *   → OCR + A11y + CDP captured simultaneously
+ *   → Merged into one structured snapshot with coordinates
+ *
+ * Stage 2: TextNavigator (cheap text LLM)
+ *   → Reads snapshot, outputs click(x,y) / type / key / done / cannot_proceed
+ *   → Loops until done or cannot_proceed
+ *
+ * Stage 3: VisionFiller (vision LLM, max 5 iterations)
+ *   → Only when Stage 2 signals cannot_proceed
+ *   → Gets screenshot, returns coordinates only — no planning
+ *
+ * No API key = Stage 0 only (80% of simple tasks)
+ * With API key = full pipeline
  */
 
 import * as fs from 'fs';
@@ -41,6 +47,7 @@ import { classifyTask } from './task-classifier';
 import { A11yReasoner } from './a11y-reasoner';
 import { OcrEngine } from './ocr-engine';
 import { OcrReasoner } from './ocr-reasoner';
+import { SnapshotBuilder } from './snapshot-builder';
 import { SkillCache } from './skill-cache';
 import { TaskLogger, CompletionStatus } from './task-logger';
 import { WorkspaceState } from './workspace-state';
@@ -69,6 +76,7 @@ export class Agent {
   private reasoner: A11yReasoner | null = null;
   private ocrEngine: OcrEngine;
   private ocrReasoner: OcrReasoner | null = null;
+  private snapshotBuilder: SnapshotBuilder | null = null;
   private skillCache: SkillCache;
   private deterministicFlows: DeterministicFlows;
   private browserLayer: BrowserLayer | null = null;
@@ -112,9 +120,11 @@ export class Agent {
     this.skillCache.load();
 
     if (pipelineConfig && pipelineConfig.layer2.enabled) {
+      this.snapshotBuilder = new SnapshotBuilder(this.ocrEngine, this.a11y, this.desktop, pipelineConfig);
       this.ocrReasoner = new OcrReasoner(this.ocrEngine, this.desktop, this.a11y, pipelineConfig);
       const ocrStatus = this.ocrEngine.isAvailable() ? 'OCR+A11y' : 'A11y-only';
-      console.log(`👁️ Layer 2 (Unified Reasoner): ${pipelineConfig.layer2.model} — ${ocrStatus} perception active`);
+      console.log(`👁️ Stage 1 (SnapshotBuilder): ${ocrStatus} parallel capture`);
+      console.log(`🧠 Stage 2 (TextNavigator): ${pipelineConfig.layer2.model}`);
     }
     const skillStats = this.skillCache.getStats();
     if (skillStats.total > 0) {
@@ -1083,7 +1093,10 @@ Examples:
         } catch { /* non-critical */ }
       }
 
-      // ── Layer 2: Skill Cache — replay learned paths ─────────────
+      // v0.7.5: Layers 1.5 (deterministic flows), 1.8 (router retry), and 2.5 (skill cache)
+      // removed — SnapshotBuilder + TextNavigator handle these cases more reliably.
+
+      // Get active window info for skill recording and context
       let activeWin = await this.a11y?.getActiveWindow().catch(() => null);
       if (!activeWin) {
         await this.delay(400);
@@ -1091,69 +1104,11 @@ Examples:
       }
       const activeProcessForSkill = browserProcessName || activeWin?.processName || '';
 
-      const cachedSkill = this.skillCache.findSkill(subtask, activeProcessForSkill);
-      if (cachedSkill) {
-        const skillResult = await this.skillCache.executeSkill(cachedSkill, this.desktop, this.a11y);
-        if (skillResult === 'success') {
-          steps.push({ action: 'done', description: `Skill cache: "${cachedSkill.taskPattern}" replayed`, success: true, timestamp: Date.now() });
-          continue;
-        }
-        // miss → fall through to OCR or A11y
-        console.log(`   🔄 Skill cache miss — falling through`);
-      }
-
-      // ── Layer 1.5: Deterministic Flows — zero-LLM verified workflows ──
-      const activeForFlow = await this.a11y?.getActiveWindow().catch(() => null);
-      const flowApp = activeForFlow?.processName || activeForFlow?.title || '';
-      const flowResult = await this.deterministicFlows.tryFlow(subtask, flowApp);
-      if (flowResult?.handled) {
-        console.log(`   ⚡ Deterministic flow completed: ${flowResult.description} (${flowResult.stepsCompleted} steps)`);
-        steps.push({
-          action: 'done',
-          description: flowResult.description,
-          success: true,
-          timestamp: Date.now(),
-          layer: 'deterministic',
-          method: 'deterministic_flow',
-        });
-        this.logger.logStep({
-          layer: 1.5,
-          actionType: 'deterministic_flow',
-          result: 'success',
-          actionParams: { subtask, steps: flowResult.stepsCompleted },
-          durationMs: 0,
-        });
-        continue;
-      }
-      if (flowResult && !flowResult.handled) {
-        console.log(`   🔄 Deterministic flow failed at step ${flowResult.failedAtStep}: ${flowResult.description} — falling through to OCR`);
-      }
-
-      // ── Layer 1.8: Action Router (retry for pre-processed tasks) ──
-      // Even when the top-level router was skipped, individual subtasks like
-      // "type [text]", "save as [filename]" can be handled cheaply by the router.
-      if (!classification.needsVision && !routeResult.handled) {
-        const retryRouteResult = await this.router.route(subtask);
-        if (retryRouteResult.handled) {
-          console.log(`[ROUTER] Step ${i + 1}: route "${subtask}" (retry) → SUCCESS`);
-          this.logger.logStep({
-            layer: 1,
-            actionType: 'route',
-            result: 'success',
-            actionParams: { subtask, retried: true },
-          });
-          console.log(`   ✅ Router (retry): ${retryRouteResult.description}`);
-          steps.push({ action: 'routed', description: retryRouteResult.description, success: true, timestamp: Date.now(), layer: 'router', method: 'a11y_invoke' });
-          await this.delay(50);
-          continue;
-        }
-      }
-
-      // ── Layer 2: Unified Reasoner — parallel OCR + A11y perception ──
-      // SKIP for spatial tasks (needsVision) — they go straight to Layer 3
+      // ── Stage 2: TextNavigator (OCR + A11y → text LLM) ──
+      // SKIP for spatial tasks (needsVision) — they go straight to Stage 3
       let unifiedResult: { handled: boolean; success: boolean; description: string; steps: number; fallbackReason?: string; needsHuman?: boolean; actionLog: Array<{ action: string; description: string }> } | null = null;
       if (this.ocrReasoner && !classification.needsVision) {
-        console.log(`\n👁️ Layer 2 (Unified): "${subtask}"`);
+        console.log(`\n👁️ Stage 2 (TextNavigator): "${subtask}"`);
         const unifiedStart = Date.now();
         unifiedResult = await this.ocrReasoner.run(subtask, priorContext, () => this.aborted);
         const unifiedDuration = Date.now() - unifiedStart;
@@ -1223,10 +1178,10 @@ Examples:
           durationMs: unifiedDuration,
           error: unifiedResult.description?.substring(0, 200),
         });
-        console.log(`   🤷 Unified → Layer 3 (${unifiedResult.steps} steps, ${(unifiedDuration / 1000).toFixed(1)}s): ${(unifiedResult.description ?? 'no description').substring(0, 100)}`);
+        console.log(`   🤷 Stage 2 → Stage 3 (${unifiedResult.steps} steps, ${(unifiedDuration / 1000).toFixed(1)}s): ${(unifiedResult.description ?? 'no description').substring(0, 100)}`);
       }
 
-      // Layer 3: Vision fallback — Computer Use takes over when Unified Reasoner cannot proceed
+      // Stage 3: Vision Filler — takes over when TextNavigator signals cannot_proceed (max 5 iterations)
       const enrichedContext = [...(priorContext ?? [])];
       if (unifiedResult?.actionLog && unifiedResult.actionLog.length > 0) {
         enrichedContext.push(
@@ -1240,7 +1195,7 @@ Examples:
         if (this.computerUse) {
           // Anthropic native Computer Use
           console.log(`[CU] Step ${i + 1}: Anthropic Computer Use "${remainingTask.substring(0, 80)}"`);
-          console.log(`   🖥️  Layer 3 (Anthropic): "${remainingTask}"`);
+          console.log(`   🖥️  Stage 3 (Anthropic Vision): "${remainingTask}"`);
           const cuStart = Date.now();
           try {
             const cuResult = await this.computerUse.executeSubtask(remainingTask, debugDir, i, enrichedContext, this.logger);
@@ -1278,7 +1233,7 @@ Examples:
         } else if (this.genericComputerUse) {
           // Generic OpenAI-compat vision loop (GPT-4o, Gemini, Groq, Llama-vision, etc.)
           console.log(`[CU] Step ${i + 1}: Generic Computer Use "${remainingTask.substring(0, 80)}"`);
-          console.log(`   🌐 Layer 3 (Generic): "${remainingTask}"`);
+          console.log(`   🌐 Stage 3 (Vision Filler): "${remainingTask}"`);
           const cuStart = Date.now();
           try {
             const cuResult = await this.genericComputerUse.executeSubtask(remainingTask, debugDir, i, enrichedContext, this.logger, () => this.aborted);
@@ -1317,7 +1272,7 @@ Examples:
           // Legacy fallback — vision LLM without structured tool schema
           await this.delay(150);
           console.log(`[CU] Step ${i + 1}: Legacy vision fallback "${remainingTask.substring(0, 80)}"`);
-          console.log(`   🧠 Layer 3 (legacy fallback): "${remainingTask}"`);
+          console.log(`   🧠 Stage 3 (legacy vision): "${remainingTask}"`);
           const legacyStart = Date.now();
           const fallbackResult = await this.executeLLMFallback(remainingTask, steps, debugDir, i);
           const legacyDuration = Date.now() - legacyStart;
