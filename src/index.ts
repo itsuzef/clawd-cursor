@@ -158,6 +158,7 @@ program
   .option('--base-url <url>', 'Custom API base URL (OpenAI-compatible)')
   .option('--api-key <key>', 'AI provider API key')
   .option('--debug', 'Save screenshots to debug/ folder (off by default)')
+  .option('--v2', 'Use v2 agent (simplified tool-calling loop, no decomposer)')
   .option('--accept', 'Accept desktop control consent non-interactively and start')
   .action(async (opts) => {
     // Single-instance guard
@@ -240,6 +241,124 @@ program
       console.log(`${e('🔗', '--')} External credentials detected — pipeline config (.clawdcursor-config.json) takes priority`);
     }
 
+    // ── V2 Agent: simplified tool-calling loop ──────────────────────────────
+    if (opts.v2) {
+      console.log(`\n${e('🚀', '>')} Agent v2 — unified tool-calling loop`);
+
+      const { loadPipelineConfig } = await import('./doctor');
+      const pipelineConfig = loadPipelineConfig();
+      if (!pipelineConfig || !pipelineConfig.layer2.enabled) {
+        console.error(`${e('❌', '[ERR]')} Agent v2 requires a configured AI provider. Run: clawdcursor doctor`);
+        releasePidFile('start');
+        process.exit(1);
+      }
+
+      const toolCtx = await createToolContext();
+      await toolCtx.ensureInitialized();
+
+      const { AgentV2 } = await import('./agent-v2');
+      const agentV2 = new AgentV2({
+        pipelineConfig,
+        toolCtx,
+        debugDir: opts.debug ? path.join(process.cwd(), 'debug') : null,
+      });
+
+      // Set up HTTP server with tool server + v2 task endpoint
+      const express = (await import('express')).default;
+      const { createToolServer } = await import('./tool-server');
+      const { randomBytes } = await import('crypto');
+
+      const tokenDir = path.join(require('os').homedir(), '.clawdcursor');
+      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+      const serverToken = randomBytes(32).toString('hex');
+      fs.writeFileSync(path.join(tokenDir, 'token'), serverToken, { encoding: 'utf-8', mode: 0o600 });
+
+      const app = express();
+      app.use(express.json());
+
+      // Auth middleware
+      const authMiddleware = (req: any, res: any, next: any) => {
+        if (req.method === 'GET') return next();
+        const bearer = (req.headers['authorization'] || '').replace('Bearer ', '');
+        if (!bearer || bearer !== serverToken) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+        next();
+      };
+      app.use(authMiddleware);
+
+      // Health
+      app.get('/health', (_req: any, res: any) => res.json({ status: 'ok', version: VERSION, mode: 'agent-v2', tools: 40 }));
+
+      // Tool server (same as serve mode)
+      app.use(createToolServer(toolCtx));
+
+      // V2 task endpoint
+      let v2Busy = false;
+      let v2LastResult: any = null;
+
+      app.post('/task', async (req: any, res: any) => {
+        const task = req.body?.task;
+        if (!task || typeof task !== 'string') {
+          return res.status(400).json({ error: 'Missing "task" in body' });
+        }
+        if (v2Busy) {
+          return res.status(409).json({ error: 'Agent is busy' });
+        }
+
+        v2Busy = true;
+        res.json({ accepted: true, task });
+
+        // Execute async
+        try {
+          v2LastResult = await agentV2.executeTask(task);
+          console.log(`\n${e('📋', '>')} Task ${v2LastResult.success ? 'SUCCEEDED' : 'FAILED'}: ${v2LastResult.message}`);
+          console.log(`   ${v2LastResult.steps.length} steps, ${v2LastResult.llmCalls} LLM calls, ${(v2LastResult.duration / 1000).toFixed(1)}s`);
+        } catch (err) {
+          console.error(`${e('❌', '[ERR]')} Task crashed:`, err);
+          v2LastResult = { success: false, message: `Crashed: ${err}`, steps: [], llmCalls: 0 };
+        } finally {
+          v2Busy = false;
+        }
+      });
+
+      app.get('/status', (_req: any, res: any) => {
+        res.json({ status: v2Busy ? 'running' : 'idle', lastResult: v2LastResult });
+      });
+
+      app.post('/abort', (_req: any, res: any) => {
+        // TODO: implement abort for v2
+        res.json({ ok: true });
+      });
+
+      app.post('/stop', (_req: any, res: any) => {
+        res.json({ stopped: true });
+        setTimeout(() => { releasePidFile('start'); process.exit(0); }, 100);
+      });
+
+      app.listen(config.server.port, config.server.host, () => {
+        console.log(`\n${e('🌐', '[NET]')} Agent v2 server: http://${config.server.host}:${config.server.port}`);
+        console.log(`${e('🔑', '[KEY]')} Auth token: ${serverToken.slice(0, 8)}...`);
+        console.log(`   POST /task     — {"task": "..."}`);
+        console.log(`   GET  /status   — Agent state`);
+        console.log(`   POST /execute/{tool} — Execute any tool directly`);
+        console.log(`   GET  /tools    — Tool schemas`);
+        console.log(`\nReady. ${e('🐾', '')}`);
+      });
+
+      // Prevent unhandled rejections from crashing the process
+      process.on('uncaughtException', (err) => {
+        console.error(`[v2] Uncaught exception: ${err.message}\n${err.stack}`);
+      });
+      process.on('unhandledRejection', (reason) => {
+        console.error(`[v2] Unhandled rejection: ${reason}`);
+      });
+      process.on('SIGINT', () => { releasePidFile('start'); process.exit(0); });
+      process.on('SIGTERM', () => { releasePidFile('start'); process.exit(0); });
+      return; // Skip legacy agent path
+    }
+
+    // ── Legacy Agent (v1) ─────────────────────────────────────────────────────
     const agent = new Agent(config);
 
     try {
