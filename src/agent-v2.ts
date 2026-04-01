@@ -34,9 +34,9 @@ const SYSTEM_PROMPT = `You are ClawdCursor, a desktop automation agent on ${PLAT
 You have tools to control this computer. Use them to complete the user's task.
 
 ## Workflow
-1. Call smart_read ONCE to orient yourself
-2. Then BATCH all your actions — call multiple tools in ONE response
-3. Only smart_read again if something unexpected happened
+1. ALWAYS call smart_read as your FIRST tool call — never skip this
+2. Then BATCH your actions — call multiple tools in ONE response
+3. After open_app, ALWAYS call smart_read again (the app may reuse an existing window with stale content)
 4. When done, say DONE immediately — do NOT verify unless the task specifically asks
 
 ## Tool Preferences (fastest → slowest)
@@ -61,11 +61,12 @@ You have tools to control this computer. Use them to complete the user's task.
 - Never repeat a failed action — try a different approach
 - If stuck 3 times, say BLOCKED
 
-## File Save Dialogs (Windows)
-- To save a file: use key_press("ctrl+s") for Save, or key_press("ctrl+shift+s") for Save As
-- In the Save As dialog, the filename field is already focused — just type_text the FULL path (e.g. "C:\\tmp\\file.txt") and press Enter
-- Do NOT try to navigate folders by clicking — type the full path directly in the filename field
-- If a "confirm overwrite" dialog appears, smart_click "Yes" or key_press "Return"
+## Critical Patterns
+- open_app may REUSE an existing window — always smart_read after to check state
+- If a text editor has existing content you don't want, key_press("ctrl+a") then type to replace
+- To save a file: key_press("ctrl+s") → in the Save dialog, key_press("ctrl+a") then type_text the FULL path → key_press("Return")
+- Do NOT navigate folders by clicking — type the full path directly in the filename field
+- If a "confirm overwrite" dialog appears, key_press("Return")
 
 ## Completion
 When the task is done, respond with text starting with "DONE:" — no extra verification needed.
@@ -133,6 +134,7 @@ export class AgentV2 {
     addUserMessage(task);
 
     const recentResults: string[] = [];
+    let hasReadScreen = false;
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // ── Context window management ──
@@ -184,6 +186,31 @@ export class AgentV2 {
         this.appendAssistantMessage(messages, response);
         addUserMessage('Continue with the task. Use tools to interact with the desktop. When done, start your message with "DONE:"');
         continue;
+      }
+
+      // ── Force initial read if model skipped it ──
+      if (!hasReadScreen && i === 0) {
+        const firstNames = response.toolCalls.map(tc => tc.name);
+        const hasRead = firstNames.some(n => ['smart_read', 'read_screen', 'desktop_screenshot'].includes(n));
+        if (!hasRead) {
+          console.log(`   ⚠️ Model skipped initial read — injecting smart_read`);
+          // Execute smart_read before the model's tools
+          const readTool = getTool('smart_read')!;
+          try {
+            await this.config.toolCtx.ensureInitialized();
+            const readResult = await readTool.handler({}, this.config.toolCtx);
+            console.log(`   ✓ [injected] smart_read → ${readResult.text.substring(0, 80)}`);
+            hasReadScreen = true;
+            // Don't append to messages — the model didn't ask for it.
+            // But warn it about what we see
+            steps.push({ action: 'smart_read', description: '[auto-injected] initial screen read', success: true, timestamp: Date.now() });
+          } catch { /* non-fatal */ }
+        }
+      }
+
+      // Track reads
+      for (const tc of response.toolCalls) {
+        if (['smart_read', 'read_screen', 'desktop_screenshot'].includes(tc.name)) hasReadScreen = true;
       }
 
       // ── Execute tool calls ──
