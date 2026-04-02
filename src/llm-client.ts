@@ -510,9 +510,11 @@ async function _callVisionAnthropic(p: DirectVisionLLMOptions & { authHeaders: R
     throwOnHttpError(response.status, p.model, errBody);
   }
 
-  // Streaming path: read SSE events, return when complete JSON detected
+  // Streaming path: read SSE events using event-type state machine
   if (p.stream && response.body) {
     let accumulated = '';
+    let currentEventType = '';
+    let messageComplete = false;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     try {
@@ -521,19 +523,26 @@ async function _callVisionAnthropic(p: DirectVisionLLMOptions & { authHeaders: R
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         for (const line of chunk.split('\n')) {
+          // Track SSE event type from "event:" lines
+          if (line.startsWith('event:')) {
+            currentEventType = line.slice(6).trim();
+            continue;
+          }
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
-          if (payload === '[DONE]') break;
+          if (payload === '[DONE]') { messageComplete = true; break; }
           try {
             const event = JSON.parse(payload);
-            const delta = event.delta?.text || '';
-            accumulated += delta;
-            // Early return: if we have a complete JSON object
-            if (accumulated.includes('}') && !accumulated.includes('"steps"')) {
-              try { JSON.parse(accumulated); reader.cancel(); return accumulated; } catch { /* not yet complete */ }
+            if (currentEventType === 'content_block_delta') {
+              const delta = event.delta?.text || '';
+              accumulated += delta;
+            } else if (currentEventType === 'content_block_stop' || currentEventType === 'message_stop') {
+              messageComplete = true;
+              break;
             }
           } catch { /* skip malformed SSE */ }
         }
+        if (messageComplete) break;
       }
     } finally {
       reader.releaseLock();

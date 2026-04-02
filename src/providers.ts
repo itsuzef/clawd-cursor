@@ -25,6 +25,9 @@ export interface ProviderProfile {
   extraHeaders?: Record<string, string>;
   /** Whether this provider supports Computer Use tool */
   computerUse: boolean;
+  /** Whether capabilities (openaiCompat, supportsJsonMode, etc.) were verified
+   *  via a live probe, or merely assumed based on defaults. Unset / false means assumed. */
+  probed?: boolean;
   /** Whether OpenAI-style JSON response_format is known to work reliably */
   supportsJsonMode?: boolean;
   /** Whether OpenAI-style tool calls are known to work reliably */
@@ -702,14 +705,18 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
               const dynamicProviderKey = providerNameLower.replace(/[^a-z0-9]/g, '');
               
               // Add to PROVIDERS map dynamically (but don't mutate the original)
+              // Assumption: most external providers expose an OpenAI-compatible API.
+              // This has NOT been verified via a live probe — set probed: false so
+              // callers can distinguish assumed vs confirmed capabilities.
               const dynamicProvider: ProviderProfile = {
                 name: provName,
                 baseUrl: baseUrl,
                 authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
                 textModel: textModel,
                 visionModel: visionModel,
-                openaiCompat: true, // Most providers are OpenAI-compatible except Anthropic
+                openaiCompat: true,
                 computerUse: false,
+                probed: false,
               };
               
               // Don't add to PROVIDERS directly (immutable), but create scan result
