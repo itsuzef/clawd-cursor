@@ -21,13 +21,19 @@
 
 ## What's New in v0.7.5
 
-**Gemini 2.5 Flash support. New config schema. Cleaner architecture.**
+**Provider-agnostic Computer Use. App guides. Cleaner architecture.**
 
-- **Google Gemini 2.5 Flash** — auto-detected from `GEMINI_API_KEY` or `GOOGLE_API_KEY`. One model handles both text and vision roles. 1M token context window. Budget-friendly at ~$0.15/1M tokens.
-- **New config schema** — `textModel`/`visionModel` field names (clearer than `layer2`/`layer3`). Old names still accepted for backward compatibility.
-- **Compilation config** — new `compilation` block in config: `{ ocr, a11y, cdp, parallel }` controls which perception channels are active.
-- **3-stage pipeline** — simplified description: Stage 1 (deterministic, free), Stage 2 (text LLM, cheap), Stage 3 (vision LLM, expensive).
-- **Model recommendations** — see table below for 2026 model picks per provider.
+- **Provider-agnostic refactor** — eliminated all hardcoded model/provider checks. Uses declarative capability flags (`reasoningVisionModel`, `computerUse`, `openaiCompat`) instead of string matching. Works with ANY provider out of the box.
+- **App Guide system** — community-contributed JSON instruction manuals for 86+ apps. Install with `clawdcursor guides install excel`. Teaches the AI keyboard shortcuts, workflows, UI layout, and tips for each app. Loaded automatically at runtime.
+- **Google Gemini 2.5 Flash** — auto-detected from `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Budget-friendly at ~$0.15/1M tokens.
+- **3-stage pipeline** — Stage 1 (deterministic, free) → Stage 2 (text LLM, cheap) → Stage 3 (vision LLM, expensive). Most tasks complete at Stage 1-2.
+- **Fallback architecture** — designed as the last-mile fallback for any AI agent. When APIs, CLIs, and integrations don't exist, clawdcursor gives your agent eyes and hands on the desktop.
+- **Task classifier** — zero-cost regex classifier routes tasks to optimal pipeline stage (mechanical/navigation/reasoning/spatial).
+- **Guide registry CLI** — `clawdcursor guides available` lists 86 apps. `clawdcursor guides install spotify` downloads shortcuts. Community-driven knowledge base.
+- **Lazy guide loading** — guides inject into the LLM context only when the target app is detected, after the first screenshot.
+- **New config schema** — `textModel`/`visionModel` field names. Old names still accepted.
+- **Memory leak fixes** — buffer release in OCR engine, TERMINAL env var quoting for Linux.
+- **Cross-platform hardening** — Linux GPU detection, PID file locking, signal handlers.
 
 ### v0.7.2 features (still present)
 

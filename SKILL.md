@@ -227,6 +227,67 @@ Register in your MCP client settings:
 
 Works with Claude Code, Cursor, Windsurf, Zed, or any MCP-compatible client.
 
+### Agent mode (`clawdcursor start`)
+
+Full autonomous agent with built-in 3-stage LLM pipeline. Use when you want clawdcursor to handle complex multi-step tasks end-to-end.
+
+```bash
+clawdcursor start   # starts agent + REST API on http://localhost:3847
+```
+
+Agent endpoints (requires auth token from `~/.clawdcursor/token`):
+
+```
+POST /task           Submit a task: {"task": "open Excel and make a table"}
+GET  /status         Agent state (idle/thinking/acting)
+POST /abort          Stop the current task
+GET  /task-logs      Recent task results (structured JSONL)
+GET  /screenshot     Current screen as PNG
+POST /stop           Graceful shutdown
+```
+
+The agent decomposes tasks, opens apps, navigates UI, types text, clicks buttons, handles dialogs, and verifies completion — all autonomously. You describe the goal, it figures out the clicks.
+
+### Using clawdcursor as a fallback
+
+clawdcursor is designed to be the **last-mile fallback** when APIs, CLIs, and integrations don't exist. If your agent hits a roadblock mid-task because there's no programmatic interface, fall back to clawdcursor:
+
+```
+Your agent: "I need to send an email via Outlook but there's no API"
+  → delegate_to_agent("open Outlook and send email to X, subject Y, body Z")
+  → clawdcursor handles the entire GUI workflow
+  → returns {success: true, steps: [...]}
+
+Your agent: "I need to fill a web form but Playwright can't handle it"
+  → Use smart_click, smart_type, key_press to interact directly
+  → read_screen or ocr_read_screen to verify
+
+Your agent: "I need to change a system setting"
+  → delegate_to_agent("open Settings, navigate to Personalization > Background")
+  → clawdcursor opens Settings and navigates there
+```
+
+The 3-stage pipeline handles everything:
+1. **Stage 1 (Free):** Keyboard shortcuts and pattern matching — instant, no LLM
+2. **Stage 2 (Cheap):** OCR + accessibility tree + text LLM — reads screen, plans actions
+3. **Stage 3 (Expensive):** Vision LLM — sees screenshots, handles complex spatial tasks
+
+### App Guides (community-contributed knowledge)
+
+clawdcursor has JSON instruction manuals for 86+ applications. When a target app is detected, the relevant guide is injected into the LLM's context — teaching it keyboard shortcuts, workflows, UI layout, and tips.
+
+```bash
+clawdcursor guides available          # list all 86 downloadable guides
+clawdcursor guides install excel      # install Excel guide (116 shortcuts)
+clawdcursor guides install spotify    # install Spotify guide
+clawdcursor guides install --all      # install everything
+clawdcursor guides list               # show installed guides
+```
+
+Guides load automatically at runtime based on the active window's process name. No code changes needed — just add a JSON file to the `guides/` directory.
+
+**Contributing guides:** Create a `{process-name}.json` file with shortcuts, workflows, layout hints, and tips. Submit a PR. The teach/popup system (coming soon) will let users add lessons interactively when clawdcursor gets stuck.
+
 ### Built-in agent (`clawdcursor start`)
 
 Full autonomous agent with its own LLM pipeline. Send a task, get a result:
