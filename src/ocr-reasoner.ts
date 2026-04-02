@@ -513,9 +513,13 @@ export class OcrReasoner {
         }
 
         // Reject if task keywords aren't visible on screen.
-        // Allow up to 2 rejections to give the LLM a chance to fix, then accept anyway.
+        // But: if the LLM already typed text (clipboard paste succeeded), the content
+        // may be in a canvas/iframe that OCR can't read (Google Docs, Figma, Notion, etc.)
+        // In that case, accept done after 1 rejection since the typing DID happen.
         const doneRejects = actionLog.filter(a => a.action === 'done_rejected').length;
-        if (taskMatch < 0.3 && taskWords.length >= 1 && doneRejects < 2) {
+        const hasTypedText = actionLog.some(a => a.action === 'type');
+        const maxRejects = hasTypedText ? 1 : 2; // more lenient if text was already typed
+        if (taskMatch < 0.3 && taskWords.length >= 1 && doneRejects < maxRejects) {
           const missing = taskWords.filter(w => !screenText.includes(w)).slice(0, 3);
           console.warn(`   [OCR] ⚠️ Done rejected (${(taskMatch * 100).toFixed(0)}% task match). Missing: ${missing.join(', ')}`);
           actionLog.push({ action: 'done_rejected', description: `${(taskMatch * 100).toFixed(0)}% match — missing: ${missing.join(', ')}` });
