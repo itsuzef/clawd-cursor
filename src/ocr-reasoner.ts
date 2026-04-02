@@ -871,11 +871,14 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
    * physicalToMouse() bridges the gap.
    */
   private async executeAction(action: OcrAction): Promise<string | null> {
-    // Taskbar guard: block clicks in the bottom 180 physical pixels (≈60 logical @ 3x DPI)
+    // Taskbar guard: block clicks in the bottom ~3% of screen (taskbar area).
+    // Proportional to screen height — works on 1080p, 1440p, 4K, any resolution.
+    // ~3% = 32px on 1080p, 43px on 1440p, 72px on 2400p — covers taskbar on all displays.
     if ('x' in action && 'y' in action && (action.action === 'click' || action.action === 'double_click')) {
       const screenH = this.desktop.getScreenSize().height;
-      if (screenH > 0 && action.y > screenH - 180) {
-        console.warn(`   [OCR] ⚠️ BLOCKED: ${action.action} at y=${action.y} is in taskbar zone (>${screenH - 180})`);
+      const taskbarZone = Math.max(60, Math.round(screenH * 0.03));
+      if (screenH > 0 && action.y > screenH - taskbarZone) {
+        console.warn(`   [OCR] ⚠️ BLOCKED: ${action.action} at y=${action.y} is in taskbar zone (>${screenH - taskbarZone})`);
         return `BLOCKED: Your ${action.action} at y=${action.y} is in the taskbar zone (bottom of screen). The taskbar is off-limits. Use keyboard shortcuts instead — for example, press the Windows key to open Start, or use Alt+Tab to switch apps. NEVER click the bottom edge of the screen.`;
       }
     }
@@ -903,9 +906,10 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
       }
 
       case 'drag': {
-        // Taskbar guard for drag actions
+        // Taskbar guard for drag actions — proportional to screen height
         const screenSize = this.desktop.getScreenSize();
-        if (screenSize.height > 0 && (action.startY > screenSize.height - 180 || action.endY > screenSize.height - 180)) {
+        const dragTaskbarZone = Math.max(60, Math.round(screenSize.height * 0.03));
+        if (screenSize.height > 0 && (action.startY > screenSize.height - dragTaskbarZone || action.endY > screenSize.height - dragTaskbarZone)) {
           console.warn(`   [OCR] ⚠️ BLOCKED: drag touches taskbar zone`);
           return 'BLOCKED: Your drag touches the taskbar zone (bottom of screen). Keep all actions within the app window.';
         }
