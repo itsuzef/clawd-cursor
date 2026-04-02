@@ -141,7 +141,7 @@ async function _callText(opts: InternalCallOptions): Promise<string> {
       const canUseJsonMode = supportsOpenAiJsonMode(opts.providerProfile);
       const result = isAnthropic
         ? await _callAnthropic({ baseUrl, model, authHeaders, system, user, rawMessages, forceJson, maxTokens, timeoutMs })
-        : await _callOpenAI({ baseUrl, model, authHeaders, system, user, rawMessages, forceJson, maxTokens, timeoutMs, canUseJsonMode, isReasoningModel: !!opts.providerProfile?.reasoningVisionModel });
+        : await _callOpenAI({ baseUrl, model, authHeaders, system, user, rawMessages, forceJson, maxTokens, timeoutMs, canUseJsonMode, isReasoningModel: false }); // text calls always use temperature=0
 
       return result;
     } catch (err) {
