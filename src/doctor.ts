@@ -1449,8 +1449,10 @@ async function testVisionModel(
   const start = performance.now();
   const TIMEOUT = 10000; // vision needs slightly more time
 
-  // 64x64 solid green PNG (212 bytes) — large enough for all vision APIs (some reject <16x16)
-  const GREEN_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAhklEQVR4nO3PAQkAAAzDsPg3vcsYg0MEtMQ29YL8gGnqBfkB09QL8gOmqRfkB0xTL8gPmKZekB8wTb0gP2CaekF+wDT1gvyAaeoF+QHTFMvyA6apF+QHTFMvyA+Ypl6QHzBNvSA/YJp6QX7ANPWC/IBp6gX5AdPUC/IDpqkX5AdMUy/ID1h2uOzw4njZJI8AAAAASUVORK5CYII=';
+  // 64x64 solid green JPEG (292 bytes) — JPEG is universally supported by all vision APIs.
+  // PNG fails on some providers (e.g., Kimi rejects PNG with "failed to decode image").
+  const TEST_IMAGE = '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCABAAEADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAT/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCABNEfAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAf/2Q==';
+  const TEST_IMAGE_MIME = 'image/jpeg';
 
   try {
     const text = await callVisionLLMDirect({
@@ -1462,7 +1464,7 @@ async function testVisionModel(
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: GREEN_PIXEL_PNG } },
+          { type: 'image', source: { type: 'base64', media_type: TEST_IMAGE_MIME, data: TEST_IMAGE } },
           { type: 'text', text: 'What color is this image? Reply with one word.' },
         ],
       }],
