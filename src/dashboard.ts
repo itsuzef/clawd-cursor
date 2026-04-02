@@ -11,7 +11,8 @@ import { VERSION } from './version';
 export function mountDashboard(app: Express, getToken?: () => string): void {
   app.get('/', (_req, res) => {
     // Inject auth token into dashboard so client-side JS can authenticate API calls.
-    // Safe for localhost-only server — token never leaves the machine.
+    // SECURITY: Token injected into page JS is acceptable for localhost-only binding.
+    // If remote access is ever added, switch to httpOnly cookie auth.
     const token = getToken?.() ?? '';
     const html = DASHBOARD_HTML.replace('__CLAWD_TOKEN_PLACEHOLDER__', token);
     res.type('html').send(html);

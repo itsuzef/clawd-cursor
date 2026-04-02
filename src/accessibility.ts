@@ -31,6 +31,18 @@ const MAX_DEPTH = 8; // raised to 8 — Electron/WebView2 apps (Outlook olk) nes
 /** Cached shell availability (macOS only — Windows uses psRunner) */
 let macShellAvailable: boolean | null = null;
 
+// ── Linux AT-SPI backend ────────────────────────────────────────────────────
+// Linux AT-SPI backend is planned. Currently returns safe empty results for
+// tree-walking methods (findElement, invokeElement, getScreenContext, etc.).
+// Clipboard already works via wl-paste/wl-copy, xclip, or xsel.
+// getWindows() has a basic wmctrl fallback for window awareness.
+//
+// To contribute a full AT-SPI backend: implement via `dbus-next` (pure JS
+// D-Bus client) or `gi` (GObject introspection) bindings. The AT-SPI2 bus
+// lives at org.a]11y.Bus and exposes Accessible, Component, Action, Text,
+// and Value interfaces that map cleanly onto UIElement / WindowInfo.
+// ─────────────────────────────────────────────────────────────────────────────
+
 function unsupportedLinuxResult<T>(fallback: T, feature: string): T {
   console.debug(`[A11y] Linux accessibility feature not yet implemented: ${feature}`);
   return fallback;
@@ -189,10 +201,48 @@ export class AccessibilityBridge {
       windows = await this.runMacScript('get-windows.jxa');
       this.windowCache = { windows, timestamp: Date.now() };
     } else {
-      windows = unsupportedLinuxResult([], 'getWindows');
+      // Linux: try wmctrl for basic window awareness before falling back to empty
+      windows = await this.linuxGetWindowsViaWmctrl();
       this.windowCache = { windows, timestamp: Date.now() };
     }
     return windows;
+  }
+
+  /**
+   * Linux fallback: parse `wmctrl -l -p` output into WindowInfo[].
+   * Returns [] if wmctrl is not installed or fails.
+   */
+  private async linuxGetWindowsViaWmctrl(): Promise<WindowInfo[]> {
+    try {
+      const { execFileSync } = require('child_process');
+      const output: string = execFileSync('wmctrl', ['-l', '-p'], {
+        timeout: 3000,
+        encoding: 'utf-8',
+      });
+      const windows: WindowInfo[] = [];
+      for (const line of output.trim().split('\n')) {
+        if (!line.trim()) continue;
+        // Format: 0x03c00003  0 12345  hostname Window Title Here
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        const handle = parseInt(parts[0], 16) || 0;
+        const pid = parseInt(parts[2], 10) || 0;
+        const title = parts.slice(4).join(' ');
+        if (!title || title === 'Desktop') continue;
+        windows.push({
+          handle,
+          title,
+          processName: '', // wmctrl doesn't provide process names
+          processId: pid,
+          bounds: { x: 0, y: 0, width: 0, height: 0 }, // wmctrl -l doesn't include geometry
+          isMinimized: false,
+        });
+      }
+      return windows;
+    } catch {
+      // wmctrl not installed or failed — return empty
+      return unsupportedLinuxResult([], 'getWindows (wmctrl fallback)');
+    }
   }
 
   async findElement(opts: {
@@ -415,6 +465,7 @@ export class AccessibilityBridge {
         return stdout?.trim() ?? '';
       }
       if (IS_LINUX) {
+        // Linux clipboard: tries wl-paste (Wayland), xclip, xsel (X11) in order
         const { stdout } = await execFileAsync('sh', ['-lc', 'if command -v wl-paste >/dev/null 2>&1; then wl-paste --no-newline; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard -o; elif command -v xsel >/dev/null 2>&1; then xsel --clipboard --output; fi'], { timeout: 2000 });
         return stdout?.trim() ?? '';
       }
@@ -450,6 +501,7 @@ export class AccessibilityBridge {
           proc.stdin?.end();
         });
       } else if (IS_LINUX) {
+        // Linux clipboard: tries wl-copy (Wayland), xclip, xsel (X11) in order
         await new Promise<void>((resolve, reject) => {
           const proc = execFile('sh', ['-lc', 'if command -v wl-copy >/dev/null 2>&1; then wl-copy; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard; elif command -v xsel >/dev/null 2>&1; then xsel --clipboard --input; else exit 1; fi'], { timeout: 2000 }, (err) => {
             if (err) reject(err); else resolve();

@@ -223,6 +223,8 @@ export class NativeDesktop extends EventEmitter {
         try {
           const { execFileSync } = await import('child_process');
           // NSScreen reports in logical (point) dimensions — compare with physical pixels from screen.grab()
+          // TODO: Multi-monitor support — currently uses mainScreen only. For multi-monitor,
+          // enumerate NSScreen.screens and sum widths to get the full virtual canvas size.
           const result = execFileSync('osascript', ['-e',
             'use framework "AppKit"\nreturn (current application\'s NSScreen\'s mainScreen\'s frame()\'s size\'s width) as integer',
           ], { timeout: 5000, encoding: 'utf-8' }).trim();

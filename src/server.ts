@@ -212,6 +212,10 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
   });
 
   // Mount the web dashboard at GET / — pass token getter for client-side auth
+  // SECURITY: Token is injected into page JS — only safe when bound to localhost.
+  if (config.server.host !== '127.0.0.1' && config.server.host !== 'localhost') {
+    console.warn(`${e('⚠️', '[WARN]')} Dashboard token exposed in page JS — only safe on localhost (current host: ${config.server.host})`);
+  }
   mountDashboard(app, () => SERVER_TOKEN);
 
   // --- Favorites endpoints ---
