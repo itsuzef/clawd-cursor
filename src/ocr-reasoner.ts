@@ -194,21 +194,13 @@ export class OcrReasoner {
       } catch { /* non-fatal */ }
     }
 
-    // Load app-specific guide if available for the target application
+    // Guide prompt is loaded lazily on step 0 after target window is detected
     let guidePrompt = '';
-    if (this.currentAppProcess) {
-      try {
-        const { getGuidePrompt } = require('./guide-loader');
-        guidePrompt = getGuidePrompt(this.currentAppProcess.split(' ')[0]);
-        if (guidePrompt) {
-          console.log(`   [OCR] 📖 Loaded app guide for "${this.currentAppProcess}"`);
-        }
-      } catch { /* guide loader not available */ }
-    }
+    let guideLoaded = false;
 
     // Build conversation history for context (sliding window applied before each LLM call)
     const messages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: SYSTEM_PROMPT + guidePrompt },
+      { role: 'system', content: SYSTEM_PROMPT },
     ];
 
     for (let step = 0; step < MAX_OCR_STEPS; step++) {
@@ -295,6 +287,22 @@ export class OcrReasoner {
             this.targetProcessId = activeWin.processId;
             this.currentAppProcess = (activeWin.title || activeWin.processName).toLowerCase();
             console.log(`   [OCR] Target window: ${activeWin.processName} "${activeWin.title}" (pid ${activeWin.processId})`);
+            // Load app guide now that we know the target app (lazy load on step 0)
+            if (!guideLoaded) {
+              guideLoaded = true;
+              try {
+                const { getGuidePrompt } = require('./guide-loader');
+                // Try process name first (more specific), then title
+                guidePrompt = getGuidePrompt(activeWin.processName) || getGuidePrompt(this.currentAppProcess.split(' ')[0]);
+                if (guidePrompt) {
+                  console.log(`   [OCR] 📖 Loaded app guide for "${activeWin.processName}"`);
+                  // Inject guide into the system prompt (first message)
+                  if (messages[0]?.role === 'system') {
+                    messages[0].content += guidePrompt;
+                  }
+                }
+              } catch { /* guide loader not available */ }
+            }
             // Click title bar area to guarantee keyboard focus without triggering UI elements.
             // Previously clicked window center, which could select text, change paint colors, etc.
             if (activeWin.bounds && activeWin.bounds.width > 0) {
