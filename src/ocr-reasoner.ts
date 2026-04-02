@@ -133,7 +133,10 @@ RULES:
 29. When elements show [name:"X", id:Y] metadata from the accessibility tree, prefer a11y_click for MORE RELIABLE clicking: {"action":"a11y_click","name":"X","description":"..."}. The system invokes the element directly via UI Automation — no mouse coordinates needed. This is more reliable than coordinate-based clicks.
 30. For input fields with accessibility metadata, use a11y_set_value to type directly: {"action":"a11y_set_value","name":"Field Name","controlType":"Edit","value":"text to enter","description":"..."}. This bypasses clipboard and focus issues.
 31. ACTION PREFERENCE ORDER: a11y_click (if element has name/id metadata) > click by coordinates > keyboard shortcut. a11y_click uses the OS accessibility API and is the most reliable method for interacting with named UI elements.
-32. If a task requires human intervention (payment, captcha, 2FA, password entry), return: {"action":"needs_human","reason":"why","description":"what the human must do"}`;
+32. If a task requires human intervention (payment, captcha, 2FA, password entry), return: {"action":"needs_human","reason":"why","description":"what the human must do"}
+33. When clicking on a DOCUMENT, EDITOR, or CANVAS area (Google Docs, Word, Notepad, Paint), click in the CENTER of the content area — not the left edge, not the toolbar, not the margins. The main content/paper area is usually the largest white rectangle in the middle of the window.
+34. After typing text in a document or editor, DO NOT press Tab or Enter to "confirm" or "move to next field". Documents are NOT forms. Tab in a document either indents text or moves focus to the toolbar. After typing in a document, either say "done" or continue typing. The ONLY apps where Tab navigates between fields are: form dialogs, spreadsheets (Excel), and email compose windows.
+35. When "done" is REJECTED by verification, do NOT immediately retype the same text. FIRST check: (a) Is the text visible anywhere on screen? If not, you likely typed in the wrong place. (b) Click on the correct content area again. (c) THEN retype. Blindly retyping without fixing focus wastes steps.`;
 
 // ─── OcrReasoner class ──────────────────────────────────────────────────────
 
