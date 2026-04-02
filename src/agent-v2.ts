@@ -439,8 +439,8 @@ export class AgentV2 {
       ],
       tools,
     };
-    // Some models don't support temperature 0
-    if (!modelConfig.model.startsWith('kimi-k2')) {
+    // Reasoning models (e.g., kimi-k2.5) reject temperature=0 — use provider flag
+    if (!this.config.pipelineConfig.provider.reasoningVisionModel) {
       body.temperature = 0;
     }
 

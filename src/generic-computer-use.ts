@@ -98,8 +98,8 @@ export function isGenericComputerUseSupported(
   config: ClawdConfig,
   pipelineConfig?: PipelineConfig | null,
 ): boolean {
-  // Anthropic has its own native CU — don't use generic for it
-  if (config.ai.provider === 'anthropic' && !config.ai.visionBaseUrl) return false;
+  // Providers with native Computer Use (e.g., Anthropic) don't need generic CU
+  if (pipelineConfig?.provider?.computerUse && !config.ai.visionBaseUrl) return false;
   if (pipelineConfig?.provider && !pipelineConfig.provider.openaiCompat) return false;
   if (pipelineConfig?.provider && !supportsOpenAiToolCalls(pipelineConfig.provider)) return false;
 

@@ -13,6 +13,7 @@ import * as crypto from 'crypto';
 import type { ClawdConfig, InputAction, ActionSequence, ScreenFrame } from './types';
 import { extractJsonObject, extractJsonArray } from './safe-json';
 import { callTextLLMDirect, callVisionLLMDirect } from './llm-client';
+import { PROVIDERS } from './providers';
 
 const SYSTEM_PROMPT = `You are Clawd Cursor, an AI desktop agent on {OS_NAME}.
 Screen: {REAL_WIDTH}x{REAL_HEIGHT}. Screenshot: {LLM_WIDTH}x{LLM_HEIGHT} (scale {SCALE}x).
@@ -296,26 +297,21 @@ export class AIBrain {
 
   // ─── LLM Calls ────────────────────────────────────────────────────
 
-  private static readonly BASE_URLS: Record<string, string> = {
-    ollama: 'http://localhost:11434/v1',
-    kimi: 'https://api.moonshot.cn/v1',
-    openai: 'https://api.openai.com/v1',
-  };
-
   private async callLLM(systemPrompt: string): Promise<string> {
     const { provider, apiKey, visionModel, baseUrl, visionApiKey, visionBaseUrl } = this.config.ai;
     const effectiveVisionKey = visionApiKey || apiKey || '';
     const effectiveVisionBaseUrl = visionBaseUrl || baseUrl;
 
-    // Determine vision provider: if visionApiKey looks like Anthropic key or visionModel contains
-    // 'claude', use Anthropic native API regardless of the main provider (which may be ollama for text)
-    const isAnthropicVision = (provider === 'anthropic' && !effectiveVisionBaseUrl) ||
+    // Determine if provider uses Anthropic-native API (non-OpenAI-compatible)
+    // Uses provider registry flags instead of hardcoded provider name checks
+    const providerProfile = PROVIDERS[provider];
+    const isAnthropicVision = (providerProfile?.openaiCompat === false && !effectiveVisionBaseUrl) ||
       (effectiveVisionKey?.startsWith('sk-ant-') && !effectiveVisionBaseUrl) ||
       (visionModel?.includes('claude') && effectiveVisionKey?.startsWith('sk-ant-'));
 
     const resolvedBaseUrl = isAnthropicVision
       ? 'https://api.anthropic.com/v1'
-      : effectiveVisionBaseUrl || AIBrain.BASE_URLS[provider] || AIBrain.BASE_URLS['openai'];
+      : effectiveVisionBaseUrl || providerProfile?.baseUrl || 'https://api.openai.com/v1';
 
     // Build messages from conversation history.
     // History stores images in Anthropic format — callVisionLLMDirect auto-normalizes.
@@ -351,11 +347,12 @@ export class AIBrain {
    */
   private async callLLMText(systemPrompt: string, userMessage: string): Promise<string> {
     const { provider, apiKey, model, baseUrl, textApiKey, textBaseUrl } = this.config.ai;
+    const textProvider = PROVIDERS[provider];
     return callTextLLMDirect({
-      baseUrl: textBaseUrl || baseUrl || AIBrain.BASE_URLS[provider] || AIBrain.BASE_URLS['openai'],
+      baseUrl: textBaseUrl || baseUrl || textProvider?.baseUrl || 'https://api.openai.com/v1',
       model,
       apiKey: textApiKey || apiKey || '',
-      isAnthropic: provider === 'anthropic' && !textBaseUrl && !baseUrl,
+      isAnthropic: (textProvider?.openaiCompat === false) && !textBaseUrl && !baseUrl,
       system: systemPrompt,
       user: userMessage,
       maxTokens: 512,

@@ -1106,7 +1106,7 @@ export class SmartInteractionLayer {
     const model = providerProfile.textModel || this.config.ai.model || 'gpt-4o-mini';
     const baseUrl = providerProfile.baseUrl || this.config.ai.baseUrl || 'https://api.openai.com/v1';
 
-    const isAnthropic = providerKey === 'anthropic';
+    const isAnthropic = !providerProfile.openaiCompat;
 
     return callTextLLMDirect({
       baseUrl,
