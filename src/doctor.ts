@@ -1384,7 +1384,8 @@ async function testTextModel(
         body: JSON.stringify({
           model,
           max_tokens: 10,
-          temperature: 0,
+          // Omit temperature for reasoning models (kimi-k2.5 etc.) that reject temperature=0
+          ...(provider.reasoningVisionModel && model === provider.visionModel ? {} : { temperature: 0 }),
           messages: [{ role: 'user', content: INSTRUCTION }],
         }),
         signal: AbortSignal.timeout(TIMEOUT),
@@ -1457,6 +1458,7 @@ async function testVisionModel(
       model,
       apiKey,
       isAnthropic: !provider.openaiCompat,
+      providerProfile: provider,  // passes reasoningVisionModel flag for temperature handling
       messages: [{
         role: 'user',
         content: [
