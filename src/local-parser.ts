@@ -26,11 +26,19 @@ export class LocalTaskParser {
     // First, try to split compound tasks on delimiters
     const parts = this.splitCompoundTask(trimmed);
 
-    // If we got multiple parts from splitting, return them as subtasks.
-    // Don't require each part to be individually parseable — the OCR Reasoner
-    // and Action Router can handle free-form subtasks like "type hello" or "save as test.txt".
+    // If we got multiple parts from splitting, validate each has a clear action.
+    // Vague subtasks like "scroll through" with no end condition create infinite loops.
+    // Keep the task as one unit if any part lacks an actionable verb.
     if (parts.length > 1) {
-      return parts.map(p => p.trim()).filter(p => p.length > 0);
+      const actionVerb = /^(open|close|click|type|press|save|go|navigate|search|find|create|delete|write|send|copy|paste|select|drag|scroll.*and|download|upload|install|run|set|change|turn|enable|disable|check|uncheck|fill|submit|compose|reply|forward)\b/i;
+      const filtered = parts.map(p => p.trim()).filter(p => p.length > 0);
+      // If every part starts with a clear verb, split. Otherwise keep as one task.
+      const allHaveVerbs = filtered.every(p => actionVerb.test(p));
+      if (allHaveVerbs) {
+        return filtered;
+      }
+      // Fallback: don't split — let the OCR Reasoner handle it as one task
+      return null;
     }
 
     // Single part — try to parse it
