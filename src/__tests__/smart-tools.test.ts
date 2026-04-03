@@ -343,5 +343,47 @@ describe('Smart Tools', () => {
         expect.objectContaining({ action: 'click' })
       );
     });
+
+    it('falls back to coordinate click when invokeElement throws (RPC/UWP error)', async () => {
+      mockInvokeElement.mockRejectedValue(new Error('RPC_E_SERVERFAULT'));
+      mockFindElement.mockResolvedValue([{
+        name: 'Calculate',
+        controlType: 'ControlType.Button',
+        automationId: '',
+        bounds: { x: 200, y: 400, width: 60, height: 60 },
+      }]);
+      const ctx = createCtx();
+      const result = await invokeEl.handler({ name: 'Calculate', action: 'click' }, ctx);
+      expect(result.text).toContain('coordinate fallback');
+      expect(mockMouseClick).toHaveBeenCalledWith(230, 430);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('returns error when invokeElement throws and no element bounds found', async () => {
+      mockInvokeElement.mockRejectedValue(new Error('AXError: element not available'));
+      mockFindElement.mockResolvedValue([]);
+      const ctx = createCtx();
+      const result = await invokeEl.handler({ name: 'Ghost', action: 'click' }, ctx);
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('invoke_element error');
+    });
+  });
+
+  // ── smart_click RPC fallback ──
+
+  describe('smart_click RPC fallback', () => {
+    it('falls back to element bounds when invokeElement throws', async () => {
+      mockInvokeElement.mockRejectedValue(new Error('RPC_E_SERVERFAULT'));
+      mockFindElement.mockResolvedValue([{
+        name: '7',
+        controlType: 'ControlType.Button',
+        automationId: 'num7Button',
+        bounds: { x: 100, y: 300, width: 50, height: 50 },
+      }]);
+      const ctx = createCtx();
+      const result = await smartClick.handler({ target: '7' }, ctx);
+      expect(result.text).toContain('a11y bounds');
+      expect(mockMouseClick).toHaveBeenCalledWith(125, 325);
+    });
   });
 });

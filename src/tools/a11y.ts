@@ -87,8 +87,24 @@ export function getA11yTools(): ToolDefinition[] {
         let targetBounds: any = null;
         let targetPid = processId;
 
+        // Bug 3 fix: use getWindows(true) for visible-only, filter properly, prefer on-screen windows
         if (processName && !targetPid) {
-          const win = await ctx.a11y.findWindow(processName);
+          const windows = await ctx.a11y.getWindows(true);
+          let matches = (windows ?? []).filter((w: any) =>
+            w.processName.toLowerCase() === processName.toLowerCase() ||
+            w.processName.toLowerCase().includes(processName.toLowerCase())
+          );
+          // AND-match with title if provided
+          if (title) {
+            matches = matches.filter((w: any) => w.title.toLowerCase().includes((title as string).toLowerCase()));
+          }
+          // Sort: prefer on-screen windows (x >= 0, y >= 0), then non-minimized
+          matches.sort((a: any, b: any) => {
+            const aOnScreen = (a.bounds.x >= 0 && a.bounds.y >= 0 && !a.isMinimized) ? 1 : 0;
+            const bOnScreen = (b.bounds.x >= 0 && b.bounds.y >= 0 && !b.isMinimized) ? 1 : 0;
+            return bOnScreen - aOnScreen;
+          });
+          const win = matches[0];
           if (win) { targetPid = win.processId; targetBounds = win.bounds; }
           else return { text: `No window found for process "${processName}"`, isError: true };
         }
@@ -102,8 +118,28 @@ export function getA11yTools(): ToolDefinition[] {
         ctx.a11y.invalidateCache();
         if (!result.success) return { text: `Failed to focus: ${result.error}`, isError: true };
 
-        // Click window center to physically assert focus
-        if (targetBounds && targetBounds.x > -100 && targetBounds.width > 0) {
+        // Bug 4 fix: re-read bounds after focus (restore may have updated them)
+        if (targetPid) {
+          const freshWindows = await ctx.a11y.getWindows(true);
+          const freshWin = freshWindows?.find((w: any) => w.processId === targetPid);
+          if (freshWin?.bounds) targetBounds = freshWin.bounds;
+        }
+
+        // If window is still off-screen, snap-maximize (cross-platform: Win+Up / most Linux WMs)
+        if (targetBounds && (targetBounds.x < 0 || targetBounds.y < 0)) {
+          await ctx.desktop.keyPress('super+up');
+          await new Promise(r => setTimeout(r, 300));
+          ctx.a11y.invalidateCache();
+          // Re-read bounds after snap
+          if (targetPid) {
+            const snapWindows = await ctx.a11y.getWindows(true);
+            const snapWin = snapWindows?.find((w: any) => w.processId === targetPid);
+            if (snapWin?.bounds) targetBounds = snapWin.bounds;
+          }
+        }
+
+        // Click window center to physically assert focus (only when window is on-screen)
+        if (targetBounds && targetBounds.x >= 0 && targetBounds.y >= 0 && targetBounds.width > 0) {
           const centerX = a11yToMouse(targetBounds.x + Math.round(targetBounds.width / 2), ctx);
           const centerY = a11yToMouse(targetBounds.y + Math.round(targetBounds.height / 4), ctx);
           await ctx.desktop.mouseClick(centerX, centerY);
@@ -117,7 +153,7 @@ export function getA11yTools(): ToolDefinition[] {
           (processName && active?.processName.toLowerCase().includes(processName.toLowerCase())) ||
           (title && active?.title.toLowerCase().includes(title.toLowerCase()));
 
-        if (!verified && targetBounds && targetBounds.x > -100 && targetBounds.width > 0) {
+        if (!verified && targetBounds && targetBounds.x >= 0 && targetBounds.y >= 0 && targetBounds.width > 0) {
           const centerX = a11yToMouse(targetBounds.x + Math.round(targetBounds.width / 2), ctx);
           const centerY = a11yToMouse(targetBounds.y + Math.round(targetBounds.height / 2), ctx);
           await ctx.desktop.mouseClick(centerX, centerY);

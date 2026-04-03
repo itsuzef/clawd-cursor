@@ -401,6 +401,15 @@ export class AccessibilityBridge {
     );
   }
 
+  /**
+   * Restore an off-screen window to a visible state.
+   * Uses focusWindow with restore:true — already cross-platform via winCmd/runMacScript.
+   * Caller should additionally press 'super+up' if bounds are still negative after this call.
+   */
+  async restoreWindow(processId?: number, title?: string): Promise<{ success: boolean; error?: string }> {
+    return this.focusWindow(title, processId);
+  }
+
   async getFocusedElement(): Promise<FocusedElementInfo | null> {
     if (IS_WIN) {
       try {

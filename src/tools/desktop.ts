@@ -177,17 +177,25 @@ export function getDesktopTools(): ToolDefinition[] {
         startY: { type: 'number', description: 'Start Y in image-space', required: true },
         endX: { type: 'number', description: 'End X in image-space', required: true },
         endY: { type: 'number', description: 'End Y in image-space', required: true },
+        x1: { type: 'number', description: 'Alias for startX', required: false },
+        y1: { type: 'number', description: 'Alias for startY', required: false },
+        x2: { type: 'number', description: 'Alias for endX', required: false },
+        y2: { type: 'number', description: 'Alias for endY', required: false },
       },
       category: 'mouse',
-      handler: async ({ startX, startY, endX, endY }, ctx) => {
+      handler: async ({ startX, startY, endX, endY, x1, y1, x2, y2 }, ctx) => {
         await ctx.ensureInitialized();
+        const sx = startX ?? x1;
+        const sy = startY ?? y1;
+        const ex = endX ?? x2;
+        const ey = endY ?? y2;
         const sf = ctx.getMouseScaleFactor();
         await ctx.desktop.mouseDrag(
-          Math.round(startX * sf), Math.round(startY * sf),
-          Math.round(endX * sf), Math.round(endY * sf),
+          Math.round(sx * sf), Math.round(sy * sf),
+          Math.round(ex * sf), Math.round(ey * sf),
         );
         ctx.a11y.invalidateCache();
-        return { text: `Dragged (${startX},${startY}) → (${endX},${endY})` };
+        return { text: `Dragged (${sx},${sy}) → (${ex},${ey})` };
       },
     },
 

@@ -251,7 +251,24 @@ export function getSmartTools(): ToolDefinition[] {
             if (result.success) return { method: 'invoke' };
             if (result.clickPoint) return { method: 'bounds', clickPoint: result.clickPoint };
             return null;
-          } catch { return null; }
+          } catch {
+            // Invocation threw (e.g. RPC error on UWP apps) — try to get bounds for coordinate fallback
+            try {
+              const elements = await ctx.a11y.findElement({
+                name: target,
+                processId: processId || activeWin?.processId,
+              });
+              if (elements?.length) {
+                const el = elements[0];
+                if (el.bounds?.width > 0) {
+                  const cx = el.bounds.x + Math.floor(el.bounds.width / 2);
+                  const cy = el.bounds.y + Math.floor(el.bounds.height / 2);
+                  return { method: 'bounds', clickPoint: { x: cx, y: cy } };
+                }
+              }
+            } catch { /* fall through */ }
+            return null;
+          }
         })();
 
         const [ocrMatch, a11yResult] = await Promise.all([ocrPromise, a11yPromise]);
@@ -504,6 +521,27 @@ export function getSmartTools(): ToolDefinition[] {
             isError: true,
           };
         } catch (err: any) {
+          // On any invocation error (e.g. RPC_E_SERVERFAULT on UWP apps, AXError on macOS),
+          // try a coordinate fallback for click actions by finding the element's bounds.
+          if (params.action === 'click' || !params.action) {
+            try {
+              const elements = await ctx.a11y.findElement({
+                name: params.name,
+                automationId: params.automationId,
+                processId: params.processId,
+              });
+              if (elements?.length) {
+                const el = elements[0];
+                if (el.bounds?.width > 0) {
+                  const cx = el.bounds.x + Math.floor(el.bounds.width / 2);
+                  const cy = el.bounds.y + Math.floor(el.bounds.height / 2);
+                  await ctx.desktop.mouseClick(cx, cy);
+                  ctx.a11y.invalidateCache();
+                  return { text: `Invoked "${params.name || params.automationId}" via coordinate fallback after error (${cx},${cy})` };
+                }
+              }
+            } catch { /* give up */ }
+          }
           return { text: `invoke_element error: ${err.message}`, isError: true };
         }
       },

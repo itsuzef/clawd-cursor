@@ -179,5 +179,21 @@ export function getCdpTools(): ToolDefinition[] {
         return { text: `No tab matching "${target}" found.`, isError: true };
       },
     },
+
+    {
+      name: 'cdp_scroll',
+      description: 'Scroll the browser page via DOM (window.scrollBy). Works regardless of mouse position — use for reliable page scrolling.',
+      parameters: {
+        direction: { type: 'string', description: 'Scroll direction', required: true, enum: ['up', 'down'] },
+        amount: { type: 'number', description: 'Pixels to scroll (default: 500)', required: false },
+      },
+      category: 'browser',
+      handler: async ({ direction, amount }, ctx) => {
+        if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
+        const pixels = (amount ?? 500) * (direction === 'down' ? 1 : -1);
+        await ctx.cdp.evaluate(`window.scrollBy(0, ${pixels})`);
+        return { text: `Scrolled ${direction} by ${Math.abs(pixels)} pixels` };
+      },
+    },
   ];
 }
