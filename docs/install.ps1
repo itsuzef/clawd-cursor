@@ -2,7 +2,7 @@
 # Usage: powershell -c "irm https://clawdcursor.com/install.ps1 | iex"
 
 $ErrorActionPreference = "Continue"
-$VERSION = "v0.7.2"
+$VERSION = "v0.7.5"
 $INSTALL_DIR = "$HOME\clawdcursor"
 
 Write-Host ""
