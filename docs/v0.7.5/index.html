@@ -379,88 +379,80 @@
 
   <!-- Pipeline -->
   <section class="sect" id="pipeline">
-    <div class="sect-label">Eight Layers</div>
-    <h2>OCR first, vision last</h2>
-    <p class="sub">Each task falls to the cheapest layer that can handle it. OCR reads the screen as text. Vision is the absolute last resort. Only active in CLI agent mode.</p>
-    <div class="feat-grid" style="grid-template-columns: repeat(4, 1fr);">
-      <div class="feat-card">
-        <div class="feat-icon">🌐</div>
-        <h4>L0 · Browser / CDP — $0</h4>
-        <p>Direct DOM interaction via Chrome DevTools Protocol. Click by selector, read text, navigate. No screenshots.</p>
-      </div>
-      <div class="feat-card">
+    <div class="sect-label">3-Stage Pipeline</div>
+    <h2>Text first. Vision last. Any model.</h2>
+    <p class="sub">Every task flows through the cheapest path that can handle it. The pre-processor classifies intent, the router handles mechanical actions for free, and the AI stages only fire when reasoning is needed. Provider-agnostic — works with Claude, GPT, Gemini, Kimi, Llama, or any OpenAI-compatible model.</p>
+
+    <div class="feat-grid" style="grid-template-columns: repeat(3, 1fr);">
+      <div class="feat-card" style="border-left: 3px solid #22c55e;">
         <div class="feat-icon">⚡</div>
-        <h4>Stage 1 · SnapshotBuilder — free</h4>
-        <p>Parallel OCR + accessibility tree capture. Spatial layout analysis detects toolbar, content area, sidebars. Zero LLM cost.</p>
+        <h4>Stage 1 · SnapshotBuilder</h4>
+        <p style="color: #22c55e; font-size: 0.75rem; margin-bottom: 6px;">FREE — no LLM cost</p>
+        <p>Parallel OCR + accessibility tree capture in one pass. Produces a unified perception object with every text element, button, input field, and their exact screen coordinates. Also runs <strong>spatial layout analysis</strong> — detecting toolbar zones, content area center, sidebars, and status bar from element clustering. The LLM gets a text-based map of the screen without needing vision.</p>
       </div>
-      <div class="feat-card">
+      <div class="feat-card" style="border-left: 3px solid #3b82f6;">
         <div class="feat-icon">🧠</div>
-        <h4>Stage 2 · TextNavigator ★ — cheap</h4>
-        <p>PRIMARY stage. Text LLM reads OCR snapshot + app guide + spatial layout. Plans and executes actions. Works with any text model.</p>
+        <h4>Stage 2 · TextNavigator ★</h4>
+        <p style="color: #3b82f6; font-size: 0.75rem; margin-bottom: 6px;">CHEAP — any text model ($0.25/1M tokens with Haiku)</p>
+        <p>Primary reasoning stage. A cheap text LLM reads the OCR snapshot, spatial layout, and app-specific guide, then decides the next action: click, type, drag, key press, scroll, or done. One action per LLM call, verified by re-scanning. Handles 90% of tasks without ever taking a screenshot.</p>
       </div>
-      <div class="feat-card">
+      <div class="feat-card" style="border-left: 3px solid #ef4444;">
         <div class="feat-icon">🎯</div>
-        <h4>Stage 3 · VisionFiller — expensive</h4>
-        <p>Last resort. Vision LLM sees screenshots, handles complex spatial tasks. Anthropic native CU or any OpenAI-compatible vision model.</p>
+        <h4>Stage 3 · VisionFiller</h4>
+        <p style="color: #ef4444; font-size: 0.75rem; margin-bottom: 6px;">EXPENSIVE — vision model, last resort only</p>
+        <p>Fires only when Stage 2 can't handle it (CAPTCHAs, complex spatial tasks, visual content). Takes screenshots, sends to a vision LLM, executes tool calls. Supports Anthropic native Computer Use and any OpenAI-compatible vision model (GPT-4o, Gemini, Kimi k2.5).</p>
       </div>
+    </div>
+
+    <div class="feat-grid" style="grid-template-columns: repeat(2, 1fr); margin-top: 16px;">
       <div class="feat-card">
-        <div class="feat-icon">📖</div>
-        <h4>App Guides — 86+ apps</h4>
-        <p>Community-contributed JSON instruction manuals. Keyboard shortcuts, workflows, UI layout for Excel, Paint, Outlook, Spotify, and more. <code>clawdcursor guides install excel</code></p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">📊</div>
-        <h4>Task Classifier — free</h4>
-        <p>Zero-cost regex classifier routes tasks to optimal stage. Mechanical → router. Spatial → vision. Reasoning → text LLM. No wasted LLM calls.</p>
+        <div class="feat-icon">🔍</div>
+        <h4>Pre-processor + Task Classifier</h4>
+        <p>Before the pipeline runs: a regex parser decomposes compound tasks ("type X, then save as Y" → 2 subtasks). A zero-cost classifier categorizes each subtask — <strong>mechanical</strong> (router handles it for free), <strong>navigation</strong> (Ctrl+L + URL), <strong>reasoning</strong> (Stage 2), or <strong>spatial</strong> (needs vision). No LLM wasted on tasks a regex can route.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">🗺️</div>
-        <h4>Spatial Layout Analysis</h4>
-        <p>Textual scaffolding: detects toolbar zones, content center, sidebars from OCR element positions. Any LLM knows WHERE to click without vision.</p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">🔍</div>
-        <h4>Pre-processor</h4>
-        <p>Regex parser runs first (zero cost), then 1 cheap LLM call decomposes compound tasks into structured intent.</p>
+        <h4>Textual Scaffolding (Spatial Layout Analysis)</h4>
+        <p>ClawdCursor's breakthrough: instead of sending screenshots, it analyzes WHERE elements are clustered on screen and builds a text-based spatial map. The LLM reads: <code style="font-size:0.8em">Content area: center = (1920, 1200) — CLICK HERE</code>. This lets any text model — even a 7B parameter local model — know exactly where to click in Google Docs, Excel, Paint, or any app. No vision required.</p>
       </div>
     </div>
   </section>
 
-  <!-- What's new -->
+  <!-- Features -->
   <section class="sect">
-    <div class="sect-label">What's New</div>
-    <h2>Universal. Hardened. 13 providers.</h2>
-    <p class="sub">v0.7.5 adds security hardening, 13 auto-detected providers, DPI-safe coordinates, and install verification. OCR reads the screen as text — vision is the last resort.</p>
+    <div class="sect-label">What Makes It Different</div>
+    <h2>Provider-agnostic. Community-driven. Universal.</h2>
+    <p class="sub">v0.7.5 is fully provider-agnostic — no hardcoded model names, no provider-specific hacks. 13 providers auto-detected. App knowledge crowdsourced. Display-agnostic across any resolution and DPI.</p>
     <div class="feat-grid">
       <div class="feat-card">
-        <div class="feat-icon">👁️</div>
-        <h4>OCR-First Pipeline</h4>
-        <p>Windows.Media.Ocr reads every pixel on screen as text with bounding boxes. A11y tree runs in parallel as a supplement. Zero screenshots for most tasks.</p>
+        <div class="feat-icon">📖</div>
+        <h4>App Guides — 86+ apps</h4>
+        <p>Community-contributed JSON instruction manuals. Keyboard shortcuts, workflows, UI layout hints, and tips. Excel (116 shortcuts), Paint, Notepad, Outlook, Spotify, Discord, Figma, and more. Install with <code style="font-size:0.82em">clawdcursor guides install excel</code>. Loaded automatically when the app is detected.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">🖱️</div>
         <h4>Smart Tools (Blind Agent)</h4>
-        <p>4 new MCP tools: <code style="font-size:0.82em">smart_read</code>, <code style="font-size:0.82em">smart_click</code>, <code style="font-size:0.82em">smart_type</code>, <code style="font-size:0.82em">invoke_element</code>. Click buttons by name, not coordinates. No vision needed.</p>
+        <p>Click buttons by name, type into fields by label, read screen text — all without screenshots. <code style="font-size:0.82em">smart_click</code>, <code style="font-size:0.82em">smart_type</code>, <code style="font-size:0.82em">smart_read</code> use accessibility + OCR fallback automatically.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">⌨️</div>
         <h4>Shortcuts Engine</h4>
-        <p>Built-in keyboard shortcut database. <code style="font-size:0.82em">shortcuts_list</code> discovers available shortcuts. <code style="font-size:0.82em">shortcuts_execute</code> fires them instantly.</p>
+        <p>Built-in keyboard shortcut database. <code style="font-size:0.82em">shortcuts_list</code> discovers available shortcuts for any app. <code style="font-size:0.82em">shortcuts_execute</code> fires them instantly. Zero LLM cost.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">✅</div>
         <h4>Ground-Truth Verifier</h4>
-        <p>Reads actual screen state after every action. Blocks false "done" reports — the agent can't lie about success anymore.</p>
+        <p>Re-scans the screen after every action. Done verification checks if task keywords appear. Drawing tasks get lenient verification. The agent can't hallucinate success.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">🔌</div>
-        <h4>Native MCP Support</h4>
-        <p>Plug directly into Claude Code, Cursor, Windsurf, or Zed as an MCP server. No REST plumbing — tools show up natively in your AI's registry.</p>
+        <h4>Three Transport Modes</h4>
+        <p><code style="font-size:0.82em">clawdcursor start</code> (full agent + REST), <code style="font-size:0.82em">clawdcursor serve</code> (tools only, bring your own brain), <code style="font-size:0.82em">clawdcursor mcp</code> (MCP stdio for Claude Code, Cursor, Windsurf, Zed).</p>
       </div>
       <div class="feat-card">
-        <div class="feat-icon">🗂️</div>
-        <h4>Skill Cache</h4>
-        <p>Learns action patterns over time. Once it knows "new tab = ctrl+t", it skips all perception layers and executes instantly. Zero cost.</p>
+        <div class="feat-icon">🌍</div>
+        <h4>Truly Universal</h4>
+        <p>13 providers auto-detected. Display-agnostic (720p to 5K, any DPI). Cross-platform (Windows, macOS, Linux). Provider-agnostic — zero hardcoded model names. Community-driven app knowledge. If a human can do it on screen, clawdcursor can too.</p>
       </div>
     </div>
   </section>
