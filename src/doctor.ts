@@ -1565,6 +1565,7 @@ export function loadPipelineConfig(): PipelineConfig | null {
         enabled: layer2Data?.enabled ?? false,
         model: layer2Data?.model ?? provider.textModel,
         baseUrl: layer2BaseUrl,
+        apiKey: layer2ApiKey, // per-layer key for mixed-provider pipelines
       },
       layer3: {
         enabled: layer3Data?.enabled ?? false,

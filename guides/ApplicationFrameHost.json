@@ -1,0 +1,13 @@
+{
+  "app": "ApplicationFrameHost",
+  "processNames": [
+    "ApplicationFrameHost"
+  ],
+  "shortcuts": {},
+  "learnedWorkflows": {
+    "compute_25_times_4": "Press 1. Press 5. Press 4. Press x. Press ="
+  },
+  "tips": [
+    "Auto-learned from successful task: compute 25 times 4"
+  ]
+}

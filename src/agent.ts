@@ -1126,6 +1126,11 @@ Examples:
             .filter(a => a.action !== 'done' && a.action !== 'parse_error' && a.action !== 'error')
             .map(a => ({ type: a.action as any, description: a.description }));
           this.skillCache.recordSuccess(subtask, activeProcessForSkill, uSteps);
+          // Adaptive learning: save successful action pattern to app guide
+          try {
+            const { saveLesson } = require('./guide-loader');
+            saveLesson(activeProcessForSkill, subtask, unifiedResult.actionLog);
+          } catch { /* non-fatal */ }
           console.log(`   ✅ Unified Reasoner done (${unifiedResult.steps} steps, ${(unifiedDuration / 1000).toFixed(1)}s)`);
           continue;
         }

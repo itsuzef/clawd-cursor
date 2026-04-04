@@ -264,6 +264,8 @@ export interface PipelineConfig {
     enabled: boolean;
     model: string;
     baseUrl: string;
+    /** Per-layer API key (for mixed-provider pipelines where text and vision use different providers) */
+    apiKey?: string;
   };
   /** Layer 3: Screenshot + vision model */
   layer3: {

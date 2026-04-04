@@ -169,14 +169,26 @@ export class OcrReasoner {
     // Track the initial target window so we can re-focus if clicks steal focus
     let targetWindow: { processName: string; title: string; processId: number } | null = null;
 
-    // Pre-focus: if priorContext says a browser/app was opened, find and focus it BEFORE
+    // Pre-focus: if priorContext says ANY app was opened, find and focus it BEFORE
     // we start the OCR loop. Set targetWindow directly to avoid getActiveWindow() latching
-    // onto whatever random window has focus (File Explorer, Settings, etc.).
+    // onto whatever random window has focus (Task Console, File Explorer, etc.).
     const browserRe = getBrowserProcessRegex();
-    if (priorContext?.some(c => /navigated to|opened.*(?:edge|chrome|browser)|browser.*focused/i.test(c))) {
+    // Match any "Opened X" or "navigated to" in priorContext — not just browsers
+    const appOpenedMatch = priorContext?.find(c => /opened|navigated to|launched|focused.*maximized/i.test(c));
+    if (appOpenedMatch) {
       try {
         const wins = await this.a11y.getWindows().catch(() => []);
-        const browserWin = wins.find(w => browserRe.test(w.processName) && !w.isMinimized);
+        // Extract app name from context like 'Opened "Discord" — it is ALREADY...'
+        const appNameMatch = appOpenedMatch.match(/opened\s+"([^"]+)"/i);
+        const appName = appNameMatch?.[1]?.toLowerCase();
+        // Find the matching window: try app name first, then browser regex
+        const targetWin = appName
+          ? wins.find(w => !w.isMinimized && (
+              w.processName.toLowerCase().includes(appName) ||
+              w.title.toLowerCase().includes(appName)
+            ))
+          : null;
+        const browserWin = targetWin || wins.find(w => browserRe.test(w.processName) && !w.isMinimized);
         if (browserWin) {
           // Try focus multiple times — Windows focus-stealing prevention can block single attempts
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -854,8 +866,10 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
     // Using the vision model here fails for reasoning models (kimi-k2.5) that reject temperature=0.
     const model = layer2.model;
     const baseUrl = layer2.baseUrl;
-    const apiKey = this.pipelineConfig.apiKey || '';
-    const isAnthropic = !this.pipelineConfig.provider.openaiCompat
+    // Use per-layer API key for mixed-provider pipelines (Kimi text + Anthropic vision)
+    const apiKey = layer2.apiKey || this.pipelineConfig.apiKey || '';
+    // Determine API format from the layer's base URL, not the main provider
+    const isAnthropic = baseUrl.includes('anthropic.com')
       && !baseUrl.includes('localhost')
       && !baseUrl.includes('11434');
 

@@ -13,7 +13,8 @@
  * and the client auto-converts to the correct format for the target provider.
  */
 
-import { supportsOpenAiJsonMode, type PipelineConfig } from './providers';
+import { supportsOpenAiJsonMode, PROVIDERS, type PipelineConfig } from './providers';
+import { inferProviderFromBaseUrl } from './credentials';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LLM Error Classes
@@ -72,11 +73,17 @@ export async function callTextLLM(
   options: TextLLMOptions,
 ): Promise<string> {
   const { model, baseUrl } = config.layer2;
-  const apiKey = config.apiKey || '';
-  const isAnthropic = !config.provider.openaiCompat
+  // Use per-layer API key if available (mixed pipelines use different keys per layer)
+  const apiKey = config.layer2.apiKey || config.apiKey || '';
+  // Determine API format from the layer's base URL, not the main provider.
+  // Mixed pipelines (Kimi text + Anthropic vision) need different formats per layer.
+  const isAnthropic = baseUrl.includes('anthropic.com')
     && !baseUrl.includes('localhost')
     && !baseUrl.includes('11434');
-  const authHeaders = { ...config.provider.authHeader(apiKey), ...(config.provider.extraHeaders || {}) };
+  // Build auth headers for the layer's provider (may differ from main provider)
+  const layerProviderKey = inferProviderFromBaseUrl(baseUrl) || config.providerKey;
+  const layerProvider = PROVIDERS[layerProviderKey] || config.provider;
+  const authHeaders = { ...layerProvider.authHeader(apiKey), ...(layerProvider.extraHeaders || {}) };
 
   return _callText({
     baseUrl,

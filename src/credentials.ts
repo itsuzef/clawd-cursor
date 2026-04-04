@@ -361,8 +361,9 @@ function resolveFromOpenClawFiles(): ResolvedApiConfig | null {
 
   const rawVisionModel = visionProvider?.models.find(m => m.input.includes('image') || m.input.includes('vision'))?.id
     || textProvider?.models[0]?.id;
-  const rawTextModel = textProvider?.models.find(m => !m.input.includes('image') && !m.input.includes('vision'))?.id
-    || textProvider?.models[0]?.id;
+  // Find a text-only model. Do NOT fall back to vision models — they may be
+  // reasoning models (kimi-k2.5) that reject temperature=0 and cost more.
+  const rawTextModel = textProvider?.models.find(m => !m.input.includes('image') && !m.input.includes('vision'))?.id;
 
   const textModel = rawTextModel;
   const visionModel = rawVisionModel;
