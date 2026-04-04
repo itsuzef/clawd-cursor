@@ -417,17 +417,26 @@ program
       if (pipelineConfig && pipelineConfig.layer2.enabled) {
         try {
           const { callTextLLMDirect } = await import('./llm-client');
+          // Resolve the correct API key and format for the TEXT model's provider
+          // (may differ from the main provider in mixed pipelines)
+          const { PROVIDERS, PROVIDER_ENV_VARS } = await import('./providers');
+          const { inferProviderFromBaseUrl } = await import('./credentials');
+          const layer2ProviderKey = inferProviderFromBaseUrl(pipelineConfig.layer2.baseUrl) || pipelineConfig.providerKey;
+          const layer2Provider = PROVIDERS[layer2ProviderKey] || pipelineConfig.provider;
+          const layer2ApiKey = (PROVIDER_ENV_VARS[layer2ProviderKey] || [])
+            .map((k: string) => process.env[k]).find((v: string | undefined) => v && v.length > 0)
+            || pipelineConfig.apiKey;
           await callTextLLMDirect({
             baseUrl: pipelineConfig.layer2.baseUrl,
             model: pipelineConfig.layer2.model,
-            apiKey: pipelineConfig.apiKey,
-            isAnthropic: !pipelineConfig.provider.openaiCompat,
+            apiKey: layer2ApiKey,
+            isAnthropic: !layer2Provider.openaiCompat,
             messages: [{ role: 'user', content: 'Reply with just the word "ok"' }],
             maxTokens: 5,
             timeoutMs: 10000,
             retries: 0,
           });
-          console.log(`${e('✅', '[OK]')} API key validated for ${pipelineConfig.provider.name}`);
+          console.log(`${e('✅', '[OK]')} API key validated for ${layer2Provider.name}`);
         } catch (err: any) {
           if (err.name === 'LLMAuthError') {
             console.error(`\n${e('❌', '[ERR]')} API key INVALID for ${pipelineConfig.provider.name} (${pipelineConfig.layer2.model})`);
