@@ -326,6 +326,84 @@ If Chrome CDP is not available on port 9222, launch Chrome yourself:
 Start-Process chrome -ArgumentList "--remote-debugging-port=9222"
 ```
 
+### REST API Polling Pattern (for agents calling POST /task)
+
+When you submit a task via REST, poll for completion:
+
+```
+1. POST /task {"task": "..."} → {"accepted": true, "task": "..."}
+2. Wait 2 seconds
+3. GET /status → check response:
+   {"status": "idle"}                     → task done, check /task-logs for result
+   {"status": "acting", "currentTask": "...", "stepsCompleted": 2}  → still running, wait
+   {"status": "waiting_confirm", "currentStep": "..."}  → SAFETY PAUSE — ask user, then POST /confirm {"approved": true}
+4. If still running → wait 2 more seconds, go to step 3
+5. If 60+ seconds → POST /abort, retry with clearer instructions
+```
+
+**Critical endpoints:**
+```
+POST /task           {"task": "..."}           → submit task
+GET  /status                                   → poll state
+POST /confirm        {"approved": true/false}  → approve/reject safety pause
+POST /abort                                    → stop current task
+GET  /task-logs                                → recent task results (JSONL)
+GET  /screenshot                               → current screen as PNG
+GET  /logs                                     → last 200 console entries (debug)
+```
+
+All mutating endpoints require `Authorization: Bearer <token>` header. Token is saved to `~/.clawdcursor/token` on startup.
+
+> **Windows PowerShell note:** Use `curl.exe` (with .exe) or `Invoke-RestMethod`, NOT bare `curl`. PowerShell aliases `curl` to `Invoke-WebRequest` which behaves differently.
+
+### Routing Priority (when to use clawdcursor)
+
+Before calling any clawdcursor tool, check this priority:
+
+1. **Native API available?** (Gmail API, GitHub API, Slack API) → use the API. Faster, more reliable.
+2. **CLI tool available?** (`git`, `npm`, `curl`, `gh`) → use the CLI. Same result, no GUI.
+3. **Browser automation available?** (Playwright, Puppeteer, dedicated MCP) → use that. Direct DOM > screen reading.
+4. **Can edit the file directly?** → do that. Don't open an app to edit a file you can edit programmatically.
+5. **None of the above?** → NOW use clawdcursor. This is the last mile.
+
+**Universal task pattern:**
+```
+Phase 1: PLAN     — decompose task, identify which steps need GUI
+Phase 2: EXECUTE  — do cheap steps first (CLI, API, file edits)
+Phase 3: ESCALATE — only the remaining GUI-only steps go to clawdcursor
+```
+
+### 3-Stage Pipeline (cost model)
+
+The autonomous agent (`clawdcursor start`) routes tasks through 3 stages, cheapest first:
+
+| Stage | What | Latency | Cost | Handles |
+|-------|------|---------|------|---------|
+| **Stage 1** | Router + Shortcuts + OCR/A11y capture | Instant | Free | open app, type text, press keys, navigate URL — **80%+ of tasks** |
+| **Stage 2** | Text LLM + spatial layout + app guides | 2-5s/step | Cheap ($0.25/1M) | click buttons, fill forms, navigate menus, read screen |
+| **Stage 3** | Vision LLM + screenshots | 5-15s/step | Expensive | CAPTCHAs, spatial tasks, visual content, complex layouts |
+
+Most tasks never reach Stage 3. Prefer approaches that stay in Stage 1-2.
+
+### Provider Setup
+
+| Provider | Setup | Cost |
+|----------|-------|------|
+| **Ollama** (local) | `ollama pull qwen2.5:7b && ollama serve` | $0, fully offline |
+| **Any cloud** | Set env var: `ANTHROPIC_API_KEY`, `MOONSHOT_API_KEY`, `GEMINI_API_KEY`, etc. | Varies |
+| **OpenClaw users** | Automatic — reads from `~/.openclaw/agents/main/auth-profiles.json` | No extra setup |
+
+Run `clawdcursor doctor` to auto-detect and configure providers.
+
+### Security & Privacy
+
+- **Network isolation:** Server binds to `127.0.0.1` only. Verify: `netstat -an | findstr 3847`
+- **Data flow (Ollama):** 100% offline. Screenshots stay in memory, never leave the machine.
+- **Data flow (cloud):** Screenshots/text sent to YOUR configured provider only. No telemetry, no analytics.
+- **Screenshots:** Stay in memory, never saved to disk (unless `--debug` flag is set).
+- **Credentials:** OpenClaw auth-profiles auto-discovered from local config. API keys from env vars.
+- **Safety tiers:** Auto (instant) / Preview (shows plan) / Confirm (requires user approval). Agents must NEVER self-approve Confirm actions.
+
 ---
 
 ## Section 3: Tool Decision Guide
