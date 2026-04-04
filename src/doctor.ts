@@ -1547,14 +1547,19 @@ export function loadPipelineConfig(): PipelineConfig | null {
 
     const layer2BaseUrl = layer2Data?.baseUrl ?? provider.baseUrl;
     const layer3BaseUrl = layer3Data?.baseUrl ?? provider.baseUrl;
+    const layer2ProviderKey = layer2Data?.provider || providerKey;
     const layer3ProviderKey = layer3Data?.provider || providerKey;
     const layer3ComputerUse = layer3Data?.computerUse ?? false;
-    const explicitLayer3ApiKey = layer3Data?.apiKey;
+
+    // Resolve API keys PER LAYER based on each layer's provider.
+    // Mixed pipelines (e.g., Kimi text + Anthropic vision) need different keys.
+    const layer2ApiKey = resolveProviderApiKey(layer2ProviderKey, defaultApiKey);
+    const layer3ApiKey = resolveProviderApiKey(layer3ProviderKey, defaultApiKey);
 
     return {
       provider,
       providerKey,
-      apiKey: defaultApiKey,
+      apiKey: layer2ApiKey, // primary key = text layer key (most LLM calls use text)
       layer1: true,
       layer2: {
         enabled: layer2Data?.enabled ?? false,
@@ -1566,9 +1571,7 @@ export function loadPipelineConfig(): PipelineConfig | null {
         model: layer3Data?.model ?? provider.visionModel,
         baseUrl: layer3BaseUrl,
         computerUse: layer3ComputerUse,
-        apiKey: layer3ComputerUse
-          ? (explicitLayer3ApiKey || resolveProviderApiKey(layer3ProviderKey, defaultApiKey))
-          : undefined,
+        apiKey: layer3ApiKey, // always resolve per-layer, not just for CU
       },
     };
   } catch {

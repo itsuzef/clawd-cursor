@@ -383,7 +383,8 @@ export async function callVisionLLM(
   const layer = config.layer3.enabled ? config.layer3 : config.layer2;
   const baseUrl = layer.baseUrl;
   const model = layer.model;
-  const apiKey = config.apiKey || '';
+  // Use layer-specific API key if available (mixed pipelines use different keys per layer)
+  const apiKey = (config.layer3.enabled ? config.layer3.apiKey : undefined) || config.apiKey || '';
   const isAnthropic = !config.provider.openaiCompat
     && !baseUrl.includes('localhost')
     && !baseUrl.includes('11434');
