@@ -1135,10 +1135,19 @@ program
       console.log(`\n   Ready. Connect your AI model.\n`);
     });
 
-    // Background init
+    // Background init — includes desktop + CDP warmup
     ctx.ensureInitialized().catch((err: any) => {
       console.error('Subsystem init failed:', err?.message);
     });
+    // CDP warmup: try connecting to running browser (best-effort, non-fatal)
+    // Without this, all web tasks fall back to pure vision — no DOM access
+    if (ctx.cdp) {
+      ctx.cdp.connect().then(() => {
+        console.log(`   🌐 CDP connected to browser`);
+      }).catch(() => {
+        console.log(`   ℹ️  CDP: no browser detected (will retry when web tools are called)`);
+      });
+    }
 
     process.on('SIGINT', () => {
       console.log('\n   Shutting down...');

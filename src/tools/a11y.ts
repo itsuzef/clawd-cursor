@@ -84,6 +84,25 @@ export function getA11yTools(): ToolDefinition[] {
       category: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
+
+        // Fix: minimize phantom off-screen full-screen windows that steal focus.
+        // Win11 maximized UWP apps report bounds (-14,-14) and block SetForegroundWindow.
+        try {
+          const allWins = await ctx.a11y.getWindows(true);
+          const phantoms = (allWins ?? []).filter((w: any) =>
+            w.bounds.x < 0 && w.bounds.y < 0 &&
+            w.bounds.width > 3000 && w.bounds.height > 2000 &&
+            !w.isMinimized &&
+            w.processId !== processId &&
+            !(processName && w.processName.toLowerCase() === processName.toLowerCase())
+          );
+          for (const p of phantoms) {
+            await ctx.a11y.focusWindow(undefined, p.processId).catch(() => {});
+            await ctx.desktop.keyPress('super+down');
+            await new Promise(r => setTimeout(r, 200));
+          }
+        } catch { /* non-fatal */ }
+
         let targetBounds: any = null;
         let targetPid = processId;
 
@@ -219,6 +238,40 @@ export function getA11yTools(): ToolDefinition[] {
         await ctx.ensureInitialized();
         await ctx.a11y.writeClipboard(text);
         return { text: `Clipboard set (${text.length} chars)` };
+      },
+    },
+
+    {
+      name: 'minimize_window',
+      description: 'Minimize a window. Matches by process name, PID, or title. Cross-platform: Windows (ShowWindow), macOS (miniaturize), Linux (wmctrl/xdotool).',
+      parameters: {
+        processName: { type: 'string', description: 'Process name to minimize (e.g. "Calculator", "Discord")', required: false },
+        processId: { type: 'number', description: 'Process ID to minimize', required: false },
+        title: { type: 'string', description: 'Window title substring to match', required: false },
+      },
+      category: 'window',
+      handler: async ({ processName, processId, title }, ctx) => {
+        await ctx.ensureInitialized();
+
+        // Find the target window
+        const windows = await ctx.a11y.getWindows(true);
+        let target = (windows ?? []).find((w: any) => {
+          if (processId && w.processId === processId) return true;
+          if (processName && w.processName.toLowerCase().includes(processName.toLowerCase())) return true;
+          if (title && w.title.toLowerCase().includes(title.toLowerCase())) return true;
+          return false;
+        });
+
+        if (!target) return { text: `No window found matching: ${processName || processId || title}` };
+
+        // Focus first (required for minimize shortcut), then minimize
+        await ctx.a11y.focusWindow(undefined, target.processId).catch(() => {});
+        await new Promise(r => setTimeout(r, 200));
+        // Cross-platform: Super+Down (Windows/Linux), Cmd+M (macOS)
+        const minimizeKey = process.platform === 'darwin' ? 'cmd+m' : 'super+down';
+        await ctx.desktop.keyPress(minimizeKey);
+
+        return { text: `Minimized: "${target.title}" [${target.processName}] pid:${target.processId}` };
       },
     },
   ];

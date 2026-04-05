@@ -175,6 +175,26 @@ delegate_to_agent("Open Outlook, compose email to john@example.com, subject Hell
 
 The agent handles everything — app launch, window management, form filling, popups, error recovery. You describe the goal, it figures out the clicks. Use this when the task is too complex to drive step-by-step.
 
+### Browser tab switching (without CDP)
+
+If CDP isn't connected, use keyboard shortcuts to switch browser tabs:
+```
+key_press("ctrl+1")       → switch to tab 1
+key_press("ctrl+2")       → switch to tab 2 (up to ctrl+9)
+key_press("ctrl+tab")     → next tab
+key_press("ctrl+shift+tab") → previous tab
+key_press("ctrl+w")       → close current tab
+```
+
+With CDP connected (`cdp_connect`), use `cdp_list_tabs` and `cdp_switch_tab` for precise control.
+
+### Window management
+
+```
+focus_window(processName="Discord")     → bring to front (auto-minimizes phantom windows)
+minimize_window(processName="Calculator") → minimize a window (1 call, cross-platform)
+```
+
 ### Sensitive app policy
 
 Always ask the user before accessing: email clients, banking/financial apps, private messaging, password managers, admin panels, or anything with credentials. Never access these silently.

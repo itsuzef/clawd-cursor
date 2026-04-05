@@ -195,7 +195,16 @@ export function getSmartTools(): ToolDefinition[] {
         await ctx.ensureInitialized();
         const target = params.target as string;
         const processId = params.processId as number | undefined;
+        const timeoutMs = (params.timeout as number) || 10000; // default 10s, was 5s
         const attempted: string[] = [];
+
+        // Wrap entire smart_click in a timeout to prevent hanging in serve mode
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`smart_click timed out after ${timeoutMs}ms searching for "${target}"`)), timeoutMs)
+        );
+
+        try {
+        return await Promise.race([timeoutPromise, (async () => {
 
         // Detect active window and check traits
         const activeWin = await ctx.a11y.getActiveWindow().catch(() => null);
@@ -341,6 +350,10 @@ export function getSmartTools(): ToolDefinition[] {
           text: `smart_click failed: could not click "${target}" after all fallback methods.\nAttempted:\n${attempted.map((a, i) => `  ${i + 1}. ${a}`).join('\n')}\nDiagnosis:\n  No specific failure pattern detected`,
           isError: true,
         };
+        })()]);
+        } catch (err: any) {
+          return { text: err.message, isError: true };
+        }
       },
     },
 
