@@ -281,34 +281,71 @@ clawdcursor start --base-url https://api.example.com/v1 --api-key KEY
 
 ## How It Works
 
-### The 3-Stage Pipeline
+### OCR-First Adaptive Pipeline
 
-Every task flows through stages cheapest-first. Most tasks complete in Stage 1 or 2.
+Every task flows cheapest-first. Learned patterns skip LLM entirely.
 
 ```
-User Task
-    |
-    v
-Stage 1: Deterministic (free, instant)
-    Browser CDP: click by selector, read DOM, navigate
-    Action Router: regex + 30 keyboard shortcuts
-    Deterministic Flows: email compose, app switch (zero LLM)
-    Skill Cache: replay previously learned sequences
-    |
-    v
-Stage 2: Text LLM (cheap — ~$0.001/task)
-    OCR Reasoner [PRIMARY]: screenshot -> OS OCR -> text snapshot -> cheap text LLM
-    A11y Reasoner [FALLBACK]: accessibility tree -> cheap text LLM
-    LLM decides: click, type, key, scroll, drag, done
-    Stagnation detection + done-verification built in
-    |
-    v
-Stage 3: Vision LLM (expensive — ~$0.05/task)
-    PATH A: Anthropic Computer Use (claude-sonnet — most accurate)
-    PATH B: Any OpenAI-compatible vision model
-    Screenshot -> vision LLM with function calling
-    Only reached when Stage 1+2 cannot resolve the task
+                        +-------------+
+                        |  User Task  |
+                        +------+------+
+                               |
+                               v
+                    +--------------------+
+                    | Screenshot Capture  |
+                    | + A11y Tree Scan    |
+                    | (parallel)          |
+                    +--------------------+
+                               |
+                               v
+                  +--------------------------+
+                  |  Adaptive Pattern Lookup  |
+                  |  JSON guides + Skill Cache|
+                  |  — known workflow?        |
+                  +-----+---------------+----+
+                        |               |
+                  Match found      No match
+                        |               |
+                        v               v
+              +-----------------+  +------------------+
+              | Direct Execute  |  |  Tesseract OCR   |
+              | Skip OCR + LLM  |  |  Text + bounding |
+              | (instant, free) |  |  boxes + spatial  |
+              +--------+--------+  |  layout analysis  |
+                       |           +--------+---------+
+                       |                    |
+                       |                    v
+                       |           +------------------+
+                       |           | Text LLM Reason  |
+                       |           | Plan + execute   |
+                       |           | actions per step |
+                       |           +--------+---------+
+                       |                    |
+                       |            +-------+-------+
+                       |            |               |
+                       |         Success      OCR can't read
+                       |            |               |
+                       |            |               v
+                       |            |      +----------------+
+                       |            |      |  Vision LLM    |
+                       |            |      |  Screenshot    |
+                       |            |      |  loop (last    |
+                       |            |      |  resort)       |
+                       |            |      +--------+-------+
+                       |            |               |
+                       |            +-------+-------+
+                       |                    |
+                       v                    v
+              +----------------------------------+
+              |       Learn Pattern              |
+              |  Save to JSON guide + Skill Cache|
+              |  Next time: direct execute (free)|
+              +----------------------------------+
 ```
+
+**Adaptive loop:** First run takes 9 steps with LLM. Second run replays the learned pattern in 1 step (free).
+
+**returnPartial:** External agents (OpenClaw, Claude Code) can send `{"returnPartial": true}` — if text LLM fails, control returns to the agent instead of burning tokens on vision. The agent finishes with MCP tools and calls `POST /learn` to teach clawdcursor.
 
 ### Model Recommendations (2026)
 
