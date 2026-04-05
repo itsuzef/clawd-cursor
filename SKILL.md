@@ -2,17 +2,16 @@
 name: clawdcursor
 version: 0.7.5
 description: >
-  OS-level desktop automation server. 40 tools for controlling any application
-  on Windows/macOS/Linux. Model-agnostic — works with any AI that can do
-  function calling (Claude, GPT, Gemini, Llama, Mistral, or plain cURL).
-  No API keys needed. No config. Just install and start.
+  OS-level desktop automation tool server. 42 tools for controlling any application
+  on Windows, macOS, and Linux. Model-agnostic — works with any AI that can do
+  function calling via REST or MCP (Claude, GPT, Gemini, Llama, Mistral, or plain HTTP).
+  No built-in LLM in serve/mcp mode. You are the brain. ClawdCursor is the hands.
 homepage: https://clawdcursor.com
 source: https://github.com/AmrDab/clawdcursor
 privacy: >
-  All processing runs locally on the user's machine. The tool server binds to
-  127.0.0.1 only — not network accessible. No telemetry, no analytics, no
-  phone-home. Screenshots stay in memory. When using the Pro autonomous agent,
-  screenshots/text are sent to the user's configured AI provider only.
+  All processing runs locally. Server binds to 127.0.0.1 only — not network-accessible.
+  No telemetry, no analytics. Screenshots stay in memory. In agent mode (start),
+  screenshots/text are sent only to the user's configured AI provider.
 metadata:
   openclaw:
     requires: {}
@@ -24,215 +23,62 @@ metadata:
 ---
 
 **If a human can do it on a screen, you can too.** No API? No integration? No problem.
-Every app already has a UI — clawdcursor gives you eyes and hands to use all of them.
 
-> **IMPORTANT — READ THIS BEFORE ANYTHING ELSE**
+> **USE AS A FALLBACK — NOT FIRST CHOICE**
 >
-> clawdcursor is a **FALLBACK**, not your first choice. Before using ANY clawdcursor tool, ask yourself:
+> Before reaching for any ClawdCursor tool, ask:
+> 1. Is there a native API? (Gmail API, GitHub API, Slack API) → **use the API**
+> 2. Is there a CLI? (`git`, `npm`, `curl`) → **use the CLI**
+> 3. Can you edit the file directly? → **do that**
+> 4. Is there a browser automation layer? (Playwright, Puppeteer) → **use that**
 >
-> - **Do I have an API for this?** (Gmail API, GitHub API, Slack API, etc.) → Use the API. It's faster, more reliable, and doesn't need a screen.
-> - **Do I have a CLI tool?** (`git`, `npm`, `curl`, `gh`, etc.) → Use the CLI. Same result, no GUI needed.
-> - **Do I have a browser extension or MCP connector?** (Puppeteer, Playwright, a dedicated MCP server for the service) → Use that. Direct DOM access beats screen reading.
-> - **Can I read/write the file directly?** → Do that. Don't open an app to edit a file you can edit programmatically.
-> - **None of the above work?** → NOW use clawdcursor. This is what it's for: the last mile where no API, CLI, or integration exists.
->
-> clawdcursor gives you **eyes and hands** on the user's desktop. You can:
-> 1. Open apps, click buttons, type text, fill forms, read screen content
-> 2. See what's on screen via accessibility tree, OCR, or screenshots
-> 3. Interact with ANY application — browsers, desktop apps, system dialogs
->
-> **Rules:**
-> 4. You **MUST** ask the user before accessing sensitive apps (see list below)
-> 5. You **MUST** never self-approve Confirm-tier safety actions
+> **None of the above work? Now use ClawdCursor.** It's for the last mile.
 
 ---
 
-## Quick Start
+## Modes at a Glance
 
-### MCP Mode (tools only — no built-in LLM)
-1. Add clawdcursor as an MCP server in your IDE/CLI config
-2. All 40 tools are immediately available — no server needed
+| Mode | Command | Brain | Tools available |
+|------|---------|-------|----------------|
+| `serve` | `clawdcursor serve` | **You** (REST client) | All 42 tools via HTTP |
+| `mcp` | `clawdcursor mcp` | **You** (MCP client) | All 42 tools via MCP stdio |
+| `start` | `clawdcursor start` | Built-in LLM pipeline | All 42 tools + autonomous agent |
 
-### Agent Mode (autonomous task execution)
-1. Run `clawdcursor start` in a terminal (keeps running in background)
-2. Use `delegate_to_agent` tool to send complex multi-step tasks
-3. IMPORTANT: delegate_to_agent requires the agent server running on port 3847
-
----
-
-## Section 1: How to Drive Any GUI Task
-
-clawdcursor gives you **eyes and hands** on the user's desktop. You can operate ANY application — if a human can see it and click it, you can too.
-
-### The universal loop
-
-Every GUI task follows the same pattern — observe, act, verify:
-
-```
-1. SEE the screen    →  read_screen(), ocr_read_screen(), or desktop_screenshot()
-2. ACT on an element →  smart_click(), smart_type(), key_press(), or mouse_click()
-3. VERIFY it worked  →  see below
-4. REPEAT until done
-```
-
-### Verification (how you confirm actions worked)
-
-**Never assume an action succeeded.** GUI actions fail silently — clicks miss, text goes to the wrong field, dialogs block input. Always verify after critical steps.
-
-There are 5 verification methods, from cheapest to most thorough:
-
-**Method 1: Tool return value** (free — already in the response)
-Every tool returns status. Check it before moving on:
-- `smart_click` → tells you *how* it clicked (a11y, OCR, or coordinates) and whether it found the element
-- `smart_type` → confirms how many chars were typed and which element received them
-- `open_app` / `focus_window` → confirms which window is now active
-- `delegate_to_agent` → returns `{ success: true/false, steps: [...] }` with a full execution log
-
-**Method 2: Window state check** (fast — one call)
-```
-get_active_window()   →  is the expected app in the foreground?
-get_windows()         →  did a new window appear? did a dialog open?
-get_focused_element() →  is keyboard focus on the right field?
-```
-Window title changes are strong signals: "Untitled" → "report.docx" means save worked. A new window appearing after a button click means the action triggered.
-
-**Method 3: Text presence check** (medium — reads the screen)
-```
-read_screen(processId=PID)  →  search the a11y tree for expected text/elements
-ocr_read_screen()           →  search ALL visible text on screen via OCR
-smart_read(processId=PID)   →  read text from the focused element or window
-```
-Use this to confirm: typed text appeared in the right field, a success message is visible, a new element was created, or an error dialog is showing.
-
-**Method 4: Visual verification** (expensive — uses a screenshot)
-```
-desktop_screenshot()  →  see the full screen state as an image
-```
-Use when text-based methods can't confirm the result — layout changes, color changes, image content, or when both a11y and OCR return empty. This costs the most tokens but gives you full visual context.
-
-**Method 5: Negative check** (catch failures proactively)
-After any action, watch for:
-- Error dialogs or popups blocking the UI → dismiss them first, then retry
-- Wrong window in foreground → `focus_window()` back to the target, retry
-- "Save failed" / "Connection error" messages → report to user
-- Screen unchanged after action → the click missed, try again or use a different method
-
-**When to verify:**
-- **Always verify** after: form submissions, sends, saves, deletes, purchases — anything irreversible
-- **Spot-check** after: navigation, opening apps, clicking tabs — verify if the next step depends on it
-- **Skip verification** for: keyboard shortcuts in sequence, typing mid-sentence, scrolling
-
-### Perception tools (how you see)
-
-| Tool | What it returns | When to use |
-|------|----------------|-------------|
-| `read_screen()` | Accessibility tree — buttons, inputs, text, with coordinates | **Default.** Structured, fast, works on native apps |
-| `ocr_read_screen()` | All visible text with bounding boxes (OS-level OCR) | When a11y tree is empty or incomplete (canvas UIs, custom controls) |
-| `desktop_screenshot()` | Visual screenshot image | When you need to see layout, colors, or images — or both above return nothing |
-| `smart_read()` | Text content from focused element or window | Quick read of what's on screen without full tree |
-
-**Start with `read_screen()`. If it returns nothing useful, try `ocr_read_screen()`. Screenshot is last resort — it costs the most tokens.**
-
-### Action tools (how you interact)
-
-**Tier 1 — Smart tools (preferred).** They find elements by name automatically. **Always pass `processId`** to target the right window — without it, they scan your IDE instead of the target app.
-
-```
-get_windows()                                    →  find the target app's PID
-smart_click("Save", processId=PID)               →  finds & clicks "Save" button
-smart_type("Search", "query text", processId=PID) →  finds "Search" field & types
-```
-
-Each smart tool tries: accessibility → OCR text match → coordinate click. Automatic fallback.
-
-**Tier 2 — Direct tools.** When you know exactly what to do:
-
-```
-open_app("Notepad")       →  launch an app
-focus_window(title="...")  →  bring a window to front
-key_press("ctrl+n")       →  keyboard shortcut
-type_text("hello world")  →  type into the focused element
-```
-
-**Tier 3 — Coordinate clicks (last resort).** Only after smart tools fail with the correct processId:
-
-```
-desktop_screenshot()   →  see the screen, note target (x, y)
-mouse_click(x, y)     →  click that position
-```
-
-**Do not jump to coordinate clicks before trying smart tools with processId.**
-
-### delegate_to_agent — autonomous multi-step execution
-
-For complex tasks (3+ GUI steps), you can delegate the entire task to clawdcursor's autonomous agent. It has its own OCR + LLM pipeline that sees the screen, plans steps, and recovers from errors.
-
-**Requires:** `clawdcursor start` running on port 3847. If connection fails, tell the user to run it first.
-
-```
-delegate_to_agent("Open Outlook, compose email to john@example.com, subject Hello, body Just checking in, then send")
-```
-
-The agent handles everything — app launch, window management, form filling, popups, error recovery. You describe the goal, it figures out the clicks. Use this when the task is too complex to drive step-by-step.
-
-### Browser tab switching (without CDP)
-
-If CDP isn't connected, use keyboard shortcuts to switch browser tabs:
-```
-key_press("ctrl+1")       → switch to tab 1
-key_press("ctrl+2")       → switch to tab 2 (up to ctrl+9)
-key_press("ctrl+tab")     → next tab
-key_press("ctrl+shift+tab") → previous tab
-key_press("ctrl+w")       → close current tab
-```
-
-With CDP connected (`cdp_connect`), use `cdp_list_tabs` and `cdp_switch_tab` for precise control.
-
-### Window management
-
-```
-focus_window(processName="Discord")     → bring to front (auto-minimizes phantom windows)
-minimize_window(processName="Calculator") → minimize a window (1 call, cross-platform)
-```
-
-### Sensitive app policy
-
-Always ask the user before accessing: email clients, banking/financial apps, private messaging, password managers, admin panels, or anything with credentials. Never access these silently.
+In `serve` and `mcp` modes: **you reason, ClawdCursor acts.** There is no built-in LLM. You call tools, interpret results, decide next steps.
 
 ---
 
-## Section 2: Connecting
+## Connecting
 
-### REST mode (`clawdcursor serve`)
+### Option A — REST (`clawdcursor serve`)
 
 ```bash
-clawdcursor serve   # starts on http://localhost:3847
+clawdcursor serve        # starts on http://127.0.0.1:3847
 ```
 
-Endpoints:
+All POST endpoints require: `Authorization: Bearer <token>` (token saved to `~/.clawdcursor/token`)
 
 ```
-GET  /tools              Tool schemas (OpenAI function-calling format)
-POST /execute/{name}     Execute a tool by name
-GET  /health             Server status check
-GET  /docs               Full documentation
+GET  /tools              → all tool schemas (OpenAI function-calling format)
+POST /execute/{name}     → run a tool: {"param": "value"}
+GET  /health             → {"status":"ok","version":"0.7.5"}
+GET  /docs               → full documentation
 ```
 
 Example:
-
-```python
-import requests
-tools = requests.get("http://localhost:3847/tools").json()
-result = requests.post("http://localhost:3847/execute/read_screen").json()
+```
+POST /execute/get_windows     {}
+POST /execute/mouse_click     {"x": 640, "y": 400}
+POST /execute/type_text       {"text": "hello world"}
 ```
 
-### MCP mode (`clawdcursor mcp`)
-
+If the server isn't running, start it yourself — don't ask the user:
 ```bash
-clawdcursor mcp   # stdio transport
+clawdcursor serve
+# wait 2 seconds, then verify: GET /health
 ```
 
-Register in your MCP client settings:
+### Option B — MCP (`clawdcursor mcp`)
 
 ```json
 {
@@ -245,694 +91,288 @@ Register in your MCP client settings:
 }
 ```
 
-Works with Claude Code, Cursor, Windsurf, Zed, or any MCP-compatible client.
+Works with Claude Code, Cursor, Windsurf, Zed, or any MCP-compatible client. All 42 tools are exposed identically.
 
-### Agent mode (`clawdcursor start`)
-
-Full autonomous agent with built-in 3-stage LLM pipeline. Use when you want clawdcursor to handle complex multi-step tasks end-to-end.
-
-```bash
-clawdcursor start   # starts agent + REST API on http://localhost:3847
-```
-
-Agent endpoints (requires auth token from `~/.clawdcursor/token`):
+### Option C — Autonomous agent (`clawdcursor start`)
 
 ```
-POST /task           Submit a task: {"task": "open Excel and make a table"}
-GET  /status         Agent state (idle/thinking/acting)
-POST /abort          Stop the current task
-GET  /task-logs      Recent task results (structured JSONL)
-GET  /screenshot     Current screen as PNG
-POST /stop           Graceful shutdown
+POST /task    {"task": "Open Notepad and write Hello"}   → submit task
+GET  /status  → {"status": "acting"} | "idle" | "waiting_confirm"
+POST /confirm {"approved": true}                         → approve safety-gated action
+POST /abort                                              → stop current task
 ```
 
-The agent decomposes tasks, opens apps, navigates UI, types text, clicks buttons, handles dialogs, and verifies completion — all autonomously. You describe the goal, it figures out the clicks.
-
-### Using clawdcursor as a fallback
-
-clawdcursor is designed to be the **last-mile fallback** when APIs, CLIs, and integrations don't exist. If your agent hits a roadblock mid-task because there's no programmatic interface, fall back to clawdcursor:
-
-```
-Your agent: "I need to send an email via Outlook but there's no API"
-  → delegate_to_agent("open Outlook and send email to X, subject Y, body Z")
-  → clawdcursor handles the entire GUI workflow
-  → returns {success: true, steps: [...]}
-
-Your agent: "I need to fill a web form but Playwright can't handle it"
-  → Use smart_click, smart_type, key_press to interact directly
-  → read_screen or ocr_read_screen to verify
-
-Your agent: "I need to change a system setting"
-  → delegate_to_agent("open Settings, navigate to Personalization > Background")
-  → clawdcursor opens Settings and navigates there
-```
-
-The 3-stage pipeline handles everything:
-1. **Stage 1 (Free):** Keyboard shortcuts and pattern matching — instant, no LLM
-2. **Stage 2 (Cheap):** OCR + accessibility tree + text LLM — reads screen, plans actions
-3. **Stage 3 (Expensive):** Vision LLM — sees screenshots, handles complex spatial tasks
-
-### App Guides (community-contributed knowledge)
-
-clawdcursor has JSON instruction manuals for 86+ applications. When a target app is detected, the relevant guide is injected into the LLM's context — teaching it keyboard shortcuts, workflows, UI layout, and tips.
-
-```bash
-clawdcursor guides available          # list all 86 downloadable guides
-clawdcursor guides install excel      # install Excel guide (116 shortcuts)
-clawdcursor guides install spotify    # install Spotify guide
-clawdcursor guides install --all      # install everything
-clawdcursor guides list               # show installed guides
-```
-
-Guides load automatically at runtime based on the active window's process name. No code changes needed — just add a JSON file to the `guides/` directory.
-
-**Contributing guides:** Create a `{process-name}.json` file with shortcuts, workflows, layout hints, and tips. Submit a PR. The teach/popup system (coming soon) will let users add lessons interactively when clawdcursor gets stuck.
-
-### Built-in agent (`clawdcursor start`)
-
-Full autonomous agent with its own LLM pipeline. Send a task, get a result:
-
-```bash
-clawdcursor start
-curl http://localhost:3847/task -H "Content-Type: application/json" \
-  -d '{"task": "Open Notepad and write a haiku"}'
-```
-
-### Auto-start guidance
-
-If the server is not running when you need it, **start it yourself — do not ask the user:**
-
-```bash
-# Any platform
-clawdcursor serve
-```
-
-```powershell
-# Windows (background, no window)
-Start-Process -FilePath "clawdcursor" -ArgumentList "serve" -WindowStyle Hidden
-```
-
-Wait 2 seconds, then verify:
-
-```bash
-curl http://localhost:3847/health
-```
-
-Expected: `{"status":"ok","version":"0.7.2"}`
-
-If Chrome CDP is not available on port 9222, launch Chrome yourself:
-
-```powershell
-Start-Process chrome -ArgumentList "--remote-debugging-port=9222"
-```
-
-### REST API Polling Pattern (for agents calling POST /task)
-
-When you submit a task via REST, poll for completion:
-
-```
-1. POST /task {"task": "..."} → {"accepted": true, "task": "..."}
-2. Wait 2 seconds
-3. GET /status → check response:
-   {"status": "idle"}                     → task done, check /task-logs for result
-   {"status": "acting", "currentTask": "...", "stepsCompleted": 2}  → still running, wait
-   {"status": "waiting_confirm", "currentStep": "..."}  → SAFETY PAUSE — ask user, then POST /confirm {"approved": true}
-4. If still running → wait 2 more seconds, go to step 3
-5. If 60+ seconds → POST /abort, retry with clearer instructions
-```
-
-**Critical endpoints:**
-```
-POST /task           {"task": "...", "returnPartial": true}  → submit task
-GET  /status                                                 → poll state
-POST /confirm        {"approved": true/false}                → approve/reject safety pause
-POST /abort                                                  → stop current task
-POST /learn          {"processName": "...", "task": "...", "actions": [...], "shortcuts": {...}, "tips": [...]}  → teach clawdcursor
-GET  /task-logs                                              → recent task results (JSONL)
-GET  /screenshot                                             → current screen as PNG
-GET  /logs                                                   → last 200 console entries (debug)
-```
-
-All mutating endpoints require `Authorization: Bearer <token>` header. Token is saved to `~/.clawdcursor/token` on startup.
-
-### returnPartial mode (for external agents)
-
-When you send `{"returnPartial": true}` with POST /task, clawdcursor skips Stage 3 (expensive vision) and returns control to you if Stage 2 fails:
-
-```json
-{"partial": true, "stepsCompleted": [...], "context": "Stage 2 opened app but got stuck on dialog"}
-```
-
-You then finish the task with MCP tools (smarter than Stage 3's one-shot vision loop). When done, call POST /learn to teach clawdcursor what worked — the workflow is saved to the app's JSON guide so Stage 2 handles it natively next time.
-
-### POST /learn (adaptive learning)
-
-After completing a task with MCP tools, report what you did:
-
-```json
-POST /learn
-{
-  "processName": "EXCEL",
-  "task": "create table with headers",
-  "actions": [
-    {"action": "key", "description": "Press Ctrl+Home to go to A1"},
-    {"action": "type", "description": "Type Product"},
-    {"action": "key", "description": "Press Tab to next column"}
-  ],
-  "shortcuts": {"next_cell": "Tab", "next_row": "Enter"},
-  "tips": ["Use Tab between columns, Enter between rows"]
-}
-```
-
-This enriches the app's guide JSON. Next time Stage 2 sees this app, it reads the learned workflow and shortcuts — handling the task without fallback.
-
-> **Windows PowerShell note:** Use `curl.exe` (with .exe) or `Invoke-RestMethod`, NOT bare `curl`. PowerShell aliases `curl` to `Invoke-WebRequest` which behaves differently.
-
-### Routing Priority (when to use clawdcursor)
-
-Before calling any clawdcursor tool, check this priority:
-
-1. **Native API available?** (Gmail API, GitHub API, Slack API) → use the API. Faster, more reliable.
-2. **CLI tool available?** (`git`, `npm`, `curl`, `gh`) → use the CLI. Same result, no GUI.
-3. **Browser automation available?** (Playwright, Puppeteer, dedicated MCP) → use that. Direct DOM > screen reading.
-4. **Can edit the file directly?** → do that. Don't open an app to edit a file you can edit programmatically.
-5. **None of the above?** → NOW use clawdcursor. This is the last mile.
-
-**Universal task pattern:**
-```
-Phase 1: PLAN     — decompose task, identify which steps need GUI
-Phase 2: EXECUTE  — do cheap steps first (CLI, API, file edits)
-Phase 3: ESCALATE — only the remaining GUI-only steps go to clawdcursor
-```
-
-### 3-Stage Pipeline (cost model)
-
-The autonomous agent (`clawdcursor start`) routes tasks through 3 stages, cheapest first:
-
-| Stage | What | Latency | Cost | Handles |
-|-------|------|---------|------|---------|
-| **Stage 1** | Router + Shortcuts + OCR/A11y capture | Instant | Free | open app, type text, press keys, navigate URL — **80%+ of tasks** |
-| **Stage 2** | Text LLM + spatial layout + app guides | 2-5s/step | Cheap ($0.25/1M) | click buttons, fill forms, navigate menus, read screen |
-| **Stage 3** | Vision LLM + screenshots | 5-15s/step | Expensive | CAPTCHAs, spatial tasks, visual content, complex layouts |
-
-Most tasks never reach Stage 3. Prefer approaches that stay in Stage 1-2.
-
-### Provider Setup
-
-| Provider | Setup | Cost |
-|----------|-------|------|
-| **Ollama** (local) | `ollama pull qwen2.5:7b && ollama serve` | $0, fully offline |
-| **Any cloud** | Set env var: `ANTHROPIC_API_KEY`, `MOONSHOT_API_KEY`, `GEMINI_API_KEY`, etc. | Varies |
-| **OpenClaw users** | Automatic — reads from `~/.openclaw/agents/main/auth-profiles.json` | No extra setup |
-
-Run `clawdcursor doctor` to auto-detect and configure providers.
-
-### Security & Privacy
-
-- **Network isolation:** Server binds to `127.0.0.1` only. Verify: `netstat -an | findstr 3847`
-- **Data flow (Ollama):** 100% offline. Screenshots stay in memory, never leave the machine.
-- **Data flow (cloud):** Screenshots/text sent to YOUR configured provider only. No telemetry, no analytics.
-- **Screenshots:** Stay in memory, never saved to disk (unless `--debug` flag is set).
-- **Credentials:** OpenClaw auth-profiles auto-discovered from local config. API keys from env vars.
-- **Safety tiers:** Auto (instant) / Preview (shows plan) / Confirm (requires user approval). Agents must NEVER self-approve Confirm actions.
+Use `delegate_to_agent` tool to submit tasks from within MCP/REST sessions. Requires `clawdcursor start` running on port 3847.
 
 ---
 
-## Section 3: Tool Decision Guide
+## The Universal Loop
 
-This is the most important section. Follow these decision trees exactly.
+Every GUI task follows the same pattern regardless of transport:
+
+```
+1. ORIENT  →  read_screen() or get_windows()          see what's open and focused
+2. ACT     →  smart_click() / smart_type() / key_press()   do the thing
+3. VERIFY  →  check return value → window state → text check → screenshot
+4. REPEAT  →  until done
+```
+
+### Verification (cheapest to most expensive)
+
+1. **Tool return value** — every tool reports success/failure. Check it first.
+2. **Window state** — `get_active_window()`, `get_windows()` — did a dialog appear? Did the title change?
+3. **Text check** — `read_screen()` or `smart_read()` — is the expected text visible?
+4. **Screenshot** — `desktop_screenshot()` — only when text methods fail. Costs the most.
+5. **Negative check** — look for error dialogs, wrong window, unchanged screen.
+
+**Always verify** after: sends, saves, deletes, form submissions.
+**Skip verification** for: mid-sequence keystrokes, scrolling.
+
+---
+
+## Tool Decision Trees
 
 ### Perception — always start here
 
-Before doing anything, read what is on screen:
-
 ```
-1. smart_read          Best first call. Combines OCR + accessibility tree.
-                       Returns structured text of everything visible.
-
-2. read_screen         Accessibility tree only. Fast, structured, no OCR cost.
-                       Use when smart_read is unavailable or you want raw a11y.
-
-3. ocr_read_screen     Raw OCR text extraction (Windows OCR engine).
-                       Use when a11y tree is empty (canvas apps, image-based UIs).
-
-4. desktop_screenshot  Full screenshot as image. LAST RESORT.
-                       Only use when you need pixel-level detail (colors, layout,
-                       images) that text-based tools cannot provide.
+read_screen()          → FIRST. Accessibility tree: buttons, inputs, text, with coords.
+                          Fast, structured, works on native apps.
+ocr_read_screen()      → When a11y tree is empty (canvas UIs, image-based apps).
+smart_read()           → Combines OCR + a11y. Good first call when unsure.
+desktop_screenshot()   → LAST RESORT. Only when you need pixel-level visual detail.
+desktop_screenshot_region(x,y,w,h) → Zoomed crop when you need detail in one area.
 ```
 
-### Clicking — choose the right tool
+### Clicking
 
 ```
-1. smart_click("Save")         FIRST CHOICE. Finds element by label/text using
-                               OCR + a11y, then clicks it. Handles fallbacks
-                               internally. Pass the visible text of the element.
-
-2. cdp_click(text="Submit")    Use for browser DOM elements specifically.
-                               Requires cdp_connect() first. Works by visible
-                               text or CSS selector.
-
-3. invoke_element(name="Save") Use when you know the exact automation ID or
-                               element name from read_screen output.
-
-4. mouse_click(x, y)           LAST RESORT. Raw coordinates. Only use when all
-                               text-based methods fail. Get coordinates from
-                               desktop_screenshot (1280px-wide image space).
+smart_click("Save")              → FIRST. Finds by label/text via OCR + a11y, clicks.
+                                   Pass processId to target the right window.
+invoke_element(name="Save")      → When you know the exact automation ID from read_screen.
+cdp_click(text="Submit")         → Browser elements. Requires cdp_connect() first.
+mouse_click(x, y)                → LAST RESORT. Raw coordinates from a screenshot.
 ```
 
-### Typing — choose the right tool
+### Typing
 
 ```
-1. smart_type(text, target)    FIRST CHOICE. Finds the input field by label or
-                               nearby text, focuses it, then types. One call
-                               does find + focus + type.
-
-2. cdp_type(label, text)       Use for browser input fields. Finds by label
-                               text or CSS selector. Requires cdp_connect().
-
-3. type_text(text)             Raw clipboard paste into whatever is currently
-                               focused. Use after you have manually focused the
-                               right element with smart_click or focus_window.
+smart_type("Email", "user@x.com")  → FIRST. Finds field by label, focuses, types.
+cdp_type(label="Email", text="…")  → Browser inputs. Requires cdp_connect() first.
+type_text("hello")                 → Clipboard paste into whatever is focused.
+                                     Use after manually focusing with smart_click.
 ```
 
-### Browser workflow — follow this exact sequence
+### Browser / CDP
 
 ```
-1. navigate_browser(url)       Opens URL, auto-launches browser with CDP enabled
-2. wait(3)                     Let the page load
-3. cdp_connect()               Connect to the browser's CDP
-4. cdp_page_context()          Get interactive elements on the page
-
-   IMPORTANT: Check the connected URL. If CDP connected to the wrong tab:
-5. cdp_list_tabs()             List all browser tabs
-6. cdp_switch_tab(target)      Switch to the correct tab
-
-Then interact:
-   cdp_click(text="...")       Click by visible text
-   cdp_type(label="...", text) Type into input by label
-   cdp_read_text()             Extract page text
-   cdp_evaluate(script)        Run JavaScript
+1. navigate_browser(url)     → opens URL, auto-enables CDP
+2. cdp_connect()             → connect to browser DevTools Protocol
+3. cdp_page_context()        → list interactive elements on page
+4. cdp_read_text()           → extract DOM text (returns empty on canvas apps → use OCR)
+5. cdp_click(text="…")       → click by visible text
+6. cdp_type(label, text)     → fill input by label
+7. cdp_evaluate(script)      → run JavaScript in page context
+8. cdp_scroll(direction, px) → scroll page via DOM (not mouse wheel)
+9. cdp_list_tabs()           → list all open tabs
+10. cdp_switch_tab(target)   → switch to a specific tab
 ```
 
-### CDP fast path (quick page reads)
-
-For reading page content without a full task, skip `navigate_browser` and connect directly if Chrome is already open:
-
-```javascript
-// Chrome must have --remote-debugging-port=9222
-const { chromium } = require('playwright');
-const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-const page = browser.contexts()[0].pages()[0];
-const text = await page.textContent('body');
+If CDP isn't connected, switch tabs with keyboard:
+```
+key_press("ctrl+1")          → tab 1
+key_press("ctrl+tab")        → next tab
+key_press("ctrl+shift+tab")  → previous tab
 ```
 
-| Scenario | Use | Why |
-|----------|-----|-----|
-| Read page content | CDP direct | Instant, no LLM cost |
-| Fill a form | `cdp_type` + `cdp_click` | clawd handles the interaction |
-| Check if a page loaded | `cdp_read_text()` | Fast DOM query |
-| Desktop app interaction | Individual tools | CDP is browser-only |
-| Complex multi-step task | `delegate_to_agent` | Built-in agent handles planning |
-
-### Window focus rule (CRITICAL)
-
-**Always call focus_window before key_press.**
-
-`key_press` sends keystrokes to whatever window currently has focus. If your
-agent runs in a terminal, key presses go to the terminal — not the app you
-intended. Always focus the target window first:
+### Window Management
 
 ```
-focus_window("Notepad")        Focus the window
-read_screen()                  Confirm it is focused
-key_press("ctrl+s")            Now the keystroke goes to Notepad
+get_windows()                         → list all open windows (use to find PIDs)
+get_active_window()                   → what's in the foreground right now
+focus_window(processName="Discord")   → bring to front (auto-minimizes phantom off-screen windows)
+minimize_window(processName="calc")   → minimize a window — 1 call, cross-platform
+                                        also accepts: processId, title
 ```
 
-### Shortcuts — use before reaching for mouse clicks
+**Rule:** Always `focus_window()` before `key_press()` or `type_text()`. Keystrokes go to whatever has focus — if that's your terminal, not the target app.
 
-`shortcuts_list` returns keyboard shortcuts for the current app context.
-`shortcuts_execute` runs a named shortcut with fuzzy matching.
+### Canvas apps (Google Docs, Figma, Notion)
 
-For known actions (save, copy, paste, undo, new tab, close tab, find, etc.),
-use shortcuts first — they are instant and never miss:
-
+DOM has no readable text. Pattern:
 ```
-shortcuts_execute("save")      Instead of clicking File > Save
-shortcuts_execute("copy")      Instead of right-click > Copy
-shortcuts_execute("new tab")   Instead of clicking the + button
-```
-
-### Canvas app handling (Google Docs, Figma, Notion)
-
-These apps use canvas rendering. The DOM has no readable text. Pattern:
-
-```
-1. cdp_read_text()             Try first — will return empty or garbage
-2. ocr_read_screen()           Fall back to OCR for actual content
-3. smart_read()                Also works — OCR component will pick it up
-
-To type in canvas apps:
-1. mouse_click(x, y)           Click the canvas area where you want to type
-2. type_text("your text")      Clipboard paste works even on canvas
-```
-
-### Delegate complex tasks to the built-in agent
-
-> **PREREQUISITE:** `delegate_to_agent` requires `clawdcursor start` running in a
-> terminal. Without it, calls will fail with "connection refused". Other tools
-> (smart_click, type_text, read_screen, etc.) work without the server.
-
-Use `delegate_to_agent` for complex multi-step GUI tasks that can't be done with
-individual tool calls — it has **its own LLM reasoning loop**, so the calling
-agent doesn't need to plan each click and keystroke. Just describe the goal:
-
-```
-delegate_to_agent("Open Gmail, find the latest email from Stripe, and forward it to billing@example.com")
-```
-
-Then poll for completion:
-
-```
-1. delegate_to_agent(task)     Submit the task
-2. wait(2)                     Let it start
-3. GET /status                 Check: acting | waiting_confirm | idle
-4. If waiting_confirm          → ASK the user, then POST /confirm
-5. If idle                     → task complete
-6. If acting after 60s         → POST /abort and retry with simpler phrasing
-```
-
-**Response states:**
-
-| State | What it means | What to do |
-|-------|--------------|------------|
-| `acting` | Task in progress | Keep polling every 2s |
-| `waiting_confirm` | Safety-gated action pending | Ask the user → POST /confirm |
-| `idle` | Task complete | Read the result |
-| `error` | Task failed | Check /logs, retry or rephrase |
-
-**Never self-approve `waiting_confirm`.** Always ask the user first.
-
-### Verifying actions succeeded
-
-See **Section 1 → Verification** for the 5 verification methods ranked by cost. Quick reference:
-
-```
-1. Check tool return value     →  free, already in the response
-2. Window state check          →  get_active_window(), get_focused_element()
-3. Text presence check         →  read_screen(), ocr_read_screen(), smart_read()
-4. Visual verification         →  desktop_screenshot()
-5. Negative check              →  look for error dialogs, wrong window, unchanged screen
-```
-
-**Always verify** after irreversible actions (send, save, delete, purchase). **Spot-check** after navigation. **Skip** for mid-sequence keystrokes.
-
----
-
-## Section 4: Task Examples
-
-| Goal | How to do it |
-|------|-------------|
-| **Open app and type** | `open_app("notepad")` → `wait(2)` → `type_text("Hello world")` |
-| **Read a webpage** | `navigate_browser(url)` → `cdp_connect()` → `cdp_read_text()` |
-| **Fill a web form** | `cdp_connect()` → `cdp_type(label, text)` × N → `cdp_click("Submit")` |
-| **Cross-app copy/paste** | `focus_window("Chrome")` → `key_press("ctrl+a")` → `key_press("ctrl+c")` → `focus_window("Notepad")` → `type_text(clipboard)` |
-| **Interact with desktop app** | `open_app("Spotify")` → `smart_click("Discover Weekly")` |
-| **Canvas editor (Google Docs)** | `navigate_browser(url)` → `cdp_connect()` → `ocr_read_screen()` → `mouse_click(500,400)` → `type_text("content")` |
-| **Send email (with confirm)** | `delegate_to_agent("Open Gmail, compose to john@example.com, subject: Meeting, body: Confirming 2pm")` → poll → user approves confirm |
-| **Check deployment status** | `navigate_browser("https://vercel.com/dashboard")` → `cdp_connect()` → `cdp_read_text()` |
-| **Take a screenshot** | `desktop_screenshot()` |
-| **Play music** | `open_app("Spotify")` → `smart_read()` → `smart_click("Play")` |
-| **System settings** | `delegate_to_agent("Open Windows Settings and turn on Dark Mode")` |
-| **Complex browser flow** | `delegate_to_agent("Open YouTube, search for Adele Hello, play the first result")` |
-
-### Task writing guidelines (for delegate_to_agent)
-
-1. **Be specific** — include app names, URLs, exact text to type, button names
-2. **One task at a time** — wait for completion before sending the next
-3. **Describe the goal, not the clicks** — "Send an email to john@" not "click compose, click to field..."
-4. **Don't include credentials in task text** — tasks are logged
-5. **If it fails once, rephrase** — break into smaller steps, be more explicit about app name / button label
-
----
-
-## Section 5: Tool Reference (40 tools)
-
-Speed/cost tier: ⚡ Free+instant · 🔵 Cheap · 🟡 Moderate · 🔴 Expensive (vision LLM)
-
-### Perception (5 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `smart_read` | OCR + accessibility tree combined | 🔵 | **Best first call** for reading anything on screen |
-| `read_screen` | Accessibility tree (windows, buttons, inputs, text) | ⚡ | Fast structured read when you want raw a11y |
-| `ocr_read_screen` | Raw OCR text extraction | 🔵 | Canvas apps or image-based UIs where a11y fails |
-| `desktop_screenshot` | Full screen capture (1280px wide) | ⚡ | **Last resort** — when you need pixel-level visual detail |
-| `desktop_screenshot_region` | Zoomed crop of a specific area | ⚡ | When you need detail in one part of the screen |
-| `get_screen_size` | Screen dimensions and DPI | ⚡ | When you need to calculate coordinates |
-
-### Mouse (6 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `smart_click` | Find element by label/text via OCR + a11y, click it | 🔵 | **First choice** for clicking — handles fallbacks internally |
-| `mouse_click` | Left click at (x, y) | ⚡ | Last resort — when text-based click methods fail |
-| `mouse_double_click` | Double click at (x, y) | ⚡ | Open files, select words |
-| `mouse_right_click` | Right click at (x, y) | ⚡ | Open context menus |
-| `mouse_hover` | Move cursor without clicking | ⚡ | Trigger hover menus or tooltips |
-| `mouse_scroll` | Scroll up/down at position | ⚡ | Scroll content not responding to Page Down |
-| `mouse_drag` | Drag from (x1,y1) to (x2,y2) | ⚡ | Resize windows, move objects, select text ranges |
-
-### Keyboard (5 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `smart_type` | Find input by label, focus it, type — all in one | 🔵 | **First choice** for typing into a specific field |
-| `type_text` | Type via clipboard paste | ⚡ | After you have focused the correct input |
-| `key_press` | Send key combo (ctrl+s, Return, alt+tab) | ⚡ | After focus_window — never without focusing first |
-| `shortcuts_list` | List keyboard shortcuts for current app | ⚡ | Before reaching for mouse clicks on known actions |
-| `shortcuts_execute` | Execute a named shortcut (fuzzy match) | ⚡ | Save, copy, paste, undo, new tab, etc. |
-
-### Window Management (4 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `get_windows` | List all open windows | ⚡ | Find which apps are running |
-| `get_active_window` | Current foreground window | ⚡ | Check what has focus right now |
-| `get_focused_element` | What has keyboard focus | ⚡ | Debug typing going to wrong element |
-| `focus_window` | Bring window to front | ⚡ | **ALWAYS** before key_press or type_text |
-
-### UI Elements (2 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `find_element` | Search UI elements by name/type | ⚡ | When you need the automation ID before invoke |
-| `invoke_element` | Invoke a UI element by automation ID or name | ⚡ | When you know the exact element from read_screen |
-
-### Clipboard (2 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `read_clipboard` | Read clipboard text | ⚡ | After a copy operation to get the content |
-| `write_clipboard` | Write text to clipboard | ⚡ | Before a paste operation |
-
-### Browser CDP (10 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `cdp_connect` | Connect to browser's Chrome DevTools Protocol | ⚡ | First step for any browser interaction |
-| `cdp_page_context` | List interactive elements on page | ⚡ | After connect — see what you can click/type |
-| `cdp_read_text` | Extract text from DOM | ⚡ | Read page content (fails on canvas apps) |
-| `cdp_click` | Click by CSS selector or visible text | ⚡ | Browser clicks — more reliable than mouse coordinates |
-| `cdp_type` | Type into input by label or selector | ⚡ | Browser form filling |
-| `cdp_select_option` | Select dropdown option | ⚡ | Dropdowns and select elements |
-| `cdp_evaluate` | Run JavaScript in page context | ⚡ | Custom DOM queries or page manipulation |
-| `cdp_wait_for_selector` | Wait for element to appear | ⚡ | After navigation or AJAX loads |
-| `cdp_list_tabs` | List all browser tabs | ⚡ | When CDP connected to wrong tab |
-| `cdp_switch_tab` | Switch to a different tab | ⚡ | After cdp_list_tabs identifies the right one |
-
-### Orchestration (4 tools)
-
-| Tool | What it does | Tier | When to use |
-|------|-------------|------|-------------|
-| `open_app` | Launch an application by name | ⚡ | First step for desktop app tasks |
-| `navigate_browser` | Open URL with CDP auto-enabled | ⚡ | First step for browser tasks |
-| `wait` | Pause for N seconds | ⚡ | After opening apps or navigating — let UI render |
-| `delegate_to_agent` | Send task to built-in autonomous agent (requires `clawdcursor start`) | 🟡 | Complex multi-step GUI tasks — agent has its own LLM reasoning, no need to plan each step |
-
----
-
-## Section 6: Common Patterns
-
-### Open an app and type
-
-```
-open_app("notepad")
-wait(2)
-smart_read()                   Confirm Notepad is open and focused
-type_text("Hello world")
-smart_read()                   Verify text was typed
-```
-
-### Browser task (navigate, read, interact)
-
-```
-navigate_browser("https://example.com")
-wait(3)
-cdp_connect()
-cdp_page_context()             See interactive elements
-cdp_read_text()                Read page content
-cdp_click(text="Sign In")
-```
-
-### Fill a web form
-
-```
-cdp_connect()
-cdp_page_context()
-cdp_type(label="Email", text="user@example.com")
-cdp_type(label="Password", text="...")
-cdp_click(text="Submit")
-wait(2)
-cdp_read_text()                Verify submission result
-```
-
-### Cross-app copy/paste
-
-```
-focus_window("Chrome")
-key_press("ctrl+a")
-key_press("ctrl+c")
-read_clipboard()               Get the copied text
-focus_window("Notepad")
-type_text(clipboard_content)
-```
-
-### Canvas editor (Google Docs, Figma)
-
-```
-navigate_browser("https://docs.google.com/document/create")
-wait(3)
-cdp_connect()
-ocr_read_screen()              OCR — DOM text extraction fails on canvas
-mouse_click(500, 400)          Click into the document body
-type_text("Your text here")   Clipboard paste works on canvas
-```
-
-### Verify an action succeeded (example flow)
-
-```
-smart_click("Send", processId=PID)
-wait(1)
-
-# Method 1: Check return value — did smart_click find and click the element?
-# Method 2: Window state — did a new dialog or confirmation appear?
-get_windows()
-
-# Method 3: Text check — is "Message sent" visible? Is the "Send" button gone?
-read_screen(processId=PID)
-
-# Method 4: Visual — take a screenshot if text methods are inconclusive
-desktop_screenshot()
-
-# Method 5: Negative — any error dialog? Wrong window in foreground?
-get_active_window()
+ocr_read_screen()          → read content (DOM extraction fails)
+mouse_click(x, y)          → click into the canvas area
+type_text("your text")     → clipboard paste works even on canvas
 ```
 
 ---
 
-## Section 7: Safety
+## Quick Patterns
 
-### Safety tiers
+**Open app and type:**
+```
+open_app("notepad") → wait(2) → smart_read() → type_text("Hello") → smart_read()
+```
+
+**Read a webpage:**
+```
+navigate_browser(url) → wait(3) → cdp_connect() → cdp_read_text()
+```
+
+**Fill a web form:**
+```
+cdp_connect() → cdp_type("Email", "x@x.com") → cdp_type("Password", "…") → cdp_click("Submit")
+```
+
+**Cross-app copy/paste:**
+```
+focus_window("Chrome") → key_press("ctrl+a") → key_press("ctrl+c")
+→ read_clipboard() → focus_window("Notepad") → type_text(clipboard)
+```
+
+**Send email via Outlook:**
+```
+open_app("outlook") → wait(2) → smart_click("New Email")
+→ mouse_click(to_field_x, to_field_y) → type_text("recipient@x.com") → key_press("Tab")
+→ mouse_click(subject_x, subject_y) → type_text("Subject") → key_press("Tab")
+→ mouse_click(body_x, body_y) → type_text("Body text")
+→ mouse_click(send_x, send_y)
+```
+
+**Autonomous complex task (requires `clawdcursor start`):**
+```
+delegate_to_agent("Open Gmail, find latest email from Stripe, forward to billing@x.com")
+→ poll GET /status every 2s
+→ if waiting_confirm: ask user → POST /confirm {"approved": true}
+→ if idle: task done
+```
+
+---
+
+## Full Tool Reference (42 tools)
+
+Speed: ⚡ Free/instant · 🔵 Cheap · 🟡 Moderate · 🔴 Vision (expensive)
+
+### Perception (6)
+| Tool | What it does | When |
+|------|-------------|------|
+| `read_screen` | A11y tree — buttons, inputs, text, coords | ⚡ Default first read |
+| `smart_read` | OCR + a11y combined | 🔵 When unsure which to use |
+| `ocr_read_screen` | Raw OCR text with bounding boxes | 🔵 Canvas UIs, empty a11y trees |
+| `desktop_screenshot` | Full screen image (1280px wide) | ⚡ Last resort visual check |
+| `desktop_screenshot_region` | Zoomed crop of specific area | ⚡ Fine-grained visual detail |
+| `get_screen_size` | Screen dimensions and DPI | ⚡ Coordinate calculations |
+
+### Mouse (7)
+| Tool | What it does | When |
+|------|-------------|------|
+| `smart_click` | Find element by text/label, click | 🔵 First choice for clicking |
+| `mouse_click` | Left click at (x, y) | ⚡ Last resort |
+| `mouse_double_click` | Double click at (x, y) | ⚡ Open files, select words |
+| `mouse_right_click` | Right click at (x, y) | ⚡ Context menus |
+| `mouse_hover` | Move cursor without clicking | ⚡ Hover menus |
+| `mouse_scroll` | Scroll at position (physical mouse wheel) | ⚡ Scroll content |
+| `mouse_drag` | Drag from start to end — accepts `startX/startY/endX/endY` or `x1/y1/x2/y2` | ⚡ Resize, select ranges |
+
+### Keyboard (5)
+| Tool | What it does | When |
+|------|-------------|------|
+| `smart_type` | Find input by label, focus it, type | 🔵 First choice for form fields |
+| `type_text` | Clipboard paste into focused element | ⚡ After manually focusing |
+| `key_press` | Send key combo (`ctrl+s`, `Return`, `alt+tab`) | ⚡ After focus_window |
+| `shortcuts_list` | List keyboard shortcuts for current app | ⚡ Before reaching for mouse |
+| `shortcuts_execute` | Run a named shortcut (fuzzy match) | ⚡ Save, copy, paste, undo |
+
+### Window Management (5)
+| Tool | What it does | When |
+|------|-------------|------|
+| `get_windows` | List all open windows with PIDs and bounds | ⚡ Situational awareness |
+| `get_active_window` | Current foreground window | ⚡ Check current focus |
+| `get_focused_element` | Element with keyboard focus | ⚡ Debug wrong-field typing |
+| `focus_window` | Bring window to front (auto-clears off-screen phantoms) | ⚡ Always before key_press |
+| `minimize_window` | Minimize by processName, processId, or title | ⚡ Clear focus stealers |
+
+### UI Elements (2)
+| Tool | What it does | When |
+|------|-------------|------|
+| `find_element` | Search UI tree by name or type | ⚡ Find automation IDs |
+| `invoke_element` | Invoke element by automation ID or name | ⚡ When ID known from read_screen |
+
+### Clipboard (2)
+| Tool | What it does | When |
+|------|-------------|------|
+| `read_clipboard` | Read clipboard text | ⚡ After copy operations |
+| `write_clipboard` | Write text to clipboard | ⚡ Before paste operations |
+
+### Browser / CDP (11)
+| Tool | What it does | When |
+|------|-------------|------|
+| `cdp_connect` | Connect to browser DevTools Protocol | ⚡ First step for any browser task |
+| `cdp_page_context` | List interactive elements on page | ⚡ After connect |
+| `cdp_read_text` | Extract DOM text | ⚡ Read page content |
+| `cdp_click` | Click by CSS selector or visible text | ⚡ Browser clicks |
+| `cdp_type` | Type into input by label or selector | ⚡ Browser form filling |
+| `cdp_select_option` | Select dropdown option | ⚡ Select elements |
+| `cdp_evaluate` | Run JavaScript in page context | ⚡ Custom queries |
+| `cdp_scroll` | Scroll page via DOM (`direction`, `amount` px) | ⚡ DOM-level scroll |
+| `cdp_wait_for_selector` | Wait for element to appear | ⚡ After navigation/AJAX |
+| `cdp_list_tabs` | List all browser tabs | ⚡ When on wrong tab |
+| `cdp_switch_tab` | Switch to a tab by title or index | ⚡ After cdp_list_tabs |
+
+### Orchestration (4)
+| Tool | What it does | When |
+|------|-------------|------|
+| `open_app` | Launch application by name | ⚡ First step for desktop tasks |
+| `navigate_browser` | Open URL (auto-enables CDP) | ⚡ First step for browser tasks |
+| `wait` | Pause N seconds | ⚡ After opening apps, let UI render |
+| `delegate_to_agent` | Send task to built-in autonomous agent | 🟡 Complex multi-step tasks (requires `clawdcursor start`) |
+
+---
+
+## Coordinate System
+
+All mouse tools use **image-space coordinates** from a 1280px-wide viewport — matching screenshots from `desktop_screenshot`. DPI scaling is handled automatically. Do not pre-scale coordinates.
+
+---
+
+## Safety
 
 | Tier | Actions | Behavior |
 |------|---------|----------|
 | 🟢 Auto | Navigation, reading, opening apps | Runs immediately |
-| 🟡 Preview | Typing, form filling | Logged before executing |
-| 🔴 Confirm | Sending messages, deleting, purchases | Pauses for user approval |
+| 🟡 Preview | Typing, form filling | Logged |
+| 🔴 Confirm | Send, delete, purchase | Pauses — **always ask user first** |
 
-### Rules
-
-- **Never self-approve Confirm actions.** Always ask the user first.
-- `Alt+F4` and `Ctrl+Alt+Delete` are **blocked** and will not execute.
-- Server binds to **127.0.0.1 only** — not accessible from the network.
-- First run requires **explicit user consent** for desktop control.
-- All actions are logged.
-- No telemetry, no analytics, no phone-home.
+- **Never self-approve Confirm actions.**
+- `Alt+F4` and `Ctrl+Alt+Delete` are blocked.
+- Server binds to `127.0.0.1` only.
+- First run requires explicit user consent for desktop control.
 
 ---
 
-## Section 8: Error Recovery
+## Error Recovery
 
-| Problem | What to do |
-|---------|-----------|
-| Server not running (connection refused on :3847) | Run `clawdcursor serve` and wait 2 seconds |
-| Chrome CDP not available (:9222) | `Start-Process chrome -ArgumentList "--remote-debugging-port=9222"` |
-| CDP connects to wrong tab | Call `cdp_list_tabs()` then `cdp_switch_tab(target)` |
-| `focus_window` fails | Try `mouse_click` on the window's title bar area, then `read_screen` to confirm |
-| `smart_click` fails to find element | Fall back: `read_screen` to get coordinates, then `mouse_click(x, y)` |
-| `smart_type` fails to find input | Fall back: `smart_click` on the input field, then `type_text(text)` |
-| `cdp_read_text` returns empty (canvas app) | Use `ocr_read_screen()` instead |
-| `key_press` goes to wrong window | You forgot `focus_window` — always focus first, then press keys |
-| Agent returns "busy" | Wait for it to finish, or call `abort` and retry |
-| Task completes but wrong result | Verify with `smart_read` or `read_screen`, then retry with more specific instructions |
-| Same action fails 3+ times | Try a completely different approach — different tool, different target |
+| Problem | Fix |
+|---------|-----|
+| Port 3847 not responding | `clawdcursor serve` — wait 2s — `GET /health` |
+| 401 Unauthorized | Token changed — read `~/.clawdcursor/token` and use fresh value |
+| CDP not available | Chrome must be open. `navigate_browser(url)` auto-enables it. |
+| CDP on wrong tab | `cdp_list_tabs()` → `cdp_switch_tab(target)` |
+| `focus_window` fails | `get_windows()` to confirm title/processName, then retry |
+| `smart_click` can't find element | `read_screen()` for coords → `mouse_click(x, y)` |
+| `key_press` goes to wrong window | You skipped `focus_window` — always focus first |
+| `cdp_read_text` returns empty | Canvas app — use `ocr_read_screen()` instead |
+| Same action fails 3+ times | Try a completely different approach |
 
 ---
 
-## Section 9: Coordinate System
+## Platform Support
 
-All mouse tools use **image-space coordinates** based on a 1280px-wide viewport.
-This matches the screenshots from `desktop_screenshot`. DPI scaling is handled
-automatically. You do not need to worry about logical vs physical pixels.
+| Platform | A11y | OCR | CDP |
+|----------|------|-----|-----|
+| Windows (x64/ARM64) | PowerShell + .NET UIA | Windows.Media.Ocr | Chrome/Edge |
+| macOS (Intel/Apple Silicon) | JXA + System Events | Apple Vision | Chrome/Edge |
+| Linux (x64/ARM64) | AT-SPI | Tesseract | Chrome/Edge |
 
----
-
-## Section 10: Platform Support
-
-| Platform | UI Automation | OCR | Browser (CDP) | Status |
-|----------|---------------|-----|---------------|--------|
-| **Windows** (x64/ARM64) | PowerShell + .NET UI Automation | Windows.Media.Ocr | Chrome/Edge | Full support |
-| **macOS** (Intel/Apple Silicon) | JXA + System Events | Apple Vision framework | Chrome/Edge | Full support |
-| **Linux** (x64/ARM64) | AT-SPI (planned) | Tesseract OCR | Chrome/Edge | Browser + OCR |
-
-**macOS:** Grant Accessibility permission: System Settings > Privacy > Accessibility.
-Install Xcode CLI tools if not present: `xcode-select --install`
-
-**Linux:** Install Tesseract for OCR: `sudo apt install tesseract-ocr`
-
----
-
-## Platform Notes
-
-### macOS
-- OCR may return empty for some apps — use `smart_read` or `read_screen` as alternatives
-- CDP browser automation requires Chrome/Edge launched with --remote-debugging-port
-- Use `open_app` to launch apps (uses macOS `open -a` internally)
-- Coordinate scaling (Retina displays) is handled automatically by physicalToMouse()
-
----
-
-## Troubleshooting
-
-### delegate_to_agent returns "connection refused" or 404
-The agent server is not running. Run `clawdcursor start` in a terminal first.
-delegate_to_agent needs the server — other tools (smart_click, type_text, etc.) work without it.
-
-### "Authentication failed (401)"
-The server token changed. Run `clawdcursor stop && clawdcursor start` to regenerate.
-
-### OCR returns empty on macOS
-macOS OCR support requires additional setup. Try using `smart_read` instead which combines multiple perception methods.
-
-### Coordinates seem off / clicks miss targets
-clawdcursor handles DPI scaling automatically. If using raw coordinates from screenshots, they're in image-space — clawdcursor converts them. Don't pre-scale coordinates.
-
----
-
-## Modes Summary
-
-| Mode | Command | What it does | Who is the brain? | Cost |
-|------|---------|-------------|-------------------|------|
-| `serve` | `clawdcursor serve` | 40 tools via REST API, no LLM | Your AI model | Your calls only |
-| `mcp` | `clawdcursor mcp` | 40 tools via MCP stdio, no LLM | Your AI model | Your calls only |
-| `start` | `clawdcursor start` | Full autonomous agent + 40 tools | Built-in LLM pipeline | Varies by provider |
+**macOS:** Grant Accessibility in System Settings → Privacy → Accessibility.
+**Linux:** `sudo apt install tesseract-ocr` for OCR support.
