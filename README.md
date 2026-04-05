@@ -35,6 +35,14 @@
 - **`returnPartial` mode** — external agents (OpenClaw, Claude Code) send `POST /task {"returnPartial": true}`. If Stage 2 fails, control returns to the calling agent instead of burning tokens on Stage 3 vision. The agent finishes with MCP tools (smarter than one-shot vision).
 - **`POST /learn` endpoint** — after completing a task with MCP tools, agents report what worked. Saves workflows, keyboard shortcuts, and tips to the app's guide JSON. Community-driven knowledge base that grows with every interaction.
 - **Per-layer API keys** — mixed-provider pipelines (e.g., Kimi text + Anthropic vision) use separate API keys per layer. No more auth failures from sending the wrong key to the wrong provider.
+- **CDP auto-init in serve mode** — browser DevTools Protocol connects automatically on startup. Web tasks get DOM access instead of falling back to pure vision.
+- **`minimize_window` tool** — new cross-platform tool. Minimize any window by name, PID, or title in 1 call. Windows (Super+Down), macOS (Cmd+M), Linux (wmctrl).
+- **`smart_click` timeout** — 10s default timeout prevents silent hangs on complex UIs. Returns diagnostic error instead of blocking.
+- **`focus_window` phantom cleanup** — automatically minimizes off-screen full-screen windows (-14,-14 bounds) that steal focus before focusing the target.
+- **Spatial layout analysis** — textual scaffolding: detects toolbar zones, content center, sidebars from OCR element positions. Any text LLM knows WHERE to click without vision.
+- **42 tools** (was 40) — added `minimize_window` and `smart_read`. Full tool reference in SKILL.md.
+- **172 tests pass** — provider matrix tests (27), focus window, action router, OCR, safety, coordinates, and more.
+- **Per-layer API keys** — mixed-provider pipelines (e.g., Kimi text + Anthropic vision) use separate API keys per layer.
 - **New config schema** — `textModel`/`visionModel` field names. Old names still accepted.
 - **Memory leak fixes** — buffer release in OCR engine, TERMINAL env var quoting for Linux.
 - **Cross-platform hardening** — Linux GPU detection, PID file locking, signal handlers.
