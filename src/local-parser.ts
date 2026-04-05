@@ -26,19 +26,24 @@ export class LocalTaskParser {
     // First, try to split compound tasks on delimiters
     const parts = this.splitCompoundTask(trimmed);
 
-    // Parse each part individually
-    const subtasks: string[] = [];
-
-    for (const part of parts) {
-      const parsed = this.parseSingleTask(part.trim());
-      if (parsed === null) {
-        // If any part fails to parse, return null for LLM fallback
-        return null;
+    // If we got multiple parts from splitting, validate each has a clear action.
+    // Vague subtasks like "scroll through" with no end condition create infinite loops.
+    // Keep the task as one unit if any part lacks an actionable verb.
+    if (parts.length > 1) {
+      const actionVerb = /^(open|close|click|type|press|save|go|navigate|search|find|create|delete|write|send|copy|paste|select|drag|scroll.*and|download|upload|install|run|set|change|turn|enable|disable|check|uncheck|fill|submit|compose|reply|forward)\b/i;
+      const filtered = parts.map(p => p.trim()).filter(p => p.length > 0);
+      // If every part starts with a clear verb, split. Otherwise keep as one task.
+      const allHaveVerbs = filtered.every(p => actionVerb.test(p));
+      if (allHaveVerbs) {
+        return filtered;
       }
-      subtasks.push(parsed);
+      // Fallback: don't split — let the OCR Reasoner handle it as one task
+      return null;
     }
 
-    return subtasks.length > 0 ? subtasks : null;
+    // Single part — try to parse it
+    const parsed = this.parseSingleTask(parts[0]?.trim() || '');
+    return parsed ? [parsed] : null;
   }
 
   /**
@@ -166,8 +171,9 @@ export class LocalTaskParser {
       return `focus ${focusMatch[1].trim()}`;
     }
 
-    // 7. Type / Write / Enter [text]
-    const typeMatch = normalized.match(/^(?:type|write|enter)\s+(\S.*)$/i);
+    // 7. Type / Enter [text] — literal keyboard input only
+    // "write" excluded: implies creative composition needing LLM
+    const typeMatch = normalized.match(/^(?:type|enter)\s+(\S.*)$/i);
     if (typeMatch) {
       const text = typeMatch[1].trim();
       // Remove surrounding quotes if present
@@ -256,6 +262,19 @@ export class LocalTaskParser {
     const searchMatch = normalized.match(/^search\s+(?:for\s+)?(\S.*)$/i);
     if (searchMatch) {
       return `search for ${searchMatch[1].trim()}`;
+    }
+
+    // 16. "save [the] file as [filename] [on the desktop / in folder]"
+    const saveAsMatch = task.match(/^save\s+(?:the\s+)?(?:file|document|it)\s+as\s+(.+)$/i);
+    if (saveAsMatch) {
+      return `save as ${saveAsMatch[1].trim()}`;
+    }
+
+    // 17. "type the sentence X" / "type the text X" / "type the word X"
+    // Handles "type the sentence The quick brown fox..." which the basic type pattern misses
+    const typeSentenceMatch = task.match(/^type\s+(?:the\s+)?(?:sentence|text|phrase|word|message|string)\s+(.+)$/i);
+    if (typeSentenceMatch) {
+      return `type ${typeSentenceMatch[1].trim()}`;
     }
 
     // If no pattern matched, return null (trigger LLM fallback)

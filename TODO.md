@@ -1,0 +1,9 @@
+# TODO - v0.7.5 Improvements
+
+1. **Done-verification for 'close' tasks** — keyword check fails when target app no longer exists on screen. Should detect window disappearance as success evidence.
+2. **A11y timeout resilience** — PSBridge hangs 20s when target window disappears mid-task. Should fail fast (2s) when PID no longer exists.
+3. **WebView2 OCR blindness** — New Outlook (olk), Teams, and other WebView2 apps render in embedded Chromium. OCR captures only taskbar/title elements, not the actual UI. Fix: detect WebView2 process → fast-track to Stage 3 (Vision) instead of wasting 78s on blind Stage 2. Or connect CDP to WebView2's debug port.
+4. **Stage 2 early bail for invisible UIs** — if 3+ consecutive scans return 0 in-window elements, immediately signal cannot_read instead of looping to stagnation (6 identical screens).
+
+---
+Added: 2026-03-31

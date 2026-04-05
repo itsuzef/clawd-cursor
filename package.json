@@ -1,24 +1,27 @@
 {
-  "name": "clawd-cursor",
-  "version": "0.6.3",
-  "description": "AI Desktop Agent — Native screen control via @nut-tree-fork/nut-js. Your AI sees the screen, moves the mouse, types, and completes tasks autonomously.",
+  "name": "clawdcursor",
+  "version": "0.7.5",
+  "description": "OS-level desktop automation server. Gives any AI model eyes, hands, and ears on a real computer. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model.",
   "main": "dist/index.js",
   "bin": {
-    "clawd-cursor": "dist/index.js",
     "clawdcursor": "dist/index.js"
   },
   "scripts": {
+    "postinstall": "node scripts/verify-install.js || true",
     "build": "tsc && node dist/postbuild.js",
-    "setup": "npm run build && npm link",
+    "setup": "node scripts/verify-install.js && npm run build && npm link --force",
     "postbuild:msg": "handled by postbuild.js",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js start",
     "stop": "node dist/index.js stop",
     "doctor": "node dist/index.js doctor",
     "lint": "eslint src/",
-    "test": "vitest"
+    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@nut-tree-fork/nut-js": "^4.2.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
@@ -47,4 +50,3 @@
   },
   "license": "MIT"
 }
-

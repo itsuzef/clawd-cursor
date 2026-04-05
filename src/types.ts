@@ -67,6 +67,14 @@ export interface StepResult {
   screenshot?: string;
   error?: string;
   timestamp: number;
+  // Structured logging fields:
+  layer?: 'browser' | 'router' | 'smart' | 'ocr' | 'a11y' | 'unified' | 'computer-use' | 'deterministic';
+  method?: string;           // 'a11y_invoke' | 'ocr_click' | 'keyboard' | 'mouse' | 'cdp'
+  coordinates?: [number, number];
+  elementName?: string;
+  elementType?: string;      // 'Button', 'Edit', etc.
+  verified?: boolean;        // post-action verification result
+  latencyMs?: number;
 }
 
 export interface AgentState {
@@ -107,6 +115,16 @@ export interface ClawdConfig {
   };
   /** Save screenshots to debug/ folder. Off by default for security. */
   debug?: boolean;
+  browser?: {
+    /** Custom browser executable path (overrides auto-detection) */
+    executablePath?: string;
+    /** Process name for accessibility matching (e.g. 'comet', 'brave') */
+    processName?: string;
+    /** CDP debugging port (default: 9223) */
+    cdpPort?: number;
+    /** Additional command-line args for browser launch */
+    extraArgs?: string[];
+  };
 }
 
 export const DEFAULT_CONFIG: ClawdConfig = {

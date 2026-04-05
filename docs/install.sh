@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION="v0.7.5"
+VERSION="v0.7.2"
 INSTALL_DIR="$HOME/clawdcursor"
 
 echo ""

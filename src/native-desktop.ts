@@ -64,18 +64,121 @@ const KEY_MAP: Record<string, Key> = {
 // At 2560 screen: 1280 → scale 2x (was 1024 → 2.5x). Icons go from ~12px to ~20px.
 const LLM_TARGET_WIDTH = 1280;
 
+export interface MonitorInfo {
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+  name: string;
+}
+
 export class NativeDesktop extends EventEmitter {
   private config: ClawdConfig;
   private screenWidth = 0;
   private screenHeight = 0;
   private connected = false;
+  private monitors: MonitorInfo[] = [];
 
   /** Scale factor: LLM coordinates × scaleFactor = real screen coordinates */
   private scaleFactor = 1;
+  /**
+   * DPI ratio: physical pixels / logical (mouse) pixels.
+   * OCR coordinates (physical) / dpiRatio = mouse coordinates (logical).
+   * Detected at connect() time via System.Windows.Forms.
+   */
+  private dpiRatio = 1;
 
   constructor(config: ClawdConfig) {
     super();
     this.config = config;
+  }
+
+  /**
+   * Enumerate all connected monitors with their positions and sizes.
+   * Returns best-effort results — falls back to primary only on errors.
+   */
+  async getMonitors(): Promise<MonitorInfo[]> {
+    if (this.monitors.length > 0) return this.monitors;
+
+    try {
+      if (process.platform === 'win32') {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        const ps = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.Bounds.X),$($_.Bounds.Y),$($_.Bounds.Width),$($_.Bounds.Height),$($_.Primary),$($_.DeviceName)" }`;
+        const { stdout } = await execAsync(`powershell -NoProfile -Command "${ps}"`);
+        const lines = stdout.trim().split('\n').filter(Boolean);
+        this.monitors = lines.map((line, i) => {
+          const [x, y, w, h, primary, name] = line.trim().split(',');
+          return {
+            index: i,
+            x: parseInt(x), y: parseInt(y),
+            width: parseInt(w), height: parseInt(h),
+            primary: primary.trim().toLowerCase() === 'true',
+            name: name?.trim() || `Monitor ${i + 1}`,
+          };
+        });
+      } else if (process.platform === 'darwin') {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        // system_profiler gives display info; for bounds we use osascript
+        const { stdout } = await execAsync(`osascript -e 'tell application "System Events" to get bounds of every desktop'`).catch(() => ({ stdout: '' }));
+        if (stdout.trim()) {
+          // fallback: just return primary
+          this.monitors = [{ index: 0, x: 0, y: 0, width: this.screenWidth, height: this.screenHeight, primary: true, name: 'Primary' }];
+        } else {
+          this.monitors = [{ index: 0, x: 0, y: 0, width: this.screenWidth, height: this.screenHeight, primary: true, name: 'Primary' }];
+        }
+      } else {
+        // Linux: use xrandr
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        const { stdout } = await execAsync('xrandr --query 2>/dev/null').catch(() => ({ stdout: '' }));
+        const re = /(\S+) connected(?: primary)? (\d+)x(\d+)\+(\d+)\+(\d+)/g;
+        let m; let i = 0; const results: MonitorInfo[] = [];
+        while ((m = re.exec(stdout)) !== null) {
+          results.push({ index: i++, x: parseInt(m[4]), y: parseInt(m[5]), width: parseInt(m[2]), height: parseInt(m[3]), primary: stdout.includes(m[1] + ' connected primary'), name: m[1] });
+        }
+        this.monitors = results.length > 0 ? results : [{ index: 0, x: 0, y: 0, width: this.screenWidth, height: this.screenHeight, primary: true, name: 'Primary' }];
+      }
+    } catch {
+      this.monitors = [{ index: 0, x: 0, y: 0, width: this.screenWidth, height: this.screenHeight, primary: true, name: 'Primary' }];
+    }
+
+    return this.monitors;
+  }
+
+  /**
+   * Capture a specific monitor by index.
+   * Falls back to primary grab if region capture fails.
+   */
+  async captureMonitor(monitorIndex = 0): Promise<ScreenFrame & { scaleFactor: number; llmWidth: number; llmHeight: number }> {
+    const monitors = await this.getMonitors();
+    const mon = monitors[monitorIndex] ?? monitors.find(m => m.primary) ?? monitors[0];
+    if (!mon) return this.captureForLLM();
+
+    try {
+      const { Region } = await import('@nut-tree-fork/nut-js');
+      const region = new Region(mon.x, mon.y, mon.width, mon.height);
+      const img = await screen.grabRegion(region);
+      const scaleFactor = mon.width > LLM_TARGET_WIDTH ? mon.width / LLM_TARGET_WIDTH : 1;
+      const llmW = Math.round(mon.width / scaleFactor);
+      const llmH = Math.round(mon.height / scaleFactor);
+      const processed = await sharp(img.data, { raw: { width: img.width, height: img.height, channels: 4 } })
+        .resize(llmW, llmH)
+        .png()
+        .toBuffer();
+      // Release the raw RGBA buffer immediately after processing
+      (img as any).data = null;
+      return { width: mon.width, height: mon.height, buffer: processed, timestamp: Date.now(), format: 'png', scaleFactor, llmWidth: llmW, llmHeight: llmH };
+    } catch {
+      // Fallback: full primary grab
+      return this.captureForLLM();
+    }
   }
 
   /**
@@ -101,11 +204,65 @@ export class NativeDesktop extends EventEmitter {
         this.scaleFactor = 1;
       }
 
+      // Detect DPI ratio (physical / logical) for OCR coordinate conversion.
+      // On Windows, System.Windows.Forms.Screen returns logical (DPI-scaled) dimensions,
+      // while screen.grab() returns physical pixels. Mouse API uses logical coords.
+      if (process.platform === 'win32') {
+        try {
+          const { execFileSync } = await import('child_process');
+          const result = execFileSync('powershell.exe', [
+            '-NoProfile', '-Command',
+            "Add-Type -AssemblyName System.Windows.Forms; $s=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \"$($s.Width),$($s.Height)\"",
+          ], { timeout: 10000, encoding: 'utf-8' }).trim();
+          const [logicalW] = result.split(',').map(Number);
+          if (logicalW > 0 && logicalW < this.screenWidth) {
+            this.dpiRatio = this.screenWidth / logicalW;
+          }
+        } catch { /* non-fatal — dpiRatio stays 1 */ }
+      } else if (process.platform === 'darwin') {
+        try {
+          const { execFileSync } = await import('child_process');
+          // NSScreen reports in logical (point) dimensions — compare with physical pixels from screen.grab()
+          // TODO: Multi-monitor support — currently uses mainScreen only. For multi-monitor,
+          // enumerate NSScreen.screens and sum widths to get the full virtual canvas size.
+          const result = execFileSync('osascript', ['-e',
+            'use framework "AppKit"\nreturn (current application\'s NSScreen\'s mainScreen\'s frame()\'s size\'s width) as integer',
+          ], { timeout: 5000, encoding: 'utf-8' }).trim();
+          const logicalW = parseInt(result);
+          if (logicalW > 0 && logicalW < this.screenWidth) {
+            this.dpiRatio = this.screenWidth / logicalW;
+          }
+        } catch { /* non-fatal — dpiRatio stays 1 */ }
+      } else if (process.platform === 'linux') {
+        try {
+          // Check common DE scale environment variables first
+          const gdkScale = parseInt(process.env.GDK_SCALE || '1');
+          const qtScale = parseFloat(process.env.QT_SCALE_FACTOR || '1');
+          const envScale = Math.max(gdkScale, qtScale);
+          if (envScale > 1) {
+            this.dpiRatio = envScale;
+          } else {
+            const { execFileSync } = await import('child_process');
+            const output = execFileSync('xrandr', ['--query'], { timeout: 5000, encoding: 'utf-8' });
+            const match = output.match(/primary\s+(\d+)x(\d+)/);
+            if (match) {
+              const logicalW = parseInt(match[1]);
+              if (logicalW > 0 && logicalW < this.screenWidth) {
+                this.dpiRatio = this.screenWidth / logicalW;
+              }
+            }
+          }
+        } catch { /* non-fatal — dpiRatio stays 1 */ }
+      }
+
       this.connected = true;
 
       console.log(`🐾 Native desktop connected`);
       console.log(`   Screen: ${this.screenWidth}x${this.screenHeight}`);
       console.log(`   LLM scale factor: ${this.scaleFactor.toFixed(2)}x`);
+      if (this.dpiRatio > 1) {
+        console.log(`   DPI ratio: ${this.dpiRatio.toFixed(2)}x (physical/logical)`);
+      }
     } catch (err: any) {
       console.error('Native desktop init error:', err?.message);
       this.connected = false;
@@ -134,6 +291,8 @@ export class NativeDesktop extends EventEmitter {
       this.screenWidth,
       this.screenHeight,
     );
+    // Release the raw RGBA buffer immediately after processing
+    (img as any).data = null;
 
     return {
       width: this.screenWidth,
@@ -178,6 +337,8 @@ export class NativeDesktop extends EventEmitter {
       llmWidth,
       llmHeight,
     );
+    // Release the raw RGBA buffer immediately after processing
+    (img as any).data = null;
 
     return {
       width: this.screenWidth,       // real screen width
@@ -228,6 +389,8 @@ export class NativeDesktop extends EventEmitter {
     const buffer = format === 'jpeg'
       ? await pipeline.jpeg({ quality }).toBuffer()
       : await pipeline.png().toBuffer();
+    // Release the raw RGBA buffer immediately after processing
+    (img as any).data = null;
 
     return {
       width: rw,
@@ -248,6 +411,27 @@ export class NativeDesktop extends EventEmitter {
    */
   getScaleFactor(): number {
     return this.scaleFactor;
+  }
+
+  /**
+   * Get the DPI ratio (physical pixels / logical mouse pixels).
+   * Returns 1 on non-HiDPI screens or non-Windows platforms.
+   */
+  getDpiRatio(): number {
+    return this.dpiRatio;
+  }
+
+  /**
+   * Convert physical pixel coordinates (from OCR/screenshot) to mouse coordinates.
+   * On Windows with DPI scaling, nut-js mouse API uses logical (DPI-scaled) coords,
+   * while screen.grab() returns physical pixels. This method bridges the gap.
+   */
+  physicalToMouse(x: number, y: number): { x: number; y: number } {
+    if (this.dpiRatio <= 1) return { x, y };
+    return {
+      x: Math.round(x / this.dpiRatio),
+      y: Math.round(y / this.dpiRatio),
+    };
   }
 
   /**
@@ -289,27 +473,27 @@ export class NativeDesktop extends EventEmitter {
 
   async mouseClick(x: number, y: number, button: number = 1): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   🖱️  Click at (${x}, ${y})`);
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     const btn = this.mapButton(button);
     await mouse.click(btn);
+    console.log(`   🖱️  Click at (${x}, ${y})`);
   }
 
   async mouseDoubleClick(x: number, y: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   🖱️  Double-click at (${x}, ${y})`);
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     await mouse.doubleClick(Button.LEFT);
+    console.log(`   🖱️  Double-click at (${x}, ${y})`);
   }
 
   async mouseRightClick(x: number, y: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   🖱️  Right-click at (${x}, ${y})`);
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     await mouse.rightClick();
+    console.log(`   🖱️  Right-click at (${x}, ${y})`);
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
@@ -319,7 +503,6 @@ export class NativeDesktop extends EventEmitter {
 
   async mouseScroll(x: number, y: number, delta: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   🖱️  Scroll at (${x}, ${y}) delta=${delta}`);
     await mouse.setPosition(new Point(x, y));
     await this.delay(30);
     const steps = Math.abs(Math.round(delta));
@@ -331,36 +514,56 @@ export class NativeDesktop extends EventEmitter {
       }
       await this.delay(30);
     }
+    console.log(`   🖱️  Scroll at (${x}, ${y}) delta=${delta}`);
   }
 
   async typeText(text: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   ⌨️  Typing: "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"`);
     await keyboard.type(text);
+    console.log(`   ⌨️  Typed: "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"`);
   }
 
   async keyPress(keyCombo: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    console.log(`   ⌨️  Key press: ${keyCombo}`);
 
-    const parts = keyCombo.split('+').map(k => k.trim());
+    // Special case: literal "+" character (can't split on "+" since it IS the separator)
+    if (keyCombo === '+') {
+      await keyboard.type('+');
+      await this.delay(30);
+      console.log(`   ⌨️  Key press: +`);
+      return;
+    }
+
+    const parts = keyCombo.split('+').map(k => k.trim()).filter(k => k.length > 0);
     const keys = parts.map(k => this.mapKey(k));
 
-    if (keys.length === 1) {
-      await keyboard.pressKey(keys[0]);
+    // If the only key is a TYPE_CHAR (single printable char like *, +, ., etc.),
+    // use keyboard.type() which handles shift combos automatically
+    if (keys.length === 1 && keys[0] === 'TYPE_CHAR') {
+      await keyboard.type(parts[0]);
       await this.delay(30);
-      await keyboard.releaseKey(keys[0]);
+    } else if (keys.length === 1) {
+      await keyboard.pressKey(keys[0] as Key);
+      await this.delay(30);
+      await keyboard.releaseKey(keys[0] as Key);
     } else {
       // Press all modifier keys down, then the final key, then release in reverse
       for (const key of keys) {
-        await keyboard.pressKey(key);
+        if (key === 'TYPE_CHAR') {
+          await keyboard.type(parts[keys.indexOf(key)]);
+        } else {
+          await keyboard.pressKey(key as Key);
+        }
         await this.delay(30);
       }
       for (const key of [...keys].reverse()) {
-        await keyboard.releaseKey(key);
+        if (key !== 'TYPE_CHAR') {
+          await keyboard.releaseKey(key as Key);
+        }
         await this.delay(30);
       }
     }
+    console.log(`   ⌨️  Key press: ${keyCombo}`);
   }
 
   async executeMouseAction(action: MouseAction): Promise<void> {
@@ -406,10 +609,15 @@ export class NativeDesktop extends EventEmitter {
   async keyDown(keyCombo: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
     console.log(`   ⌨️  Key down: ${keyCombo}`);
-    const parts = keyCombo.split('+').map(k => k.trim());
+    if (keyCombo === '+') { await keyboard.type('+'); return; }
+    const parts = keyCombo.split('+').map(k => k.trim()).filter(k => k.length > 0);
     for (const k of parts) {
       const key = this.mapKey(k);
-      await keyboard.pressKey(key);
+      if (key === 'TYPE_CHAR') {
+        await keyboard.type(k);
+      } else {
+        await keyboard.pressKey(key);
+      }
       await this.delay(20);
     }
   }
@@ -417,10 +625,13 @@ export class NativeDesktop extends EventEmitter {
   async keyUp(keyCombo: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
     console.log(`   ⌨️  Key up: ${keyCombo}`);
-    const parts = keyCombo.split('+').map(k => k.trim());
+    if (keyCombo === '+') return; // type() already released
+    const parts = keyCombo.split('+').map(k => k.trim()).filter(k => k.length > 0);
     for (const k of [...parts].reverse()) {
       const key = this.mapKey(k);
-      await keyboard.releaseKey(key);
+      if (key !== 'TYPE_CHAR') {
+        await keyboard.releaseKey(key);
+      }
       await this.delay(20);
     }
   }
@@ -474,6 +685,9 @@ export class NativeDesktop extends EventEmitter {
     this.screenWidth = 0;
     this.screenHeight = 0;
     this.emit('disconnected');
+    // Remove all listeners so this instance can be GCd after disconnect.
+    // Must come after emit so 'disconnected' handlers still fire.
+    this.removeAllListeners();
     console.log('🐾 Native desktop disconnected');
   }
 
@@ -496,7 +710,7 @@ export class NativeDesktop extends EventEmitter {
    * Map a string key name to nut-js Key enum value.
    * Falls back to character-based lookup for single characters.
    */
-  private mapKey(keyName: string): Key {
+  private mapKey(keyName: string): Key | 'TYPE_CHAR' {
     // Normalize via canonical key names first
     const normalized = normalizeKey(keyName);
 
@@ -517,6 +731,11 @@ export class NativeDesktop extends EventEmitter {
         const numKey = `Num${upper}` as keyof typeof Key;
         const keyEntry = Key[numKey];
         if (keyEntry !== undefined) return keyEntry;
+      }
+      // Single printable character (symbols like *, +, -, ., etc.)
+      // Use keyboard.type() for these — it handles shift combos automatically
+      if (keyName.charCodeAt(0) >= 32 && keyName.charCodeAt(0) <= 126) {
+        return 'TYPE_CHAR';
       }
     }
 

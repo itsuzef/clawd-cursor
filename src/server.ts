@@ -14,19 +14,61 @@
  *   GET  /favorites  — list saved favorite commands
  *   POST /favorites  — add a command to favorites
  *   DELETE /favorites — remove a command from favorites
+ *   POST /report     — submit an error report (opt-in)
  */
 
 import express from 'express';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import type { ClawdConfig } from './types';
 import { Agent } from './agent';
 import { mountDashboard } from './dashboard';
 import { VERSION } from './version';
+import { DATA_DIR } from './paths';
+import { e } from './format';
 
-// Favorites persistence
-const FAVORITES_PATH = join(process.cwd(), '.clawd-favorites.json');
+// Favorites persistence — stored in ~/.clawdcursor/ so it persists across cwd changes
+const FAVORITES_PATH = join(DATA_DIR, '.clawdcursor-favorites.json');
+
+// ── Bearer token auth ─────────────────────────────────────────────────────────
+// Generated once at startup, persisted to ~/.clawdcursor/token so the
+// dashboard and external callers can read it. Rotates on every fresh start.
+const TOKEN_PATH = join(DATA_DIR, 'token');
+
+function generateToken(): string {
+  const token = randomBytes(32).toString('hex');
+  try {
+    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(TOKEN_PATH, token, { encoding: 'utf-8', mode: 0o600 });
+  } catch (tokenErr) {
+    console.warn(`${e('⚠', '[WARN]')} Could not write auth token file:`, (tokenErr as Error).message);
+  }
+  return token;
+}
+
+// Token is generated lazily (only when createServer is first called, i.e. `start`).
+// This prevents CLI commands like `stop`, `task`, `consent` from overwriting the
+// running server's token file on import.
+export let SERVER_TOKEN = '';
+
+/** Initialize the auth token. Called once from createServer(). */
+export function initServerToken(): string {
+  SERVER_TOKEN = generateToken();
+  return SERVER_TOKEN;
+}
+
+/** Middleware: require Authorization: Bearer <token> on mutating endpoints. */
+export function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token || token !== SERVER_TOKEN) {
+    res.status(401).json({ error: 'Unauthorized — include Authorization: Bearer <token> header. Token is at ~/.clawdcursor/token' });
+    return;
+  }
+  next();
+}
 
 function loadFavorites(): string[] {
   try {
@@ -35,8 +77,8 @@ function loadFavorites(): string[] {
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.warn('⚠ Failed to load favorites:', (e as Error).message);
+  } catch (favErr) {
+    console.warn(`${e('⚠', '[WARN]')} Failed to load favorites:`, (favErr as Error).message);
   }
   return [];
 }
@@ -44,8 +86,8 @@ function loadFavorites(): string[] {
 function saveFavorites(favorites: string[]): void {
   try {
     writeFileSync(FAVORITES_PATH, JSON.stringify(favorites, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('❌ Failed to save favorites:', (e as Error).message);
+  } catch (saveErr) {
+    console.error(`${e('❌', '[ERR]')} Failed to save favorites:`, (saveErr as Error).message);
   }
 }
 
@@ -59,8 +101,14 @@ interface LogEntry {
 const MAX_LOGS = 200;
 const logBuffer: LogEntry[] = [];
 
+const MAX_LOG_MSG_LEN = 500;
+
 function addLog(level: LogEntry['level'], message: string): void {
-  logBuffer.push({ timestamp: Date.now(), level, message });
+  // Truncate oversized messages (e.g. full LLM responses) to keep the buffer lean
+  const truncated = message.length > MAX_LOG_MSG_LEN
+    ? message.slice(0, MAX_LOG_MSG_LEN) + '\u2026'
+    : message;
+  logBuffer.push({ timestamp: Date.now(), level, message: truncated });
   if (logBuffer.length > MAX_LOGS) {
     logBuffer.splice(0, logBuffer.length - MAX_LOGS);
   }
@@ -117,24 +165,68 @@ const confirmSchema = z.object({
 });
 
 export function createServer(agent: Agent, config: ClawdConfig): express.Express {
+  // NOTE: initServerToken() is NOT called here — it's called from the listen
+  // callback in index.ts AFTER the port binds successfully. This prevents
+  // overwriting a valid token when start fails (e.g. EADDRINUSE).
+
   // Hook console to capture logs
   hookConsole();
 
   const app = express();
   app.use(express.json());
 
-  // Mount the web dashboard at GET /
-  mountDashboard(app);
+  // ── CORS: block browser-origin requests to prevent SSRF/localhost-bypass attacks ──
+  // The dashboard at GET / is exempt (browser tab). All API routes require:
+  //   1. Non-browser origin (no Origin header), OR same origin, OR explicit allowlist
+  //   2. Bearer token (on mutating endpoints)
+  app.use((req, res, next) => {
+    const origin = req.headers['origin'];
+    // Allow: no origin (curl, CLI, direct), or localhost origins
+    const allowedOrigins = [
+      'http://localhost:3847',
+      'http://127.0.0.1:3847',
+    ];
+    if (origin) {
+      if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.setHeader('Vary', 'Origin');
+      } else {
+        // Cross-origin browser request — block it
+        if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+        res.status(403).json({ error: 'Cross-origin requests not allowed' });
+        return;
+      }
+    }
+    if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+    next();
+  });
+
+  // Handle malformed JSON gracefully (e.g. control characters from terminal)
+  app.use((err: any, _req: any, res: any, next: any) => {
+    if (err.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'Invalid JSON in request body' });
+    }
+    next(err);
+  });
+
+  // Mount the web dashboard at GET / — pass token getter for client-side auth
+  // SECURITY: Token is injected into page JS — only safe when bound to localhost.
+  if (config.server.host !== '127.0.0.1' && config.server.host !== 'localhost') {
+    console.warn(`${e('⚠️', '[WARN]')} Dashboard token exposed in page JS — only safe on localhost (current host: ${config.server.host})`);
+  }
+  mountDashboard(app, () => SERVER_TOKEN);
 
   // --- Favorites endpoints ---
 
-  // Get all favorites
-  app.get('/favorites', (_req, res) => {
+  // Get all favorites (auth required — contains user data)
+  app.get('/favorites', requireAuth, (_req, res) => {
     res.json(loadFavorites());
   });
 
   // Add a favorite
-  app.post('/favorites', (req, res) => {
+  app.post('/favorites', requireAuth, (req, res) => {
     const parsed = taskSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Missing "task" string in body' });
@@ -149,7 +241,7 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
   });
 
   // Remove a favorite
-  app.delete('/favorites', (req, res) => {
+  app.delete('/favorites', requireAuth, (req, res) => {
     const parsed = taskSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Missing "task" string in body' });
@@ -166,13 +258,16 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
   });
 
   // Submit a task
-  app.post('/task', async (req, res) => {
+  app.post('/task', requireAuth, async (req, res) => {
     const parsed = taskSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Missing "task" in body' });
     }
 
     const { task } = parsed.data;
+    // returnPartial: when true, skip Stage 3 vision and return partial results
+    // so the calling agent can finish with MCP tools (smarter than one-shot vision)
+    const returnPartial = req.body.returnPartial === true;
     const state = agent.getState();
     if (state.status !== 'idle') {
       return res.status(409).json({
@@ -181,16 +276,65 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
       });
     }
 
-    console.log(`\n📨 New task received: ${task}`);
+    console.log(`\n${e('📨', '>')} New task received: ${task}${returnPartial ? ' (returnPartial — skip vision fallback)' : ''}`);
+
+    // Pass returnPartial to agent so it knows to skip Stage 3
+    if (returnPartial) {
+      (agent as any)._returnPartial = true;
+    }
 
     // Execute async — respond immediately
     agent.executeTask(task).then(result => {
-      console.log(`\n📋 Task result:`, JSON.stringify(result, null, 2));
+      (agent as any)._returnPartial = false;
+      console.log(`\n${e('📋', '>')} Task result:`, JSON.stringify(result, null, 2));
     }).catch(err => {
-      console.error(`\n❌ Task execution failed:`, err);
+      (agent as any)._returnPartial = false;
+      console.error(`\n${e('❌', '[ERR]')} Task execution failed:`, err);
     });
 
-    res.json({ accepted: true, task });
+    res.json({ accepted: true, task, returnPartial });
+  });
+
+  // Learn — external agents report what they discovered about an app
+  // Saves workflows, shortcuts, and tips to the app's guide JSON
+  app.post('/learn', requireAuth, async (req, res) => {
+    const { processName, task, actions, shortcuts, tips } = req.body;
+    if (!processName) {
+      return res.status(400).json({ error: 'Missing "processName" in body' });
+    }
+
+    try {
+      const { saveLesson, loadGuide } = require('../dist/guide-loader');
+      const fs = require('fs');
+      const path = require('path');
+
+      // Save learned workflow from action sequence
+      if (task && actions && Array.isArray(actions)) {
+        saveLesson(processName, task, actions);
+      }
+
+      // Merge additional shortcuts and tips into the guide
+      const guidesDir = path.join(__dirname, '..', 'guides');
+      const guide = loadGuide(processName);
+      if (guide && (shortcuts || tips)) {
+        const guidePath = path.join(guidesDir, (guide.processNames?.[0] || processName) + '.json');
+        if (fs.existsSync(guidePath)) {
+          const raw = JSON.parse(fs.readFileSync(guidePath, 'utf8'));
+          if (shortcuts && typeof shortcuts === 'object') {
+            raw.shortcuts = { ...raw.shortcuts, ...shortcuts };
+          }
+          if (tips && Array.isArray(tips)) {
+            raw.tips = [...new Set([...(raw.tips || []), ...tips])];
+          }
+          fs.writeFileSync(guidePath, JSON.stringify(raw, null, 2));
+        }
+      }
+
+      console.log(`${e('📝', '[LEARN]')} External agent reported lesson for "${processName}"`);
+      res.json({ saved: true, processName });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Get current status
@@ -198,8 +342,30 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
     res.json(agent.getState());
   });
 
+  // Task logs — structured JSONL logs for every task (auth required — contains task history)
+  app.get('/task-logs', requireAuth, (_req, res) => {
+    try {
+      const logger = (agent as any).logger;
+      if (!logger) return res.json([]);
+      res.json(logger.getRecentSummaries(50));
+    } catch { res.json([]); }
+  });
+
+  app.get('/task-logs/current', requireAuth, (_req, res) => {
+    try {
+      const logger = (agent as any).logger;
+      const logPath = logger?.getCurrentLogPath();
+      if (!logPath || !require('fs').existsSync(logPath)) {
+        return res.status(404).json({ error: 'No current log' });
+      }
+      const content = require('fs').readFileSync(logPath, 'utf-8');
+      const entries = content.trim().split('\n').map((l: string) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      res.json(entries);
+    } catch { res.status(500).json({ error: 'Failed to read log' }); }
+  });
+
   // Approve or reject a pending confirmation
-  app.post('/confirm', (req, res) => {
+  app.post('/confirm', requireAuth, (req, res) => {
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Missing "approved" boolean in body' });
@@ -221,14 +387,107 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
   });
 
   // Abort current task
-  app.post('/abort', (req, res) => {
+  app.post('/abort', requireAuth, (req, res) => {
     agent.abort();
     res.json({ aborted: true });
   });
 
-  // Get recent log entries
-  app.get('/logs', (req, res) => {
+  // Get recent log entries (auth required — may contain sensitive info)
+  app.get('/logs', requireAuth, (req, res) => {
     res.json(logBuffer);
+  });
+
+  // Screenshot — returns PNG image of current screen
+  app.get('/screenshot', requireAuth, async (_req, res) => {
+    try {
+      const desktop = agent.getDesktop();
+      const frame = await desktop.captureForLLM();
+      res.set('Content-Type', 'image/png');
+      res.set('X-Scale-Factor', String(frame.scaleFactor));
+      res.set('X-Screen-Width', String(frame.llmWidth));
+      res.set('X-Screen-Height', String(frame.llmHeight));
+      res.send(frame.buffer);
+    } catch (err) {
+      res.status(500).json({ error: `Screenshot failed: ${(err as Error).message}` });
+    }
+  });
+
+  // Direct action execution — lets an external brain (e.g. Claude Code) drive the agent
+  // Coordinates are in LLM-space (1280px wide) — auto-scaled to real screen
+  app.post('/action', requireAuth, async (req, res) => {
+    try {
+      const { action, x, y, text, key, button, scrollDelta } = req.body;
+      if (!action) return res.status(400).json({ error: 'Missing "action" field' });
+
+      const desktop = agent.getDesktop();
+      const screen = desktop.getScreenSize();
+      const LLM_WIDTH = 1280;
+      const scale = screen.width > LLM_WIDTH ? screen.width / LLM_WIDTH : 1;
+
+      const realX = x != null ? Math.round(Number(x) * scale) : 0;
+      const realY = y != null ? Math.round(Number(y) * scale) : 0;
+
+      switch (action) {
+        case 'click':
+          if (x == null || y == null) return res.status(400).json({ error: 'click requires x, y' });
+          await desktop.executeMouseAction({ kind: button === 'right' ? 'right_click' : 'click', x: realX, y: realY });
+          res.json({ ok: true, action: 'click', x, y, realX, realY });
+          break;
+        case 'double_click':
+          if (x == null || y == null) return res.status(400).json({ error: 'double_click requires x, y' });
+          await desktop.executeMouseAction({ kind: 'double_click', x: realX, y: realY });
+          res.json({ ok: true, action: 'double_click', x, y, realX, realY });
+          break;
+        case 'type':
+          if (!text) return res.status(400).json({ error: 'type requires text' });
+          await desktop.executeKeyboardAction({ kind: 'type', text });
+          res.json({ ok: true, action: 'type', length: text.length });
+          break;
+        case 'key':
+          if (!key) return res.status(400).json({ error: 'key requires key' });
+          await desktop.executeKeyboardAction({ kind: 'key_press', key });
+          res.json({ ok: true, action: 'key', key });
+          break;
+        case 'scroll':
+          if (x == null || y == null) return res.status(400).json({ error: 'scroll requires x, y' });
+          await desktop.executeMouseAction({ kind: 'scroll', x: realX, y: realY, scrollDelta: Number(scrollDelta || 3) });
+          res.json({ ok: true, action: 'scroll', x, y, realX, realY, scrollDelta: scrollDelta || 3 });
+          break;
+        case 'move':
+          if (x == null || y == null) return res.status(400).json({ error: 'move requires x, y' });
+          await desktop.executeMouseAction({ kind: 'move', x: realX, y: realY });
+          res.json({ ok: true, action: 'move', x, y, realX, realY });
+          break;
+        default:
+          res.status(400).json({ error: `Unknown action: ${action}` });
+      }
+    } catch (err) {
+      res.status(500).json({ error: `Action failed: ${(err as Error).message}` });
+    }
+  });
+
+  // Error report — opt-in submission of redacted task logs
+  app.post('/report', requireAuth, async (req, res) => {
+    try {
+      const { apiSubmitReport } = await import('./report');
+      const { userNote, logIndex } = req.body || {};
+      const result = await apiSubmitReport({
+        userNote: typeof userNote === 'string' ? userNote : undefined,
+        logIndex: typeof logIndex === 'number' ? logIndex : undefined,
+      });
+      if (result.success) {
+        res.json({ success: true, reportId: result.reportId, preview: result.preview });
+      } else {
+        res.status(result.error === 'No task logs found' ? 404 : 502).json({
+          success: false,
+          error: result.error,
+          reportId: result.reportId,
+          preview: result.preview,
+        });
+      }
+    } catch (err) {
+      res.status(500).json({ error: `Report failed: ${(err as Error).message}` });
+    }
   });
 
   // Health check
@@ -237,7 +496,7 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
   });
 
   // Graceful shutdown (localhost only)
-  app.post('/stop', (req, res) => {
+  app.post('/stop', requireAuth, (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || '';
     const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
     if (!isLocal) {
@@ -249,7 +508,7 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
     res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
     res.end(body, () => {
       // Response fully flushed — now shut down
-      console.log('\n👋 Shutting down (stop command received)...');
+      console.log(`\n${e('👋', '--')} Shutting down (stop command received)...`);
       agent.disconnect();
       // Force exit after short delay (covers Windows edge cases)
       setTimeout(() => process.exit(0), 500);

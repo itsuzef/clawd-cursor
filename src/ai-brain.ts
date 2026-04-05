@@ -11,6 +11,9 @@
 
 import * as crypto from 'crypto';
 import type { ClawdConfig, InputAction, ActionSequence, ScreenFrame } from './types';
+import { extractJsonObject, extractJsonArray } from './safe-json';
+import { callTextLLMDirect, callVisionLLMDirect } from './llm-client';
+import { PROVIDERS } from './providers';
 
 const SYSTEM_PROMPT = `You are Clawd Cursor, an AI desktop agent on {OS_NAME}.
 Screen: {REAL_WIDTH}x{REAL_HEIGHT}. Screenshot: {LLM_WIDTH}x{LLM_HEIGHT} (scale {SCALE}x).
@@ -113,12 +116,9 @@ export class AIBrain {
   async decomposeTask(task: string): Promise<string[]> {
     try {
       const response = await this.callLLMText(DECOMPOSE_SYSTEM_PROMPT, `Task: "${task}"`);
-      const match = response.match(/\[[\s\S]*\]/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((s: any) => typeof s === 'string')) {
-          return parsed;
-        }
+      const parsed = extractJsonArray(response);
+      if (parsed && parsed.length > 0 && parsed.every((s: any) => typeof s === 'string')) {
+        return parsed as string[];
       }
       // If parsing failed, return the whole task as a single subtask
       console.warn(`⚠️ Failed to parse decomposition, using task as-is`);
@@ -247,12 +247,10 @@ export class AIBrain {
     waitMs?: number;
   } {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
+      const parsed = extractJsonObject(response) as any;
+      if (!parsed) {
         return { action: null, sequence: null, description: 'Failed to parse AI response', done: false, error: response };
       }
-
-      const parsed = JSON.parse(jsonMatch[0]);
 
       if (parsed.kind === 'done') {
         return { action: null, sequence: null, description: parsed.description || 'Task complete', done: true };
@@ -299,179 +297,67 @@ export class AIBrain {
 
   // ─── LLM Calls ────────────────────────────────────────────────────
 
-  private static readonly BASE_URLS: Record<string, string> = {
-    ollama: 'http://localhost:11434/v1',
-    kimi: 'https://api.moonshot.cn/v1',
-    openai: 'https://api.openai.com/v1',
-  };
-
   private async callLLM(systemPrompt: string): Promise<string> {
     const { provider, apiKey, visionModel, baseUrl, visionApiKey, visionBaseUrl } = this.config.ai;
     const effectiveVisionKey = visionApiKey || apiKey || '';
     const effectiveVisionBaseUrl = visionBaseUrl || baseUrl;
 
-    // Determine vision provider: if visionApiKey looks like Anthropic key or visionModel contains
-    // 'claude', use Anthropic native API regardless of the main provider (which may be ollama for text)
-    const isAnthropicVision = (provider === 'anthropic' && !effectiveVisionBaseUrl) ||
+    // Determine if provider uses Anthropic-native API (non-OpenAI-compatible)
+    // Uses provider registry flags instead of hardcoded provider name checks
+    const providerProfile = PROVIDERS[provider];
+    const isAnthropicVision = (providerProfile?.openaiCompat === false && !effectiveVisionBaseUrl) ||
       (effectiveVisionKey?.startsWith('sk-ant-') && !effectiveVisionBaseUrl) ||
       (visionModel?.includes('claude') && effectiveVisionKey?.startsWith('sk-ant-'));
 
-    if (isAnthropicVision) {
-      return this.callAnthropic(systemPrompt, effectiveVisionKey, visionModel);
-    }
+    const resolvedBaseUrl = isAnthropicVision
+      ? 'https://api.anthropic.com/v1'
+      : effectiveVisionBaseUrl || providerProfile?.baseUrl || 'https://api.openai.com/v1';
 
-    const resolvedBaseUrl = effectiveVisionBaseUrl || AIBrain.BASE_URLS[provider] || AIBrain.BASE_URLS['openai'];
-    return this.callOpenAICompat(systemPrompt, effectiveVisionKey, visionModel, resolvedBaseUrl);
+    // Build messages from conversation history.
+    // History stores images in Anthropic format — callVisionLLMDirect auto-normalizes.
+    const messages: Array<{ role: string; content: any }> = this.history.map(turn => {
+      if (turn.role === 'assistant' && Array.isArray(turn.content)) {
+        // Flatten assistant content blocks to plain text
+        return {
+          role: turn.role,
+          content: turn.content.map((c: any) => c.text || '').join(''),
+        };
+      }
+      return { role: turn.role, content: turn.content };
+    });
+
+    return callVisionLLMDirect({
+      baseUrl: resolvedBaseUrl,
+      model: visionModel,
+      apiKey: effectiveVisionKey,
+      isAnthropic: isAnthropicVision,
+      system: systemPrompt,
+      messages,
+      maxTokens: 1024,
+      timeoutMs: 60000,
+      retries: 0,
+      // Use streaming for Anthropic — enables early JSON return optimization
+      stream: isAnthropicVision,
+    });
   }
 
   /**
    * Text-only LLM call (no images). Used for task decomposition.
+   * Uses shared llm-client to avoid duplicating fetch+auth logic.
    */
   private async callLLMText(systemPrompt: string, userMessage: string): Promise<string> {
     const { provider, apiKey, model, baseUrl, textApiKey, textBaseUrl } = this.config.ai;
-    const effectiveTextKey = textApiKey || apiKey || '';
-    const effectiveTextBaseUrl = textBaseUrl || baseUrl;
-
-    const MAX_RETRIES = 2;
-
-    if (provider === 'anthropic' && !effectiveTextBaseUrl) {
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          console.log(`   🔗 LLM text call (attempt ${attempt + 1}): model=${model}`);
-          const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': effectiveTextKey,
-              'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-              model,
-              max_tokens: 512,
-              system: systemPrompt,
-              messages: [{ role: 'user', content: userMessage }],
-            }),
-          });
-
-          const data = await response.json() as any;
-          if (data.error) throw new Error(data.error.message || `Anthropic API error (${response.status})`);
-          return data.content?.[0]?.text || '';
-        } catch (err) {
-          console.warn(`   ⚠️ LLM text call attempt ${attempt + 1} failed: ${err}`);
-          if (attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt), 8000) + Math.random() * 1000;
-            console.log(`   ⏳ Retrying in ${Math.round(backoff)}ms...`);
-            await new Promise(r => setTimeout(r, backoff));
-          } else {
-            throw err;
-          }
-        }
-      }
-      throw new Error('LLM text call failed after retries');
-    } else {
-      const resolvedBaseUrl = effectiveTextBaseUrl || AIBrain.BASE_URLS[provider] || AIBrain.BASE_URLS['openai'];
-      const response = await fetch(`${resolvedBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(effectiveTextKey ? { 'Authorization': `Bearer ${effectiveTextKey}` } : {}),
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 512,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userMessage },
-          ],
-        }),
-      });
-
-      const data = await response.json() as any;
-      if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-      return data.choices?.[0]?.message?.content || '';
-    }
-  }
-
-  private async callAnthropic(
-    systemPrompt: string,
-    apiKey: string,
-    model: string,
-  ): Promise<string> {
-    const messages = this.history.map(turn => ({
-      role: turn.role,
-      content: turn.content,
-    }));
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000); // 60s timeout
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        stream: true,
-        system: systemPrompt,
-        messages,
-      }),
-      signal: controller.signal,
+    const textProvider = PROVIDERS[provider];
+    return callTextLLMDirect({
+      baseUrl: textBaseUrl || baseUrl || textProvider?.baseUrl || 'https://api.openai.com/v1',
+      model,
+      apiKey: textApiKey || apiKey || '',
+      isAnthropic: (textProvider?.openaiCompat === false) && !textBaseUrl && !baseUrl,
+      system: systemPrompt,
+      user: userMessage,
+      maxTokens: 512,
+      retries: 2,
     });
-
-    if (!response.ok) {
-      clearTimeout(timeout);
-      const data = await response.json() as any;
-      console.error('Anthropic API error:', data.error);
-      throw new Error(data.error?.message || `Anthropic API error (${response.status})`);
-    }
-
-    clearTimeout(timeout);
-
-    // Stream response — collect text as it arrives
-    let result = '';
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') break;
-        try {
-          const event = JSON.parse(data);
-          if (event.type === 'content_block_delta' && event.delta?.text) {
-            result += event.delta.text;
-            // Early return: if we have a complete JSON object, stop waiting
-            if (result.includes('}') && !result.includes('"steps"')) {
-              try {
-                const match = result.match(/\{[\s\S]*\}/);
-                if (match) {
-                  JSON.parse(match[0]); // validates it's complete JSON
-                  reader.cancel();
-                  return result;
-                }
-              } catch { /* incomplete JSON, keep reading */ }
-            }
-          }
-        } catch { /* skip unparseable SSE lines */ }
-      }
-    }
-
-    return result;
   }
 
  private getOSName(): string {
@@ -486,60 +372,6 @@ export class AIBrain {
       return 'An Unknown OS';
   }
 }
-
-
-
-  private async callOpenAICompat(
-    systemPrompt: string,
-    apiKey: string,
-    model: string,
-    baseUrl: string = 'https://api.openai.com/v1',
-  ): Promise<string> {
-    const messages: any[] = [
-      { role: 'system', content: systemPrompt },
-    ];
-
-    for (const turn of this.history) {
-      if (turn.role === 'user' && Array.isArray(turn.content)) {
-        const content: any[] = [];
-        for (const part of turn.content) {
-          if (part.type === 'image') {
-            content.push({
-              type: 'image_url',
-              image_url: {
-                url: `data:${part.source.media_type};base64,${part.source.data}`,
-              },
-            });
-          } else {
-            content.push(part);
-          }
-        }
-        messages.push({ role: 'user', content });
-      } else if (turn.role === 'assistant') {
-        const text = Array.isArray(turn.content)
-          ? turn.content.map((c: any) => c.text || '').join('')
-          : turn.content;
-        messages.push({ role: 'assistant', content: text });
-      }
-    }
-
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        messages,
-      }),
-    });
-
-    const data = await response.json() as any;
-    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-    return data.choices?.[0]?.message?.content || '';
-  }
 
   resetConversation(): void {
     this.history = [];

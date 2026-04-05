@@ -1,4 +1,4 @@
-import { resolveApiConfig } from './openclaw-credentials';
+import { resolveApiConfig } from './credentials';
 
 /**
  * Provider Model Map — auto-selects cheap/expensive models per provider.
@@ -15,13 +15,31 @@ export interface ProviderProfile {
   textModel: string;
   /** Vision-capable model (Layer 3: screenshot fallback) */
   visionModel: string;
+  /** Approximate context window of the text model in tokens.
+   *  Used for dynamic element truncation in OCR Reasoner.
+   *  Minimum recommended: 16000 (16K). Models below this will show a warning. */
+  textContextWindow?: number;
   /** Whether the API is OpenAI-compatible */
   openaiCompat: boolean;
   /** Extra headers needed */
   extraHeaders?: Record<string, string>;
   /** Whether this provider supports Computer Use tool */
   computerUse: boolean;
+  /** Whether capabilities (openaiCompat, supportsJsonMode, etc.) were verified
+   *  via a live probe, or merely assumed based on defaults. Unset / false means assumed. */
+  probed?: boolean;
+  /** Whether OpenAI-style JSON response_format is known to work reliably */
+  supportsJsonMode?: boolean;
+  /** Whether OpenAI-style tool calls are known to work reliably */
+  supportsToolCalls?: boolean;
+  /** Whether the vision model is a reasoning/thinking model (omit temperature, accept reasoning_content).
+   *  Examples: kimi-k2.5, deepseek-reasoner. These models reject temperature=0. */
+  reasoningVisionModel?: boolean;
 }
+
+/** Minimum context window in tokens for reliable desktop automation.
+ *  Models below this cannot handle web pages (200+ elements). */
+export const MIN_RECOMMENDED_CONTEXT = 16000;
 
 export const PROVIDERS: Record<string, ProviderProfile> = {
   anthropic: {
@@ -33,8 +51,11 @@ export const PROVIDERS: Record<string, ProviderProfile> = {
     }),
     textModel: 'claude-haiku-4-5',
     visionModel: 'claude-sonnet-4-20250514',
+    textContextWindow: 200000,
     openaiCompat: false,
     computerUse: true,
+    supportsJsonMode: false,
+    supportsToolCalls: false,
   },
   openai: {
     name: 'OpenAI',
@@ -42,26 +63,36 @@ export const PROVIDERS: Record<string, ProviderProfile> = {
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
     textModel: 'gpt-4o-mini',
     visionModel: 'gpt-4o',
+    textContextWindow: 128000,
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
   },
   ollama: {
     name: 'Ollama (Local)',
     baseUrl: 'http://localhost:11434/v1',
     authHeader: () => ({}),
-    textModel: '',  // auto-detected from available models by doctor
-    visionModel: '', // auto-detected from available models by doctor
+    textModel: '',
+    visionModel: '',
+    textContextWindow: 32000, // varies by model, conservative default
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
   },
   kimi: {
     name: 'Kimi (Moonshot)',
-    baseUrl: 'https://api.moonshot.cn/v1',
+    baseUrl: 'https://api.moonshot.ai/v1',
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
-    textModel: 'moonshot-v1-8k',
-    visionModel: 'moonshot-v1-8k',
+    textModel: 'moonshot-v1-32k',
+    visionModel: 'kimi-k2.5',
+    textContextWindow: 32000,
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+    reasoningVisionModel: true,
   },
   groq: {
     name: 'Groq',
@@ -69,8 +100,11 @@ export const PROVIDERS: Record<string, ProviderProfile> = {
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
     textModel: 'llama-3.3-70b-versatile',
     visionModel: 'llama-3.2-90b-vision-preview',
+    textContextWindow: 128000,
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
   },
   together: {
     name: 'Together AI',
@@ -78,8 +112,11 @@ export const PROVIDERS: Record<string, ProviderProfile> = {
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
     textModel: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
     visionModel: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+    textContextWindow: 128000,
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
   },
   deepseek: {
     name: 'DeepSeek',
@@ -87,17 +124,106 @@ export const PROVIDERS: Record<string, ProviderProfile> = {
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
     textModel: 'deepseek-chat',
     visionModel: 'deepseek-chat',
+    textContextWindow: 64000,
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  gemini: {
+    name: 'Google (Gemini)',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'gemini-2.5-flash',
+    visionModel: 'gemini-2.5-flash',
+    textContextWindow: 1000000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  mistral: {
+    name: 'Mistral AI',
+    baseUrl: 'https://api.mistral.ai/v1',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'mistral-small-latest',
+    visionModel: 'pixtral-large-latest',
+    textContextWindow: 32000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  xai: {
+    name: 'xAI (Grok)',
+    baseUrl: 'https://api.x.ai/v1',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'grok-3-mini',
+    visionModel: 'grok-2-vision-1212',
+    textContextWindow: 131072,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  alibaba: {
+    name: 'Alibaba (Qwen/DashScope)',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'qwen-turbo',
+    visionModel: 'qwen-vl-max',
+    textContextWindow: 128000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  fireworks: {
+    name: 'Fireworks AI',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+    visionModel: 'accounts/fireworks/models/llama-v3p2-90b-vision-instruct',
+    textContextWindow: 128000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
+  },
+  cohere: {
+    name: 'Cohere',
+    baseUrl: 'https://api.cohere.com/v2',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'command-r',
+    visionModel: 'command-r-plus',
+    textContextWindow: 128000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: false,
+    supportsToolCalls: false,
+  },
+  perplexity: {
+    name: 'Perplexity',
+    baseUrl: 'https://api.perplexity.ai',
+    authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
+    textModel: 'llama-3.1-sonar-small-128k-online',
+    visionModel: 'llama-3.1-sonar-large-128k-online',
+    textContextWindow: 128000,
+    openaiCompat: true,
+    computerUse: false,
+    supportsJsonMode: false,
+    supportsToolCalls: false,
   },
   generic: {
     name: 'OpenAI-Compatible',
-    baseUrl: '', // set from config
+    baseUrl: '',
     authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
-    textModel: '', // set from config
-    visionModel: '', // set from config  
+    textModel: '',
+    visionModel: '',
     openaiCompat: true,
     computerUse: false,
+    supportsJsonMode: true,
+    supportsToolCalls: true,
   },
 };
 
@@ -113,6 +239,10 @@ export function detectProvider(apiKey: string, explicitProvider?: string): strin
 
   if (!apiKey) return 'ollama'; // No key = local mode
   if (apiKey.startsWith('sk-ant-')) return 'anthropic';
+  if (apiKey.startsWith('AIza')) return 'gemini';           // Google Gemini API keys start with AIza
+  if (apiKey.startsWith('xai-')) return 'xai';             // xAI Grok
+  if (apiKey.startsWith('pplx-')) return 'perplexity';     // Perplexity
+  if (apiKey.startsWith('fw_')) return 'fireworks';         // Fireworks AI
   if (apiKey.startsWith('sk-') && apiKey.length > 60) return 'kimi'; // Kimi keys are longer than OpenAI
   if (apiKey.startsWith('sk-')) return 'openai';
   if (apiKey.startsWith('gsk_')) return 'groq';
@@ -134,6 +264,8 @@ export interface PipelineConfig {
     enabled: boolean;
     model: string;
     baseUrl: string;
+    /** Per-layer API key (for mixed-provider pipelines where text and vision use different providers) */
+    apiKey?: string;
   };
   /** Layer 3: Screenshot + vision model */
   layer3: {
@@ -143,6 +275,10 @@ export interface PipelineConfig {
     computerUse: boolean;
     apiKey?: string;
   };
+  /** OCR-first pipeline — enabled when OS OCR is available */
+  ocrEnabled?: boolean;
+  /** Skill cache — learns from successful task completions */
+  skillCacheEnabled?: boolean;
 }
 
 /**
@@ -175,6 +311,15 @@ export function buildPipeline(
       computerUse: provider.computerUse,
     },
   };
+}
+
+
+export function supportsOpenAiJsonMode(provider: ProviderProfile | undefined): boolean {
+  return provider?.supportsJsonMode !== false;
+}
+
+export function supportsOpenAiToolCalls(provider: ProviderProfile | undefined): boolean {
+  return provider?.supportsToolCalls !== false;
 }
 
 // ─── Multi-Provider Scanning ──────────────────────────────────────
@@ -234,16 +379,23 @@ function isOllamaVisionModel(modelId: string): boolean {
 
 /**
  * Env var names we check per provider key.
- * AI_API_KEY is a generic fallback; OpenClaw-provided provider hints are preferred.
+ * AI_API_KEY is a generic fallback; external config provider hints are preferred.
  */
 
-const PROVIDER_ENV_VARS: Record<string, string[]> = {
+export const PROVIDER_ENV_VARS: Record<string, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
   kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
   groq: ['GROQ_API_KEY'],
   together: ['TOGETHER_API_KEY'],
   deepseek: ['DEEPSEEK_API_KEY'],
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+  mistral: ['MISTRAL_API_KEY'],
+  xai: ['XAI_API_KEY', 'GROK_API_KEY'],
+  alibaba: ['DASHSCOPE_API_KEY', 'ALIBABA_API_KEY', 'QWEN_API_KEY'],
+  fireworks: ['FIREWORKS_API_KEY'],
+  cohere: ['COHERE_API_KEY', 'CO_API_KEY'],
+  perplexity: ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'],
 };
 
 /**
@@ -259,11 +411,11 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
   const resolvedApi = resolveApiConfig();
   const genericKey = resolvedApi.apiKey || process.env.AI_API_KEY || '';
   const genericProviderHint = resolvedApi.provider || '';
-  const genericIsOpenClaw = resolvedApi.source === 'openclaw';
+  const isExternalSource = resolvedApi.source === 'external';
 
-  // When OpenClaw is the source, load ALL provider keys from config files
-  const openclawProviderKeys: Record<string, { apiKey: string; baseUrl?: string }> = {};
-  if (resolvedApi.source === 'openclaw') {
+  // When credentials come from external config, load ALL provider keys from config files
+  const externalProviderKeys: Record<string, { apiKey: string; baseUrl?: string }> = {};
+  if (resolvedApi.source === 'external') {
     // resolveApiConfig only returns the "best" provider.
     // We need ALL of them for scanning. Read auth-profiles directly.
     try {
@@ -293,7 +445,7 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
               const apiKey = val?.key || val?.apiKey || val?.api_key || '';
               if (!apiKey) continue;
               
-              // Map OpenClaw provider names to Clawd Cursor provider keys
+              // Map external provider names to Clawd Cursor provider keys
               const providerMap: Record<string, string> = {
                 'anthropic': 'anthropic',
                 'openai': 'openai',
@@ -302,11 +454,23 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
                 'groq': 'groq',
                 'together': 'together',
                 'deepseek': 'deepseek',
+                'gemini': 'gemini',
+                'google': 'gemini',
+                'mistral': 'mistral',
+                'xai': 'xai',
+                'grok': 'xai',
+                'alibaba': 'alibaba',
+                'qwen': 'alibaba',
+                'dashscope': 'alibaba',
+                'fireworks': 'fireworks',
+                'cohere': 'cohere',
+                'perplexity': 'perplexity',
+                'pplx': 'perplexity',
               };
-              
+
               const clawdKey = providerMap[providerName];
-              if (clawdKey && !openclawProviderKeys[clawdKey]) {
-                openclawProviderKeys[clawdKey] = { apiKey };
+              if (clawdKey && !externalProviderKeys[clawdKey]) {
+                externalProviderKeys[clawdKey] = { apiKey };
               }
             }
           } catch { /* skip */ }
@@ -337,20 +501,32 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
                 'deepseek': 'deepseek',
                 'nvidia': 'nvidia',
                 'ollama': 'ollama',
+                'gemini': 'gemini',
+                'google': 'gemini',
+                'mistral': 'mistral',
+                'xai': 'xai',
+                'grok': 'xai',
+                'alibaba': 'alibaba',
+                'qwen': 'alibaba',
+                'dashscope': 'alibaba',
+                'fireworks': 'fireworks',
+                'cohere': 'cohere',
+                'perplexity': 'perplexity',
+                'pplx': 'perplexity',
               };
-              
+
               const clawdKey = providerMap[provName.toLowerCase()];
-              if (clawdKey && openclawProviderKeys[clawdKey] && baseUrl) {
-                openclawProviderKeys[clawdKey].baseUrl = baseUrl;
+              if (clawdKey && externalProviderKeys[clawdKey] && baseUrl) {
+                externalProviderKeys[clawdKey].baseUrl = baseUrl;
               }
             }
           } catch { /* skip */ }
         }
       }
-    } catch { /* OpenClaw config read failed, continue with existing logic */ }
-    
-    if (Object.keys(openclawProviderKeys).length > 0) {
-      console.log(`   🔗 OpenClaw providers detected: ${Object.keys(openclawProviderKeys).join(', ')}`);
+    } catch { /* External config read failed, continue with existing logic */ }
+
+    if (Object.keys(externalProviderKeys).length > 0) {
+      console.log(`   🔗 External providers detected: ${Object.keys(externalProviderKeys).join(', ')}`);
     }
   }
 
@@ -361,8 +537,8 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
 
     if (genericProviderHint === providerKey && genericKey) {
       key = genericKey;
-    } else if (genericIsOpenClaw && !genericProviderHint && providerKey === 'openai' && genericKey) {
-      // OpenClaw may provide an OpenAI-compatible endpoint without a provider label.
+    } else if (isExternalSource && !genericProviderHint && providerKey === 'openai' && genericKey) {
+      // External config may provide an OpenAI-compatible endpoint without a provider label.
       key = genericKey;
     }
 
@@ -374,13 +550,13 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
       }
     }
 
-    // OpenClaw multi-provider keys
-    if (!key && openclawProviderKeys[providerKey]) {
-      key = openclawProviderKeys[providerKey].apiKey;
+    // External multi-provider keys
+    if (!key && externalProviderKeys[providerKey]) {
+      key = externalProviderKeys[providerKey].apiKey;
     }
 
     // For standalone AI_API_KEY, infer provider by key format as a best-effort fallback.
-    if (!key && genericKey && !(genericIsOpenClaw && !genericProviderHint)) {
+    if (!key && genericKey && !(isExternalSource && !genericProviderHint)) {
       const detected = detectProvider(genericKey);
       if (detected === providerKey) {
         key = genericKey;
@@ -448,8 +624,8 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
 
   results.push(ollamaResult);
 
-  // ── Create dynamic provider entries for unknown OpenClaw providers ──────
-  if (resolvedApi.source === 'openclaw') {
+  // ── Create dynamic provider entries for unknown external providers ──────
+  if (resolvedApi.source === 'external') {
     try {
       const os = await import('os');
       const fs = await import('fs');
@@ -510,7 +686,7 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
               
               if (!apiKey) continue;
               
-              // Extract model names from OpenClaw config
+              // Extract model names from external config
               const textModels = Object.keys(models).filter(m => 
                 !m.toLowerCase().includes('vision') && 
                 !m.toLowerCase().includes('dall-e') &&
@@ -531,14 +707,18 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
               const dynamicProviderKey = providerNameLower.replace(/[^a-z0-9]/g, '');
               
               // Add to PROVIDERS map dynamically (but don't mutate the original)
+              // Assumption: most external providers expose an OpenAI-compatible API.
+              // This has NOT been verified via a live probe — set probed: false so
+              // callers can distinguish assumed vs confirmed capabilities.
               const dynamicProvider: ProviderProfile = {
                 name: provName,
                 baseUrl: baseUrl,
                 authHeader: (key) => ({ 'Authorization': `Bearer ${key}` }),
                 textModel: textModel,
                 visionModel: visionModel,
-                openaiCompat: true, // Most providers are OpenAI-compatible except Anthropic
+                openaiCompat: true,
                 computerUse: false,
+                probed: false,
               };
               
               // Don't add to PROVIDERS directly (immutable), but create scan result
@@ -547,7 +727,7 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
                   key: dynamicProviderKey,
                   name: provName,
                   available: true,
-                  detail: `OpenClaw config (${maskKey(apiKey)})`,
+                  detail: `external config (${maskKey(apiKey)})`,
                   apiKey: apiKey,
                 });
                 
@@ -558,25 +738,25 @@ export async function scanProviders(): Promise<ProviderScanResult[]> {
           } catch { /* skip */ }
         }
       }
-    } catch { /* OpenClaw dynamic provider creation failed, continue */ }
+    } catch { /* External dynamic provider creation failed, continue */ }
   }
 
-  // Apply OpenClaw base URLs to custom providers (e.g., moonshot uses api.moonshot.cn, not openai.com)
+  // Apply external base URLs to custom providers (e.g., moonshot uses api.moonshot.cn, not openai.com)
   for (const result of results) {
-    if (openclawProviderKeys[result.key]?.baseUrl && result.available) {
+    if (externalProviderKeys[result.key]?.baseUrl && result.available) {
       // Store for later use in pipeline building
-      (result as any).openclawBaseUrl = openclawProviderKeys[result.key].baseUrl;
+      (result as any).externalBaseUrl = externalProviderKeys[result.key].baseUrl;
     }
   }
 
   return results;
 }
 
-/** Text model preference: cheapest/fastest first */
-const TEXT_MODEL_PREFERENCE: string[] = ['ollama', 'groq', 'together', 'deepseek', 'kimi', 'openai', 'anthropic'];
+/** Text model preference: fastest/most-reliable first */
+const TEXT_MODEL_PREFERENCE: string[] = ['ollama', 'groq', 'fireworks', 'together', 'deepseek', 'alibaba', 'cohere', 'perplexity', 'anthropic', 'openai', 'kimi', 'gemini', 'mistral', 'xai'];
 
 /** Vision model preference: best vision capability first */
-const VISION_MODEL_PREFERENCE: string[] = ['anthropic', 'openai', 'groq', 'together', 'kimi', 'deepseek', 'ollama'];
+const VISION_MODEL_PREFERENCE: string[] = ['anthropic', 'openai', 'gemini', 'mistral', 'groq', 'fireworks', 'together', 'alibaba', 'cohere', 'perplexity', 'kimi', 'xai', 'deepseek', 'ollama'];
 
 /**
  * Given scan results and model test results, build the optimal mixed pipeline.

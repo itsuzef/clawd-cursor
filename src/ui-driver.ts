@@ -393,7 +393,7 @@ export class UIDriver {
         return { success: true, method: 'SendKeys', action: 'type' };
       }
 
-      // Fall back: focus the element so caller can type
+      // Fall back: focus the element and type via SendKeys at focus
       const focusResult = await this.invokeAction({
         name: nameOrId,
         action: 'focus',
@@ -402,11 +402,18 @@ export class UIDriver {
       });
 
       if (focusResult.success) {
+        // Element focused — now actually type the text via SendKeys at current focus
+        // (Previously this returned success without typing, causing text to be lost)
+        const typeResult = await this.typeAtCurrentFocus(text);
+        if (typeResult.success) {
+          return { success: true, method: 'Focus+SendKeys', action: 'type' };
+        }
+        // SendKeys also failed — report failure so caller can try alternative approach
         return {
-          success: true,
+          success: false,
           method: 'Focus+CallerTypes',
           action: 'focus',
-          error: 'Element focused — caller should use keyboard.type() to input text',
+          error: `Element focused but SendKeys failed: ${typeResult.error}`,
         };
       }
 
@@ -610,6 +617,45 @@ export class UIDriver {
       processId: resolvedPid!,
       controlType: opts?.controlType,
     });
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // KEYBOARD-FIRST TYPING (no element lookup)
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * Type text directly at the currently focused element — no element lookup.
+   *
+   * Uses PowerShell SendKeys (Windows) or osascript keystroke (macOS) to type
+   * at whatever UI element currently has keyboard focus. Perfect for use after
+   * Tab navigation has moved focus to the desired field.
+   *
+   * @param text The text to type at the current focus
+   */
+  async typeAtCurrentFocus(text: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.platform === 'win32') {
+        // Use PowerShell SendKeys to type at current focus
+        // Escape special SendKeys characters: +^%~(){}
+        const escaped = text.replace(/'/g, "''").replace(/[+^%~(){}]/g, '{$&}');
+        await execFileAsync('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escaped}')`,
+        ], { timeout: SCRIPT_TIMEOUT });
+        return { success: true };
+      } else if (this.platform === 'darwin') {
+        // Use osascript to type at current focus via System Events
+        const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        await execFileAsync('osascript', [
+          '-e', `tell application "System Events" to keystroke "${escaped}"`,
+        ], { timeout: SCRIPT_TIMEOUT });
+        return { success: true };
+      } else {
+        return { success: false, error: 'typeAtCurrentFocus: unsupported platform' };
+      }
+    } catch (err) {
+      return { success: false, error: `typeAtCurrentFocus failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -829,7 +875,7 @@ export class UIDriver {
   /**
    * Run a PowerShell script and parse its JSON output. (Windows only)
    *
-   * All PowerShell scripts in clawd-cursor follow the convention:
+   * All PowerShell scripts in clawdcursor follow the convention:
    * - Output JSON to stdout
    * - Include 'error' key on failure
    * - Include 'success' key for action scripts

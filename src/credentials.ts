@@ -3,10 +3,16 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
- * OpenClaw-aware credential resolution.
+ * Credential Resolution — multi-source API key + endpoint detection.
  *
- * In skill mode, Clawd Cursor should reuse OpenClaw's configured providers/models
- * instead of inferring provider from key prefixes.
+ * Precedence:
+ *   1. Explicit CLI flags (--api-key, --provider, --base-url)
+ *   2. External config files (e.g. OpenClaw auth-profiles, if installed)
+ *   3. Environment variables (AI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
+ *   4. Local .clawdcursor-config.json
+ *
+ * External integrations (OpenClaw, etc.) are optional — Clawd Cursor works
+ * fully standalone with just env vars or CLI flags.
  */
 
 export interface ResolvedApiConfig {
@@ -19,7 +25,7 @@ export interface ResolvedApiConfig {
   textBaseUrl?: string;
   visionApiKey?: string;
   visionBaseUrl?: string;
-  source: 'openclaw' | 'local';
+  source: 'external' | 'local';
 }
 
 interface ModelInfo {
@@ -68,7 +74,7 @@ function pick(...values: Array<string | undefined>): string | undefined {
   return undefined;
 }
 
-function inferProviderFromBaseUrl(baseUrl?: string): string | undefined {
+export function inferProviderFromBaseUrl(baseUrl?: string): string | undefined {
   const url = (baseUrl || '').toLowerCase();
   if (!url) return undefined;
   if (url.includes('anthropic')) return 'anthropic';
@@ -81,6 +87,9 @@ function inferProviderFromBaseUrl(baseUrl?: string): string | undefined {
   if (url.includes('nvidia') || url.includes('integrate.api')) return 'nvidia';
   if (url.includes('mistral')) return 'mistral';
   if (url.includes('fireworks')) return 'fireworks';
+  if (url.includes('dashscope') || url.includes('alibaba') || url.includes('qwen')) return 'alibaba';
+  if (url.includes('cohere')) return 'cohere';
+  if (url.includes('perplexity') || url.includes('pplx')) return 'perplexity';
   // Unknown endpoint — still works, just no provider label
   return undefined;
 }
@@ -184,8 +193,10 @@ function getOpenClawRoots(): string[] {
 }
 
 function readConfiguredProvider(): string | undefined {
-  const configPath = path.join(process.cwd(), '.clawd-config.json');
-  const cfg = safeReadJson(configPath);
+  // Check both the package directory (where the code lives) and cwd
+  const pkgConfigPath = path.join(__dirname, '..', '.clawdcursor-config.json');
+  const cwdConfigPath = path.join(process.cwd(), '.clawdcursor-config.json');
+  const cfg = safeReadJson(pkgConfigPath) || safeReadJson(cwdConfigPath);
   if (!cfg || !isObject(cfg)) return undefined;
 
   const provider = pick(cfg.provider, cfg?.pipeline?.provider, cfg?.pipeline?.providerKey);
@@ -348,10 +359,14 @@ function resolveFromOpenClawFiles(): ResolvedApiConfig | null {
     || globalProviderWithKey;
   if (!selectedProvider) return null;
 
-  const visionModel = visionProvider?.models.find(m => m.input.includes('image') || m.input.includes('vision'))?.id
+  const rawVisionModel = visionProvider?.models.find(m => m.input.includes('image') || m.input.includes('vision'))?.id
     || textProvider?.models[0]?.id;
-  const textModel = textProvider?.models.find(m => !m.input.includes('image') && !m.input.includes('vision'))?.id
-    || textProvider?.models[0]?.id;
+  // Find a text-only model. Do NOT fall back to vision models — they may be
+  // reasoning models (kimi-k2.5) that reject temperature=0 and cost more.
+  const rawTextModel = textProvider?.models.find(m => !m.input.includes('image') && !m.input.includes('vision'))?.id;
+
+  const textModel = rawTextModel;
+  const visionModel = rawVisionModel;
 
   const resolvedApiKey = selectedProvider.apiKey || textProvider?.apiKey || visionProvider?.apiKey || globalProviderWithKey?.apiKey || '';
 
@@ -375,12 +390,12 @@ function resolveFromOpenClawFiles(): ResolvedApiConfig | null {
     visionApiKey: resolvedVisionApiKey,
     visionBaseUrl: resolvedVisionBaseUrl,
     provider: normalizeProvider(selectedProvider.key) || inferProviderFromBaseUrl(selectedProvider.baseUrl),
-    source: 'openclaw',
+    source: 'external',
   };
 }
 
 /**
- * Resolve key + endpoint + models with OpenClaw-first precedence.
+ * Resolve key + endpoint + models from all available sources.
  */
 export function resolveApiConfig(opts?: {
   apiKey?: string;
@@ -391,7 +406,17 @@ export function resolveApiConfig(opts?: {
 }): ResolvedApiConfig {
   // Explicit CLI flags always win over auto-detection
   if (opts?.apiKey || opts?.provider || opts?.baseUrl) {
-    const explicitApiKey = opts.apiKey || '';
+    // If provider is specified but no API key, check environment variables for that provider
+    let explicitApiKey = opts.apiKey || '';
+    if (!explicitApiKey && opts.provider) {
+      const { PROVIDER_ENV_VARS } = require('./providers');
+      const envVarNames = PROVIDER_ENV_VARS[normalizeProvider(opts.provider) || ''] || [];
+      for (const envVar of envVarNames) {
+        if (process.env[envVar]) { explicitApiKey = process.env[envVar]!; break; }
+      }
+      // Also check generic AI_API_KEY
+      if (!explicitApiKey && process.env.AI_API_KEY) explicitApiKey = process.env.AI_API_KEY;
+    }
     const explicitBaseUrl = normalizeBaseUrl(opts.baseUrl);
     const explicitTextModel = pick(opts.textModel);
     const explicitVisionModel = pick(opts.visionModel);
@@ -414,7 +439,7 @@ export function resolveApiConfig(opts?: {
     return fromFiles;
   }
 
-  // Transitional fallback if OpenClaw explicitly injects runtime env vars.
+  // Check for externally-injected runtime env vars (e.g. from orchestration platforms).
   const openClawKey = pick(
     process.env.OPENCLAW_AI_API_KEY,
     process.env.OPENCLAW_API_KEY,
@@ -456,7 +481,7 @@ export function resolveApiConfig(opts?: {
       textBaseUrl: openClawBaseUrl,
       visionApiKey: openClawKey,
       visionBaseUrl: openClawBaseUrl,
-      source: 'openclaw',
+      source: 'external',
     };
   }
 

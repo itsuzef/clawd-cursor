@@ -7,13 +7,14 @@
  */
 
 import * as os from 'os';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { AccessibilityBridge } from './accessibility';
 import { NativeDesktop } from './native-desktop';
 import { normalizeKey } from './keys';
 import { findShortcut } from './shortcuts';
 import type { WindowInfo } from './accessibility';
+import { getBrowserProcessNames, getCDPPort, getBrowserExePath } from './browser-config';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,17 +38,20 @@ export interface RouterTelemetry {
 /**
  * Known app aliases → process names / Start Menu search terms
  */
-const APP_ALIASES: Record<string, { processNames: string[]; searchTerm: string; macOSAppName?: string }> = {
-  'paint':        { processNames: ['mspaint'],              searchTerm: 'Paint' },
-  'mspaint':      { processNames: ['mspaint'],              searchTerm: 'Paint' },
-  'notepad':      { processNames: ['notepad', 'Notepad'],   searchTerm: 'Notepad',            macOSAppName: 'TextEdit' },
-  'calculator':   { processNames: ['Calculator', 'calc'],   searchTerm: 'Calculator',         macOSAppName: 'Calculator' },
-  'calc':         { processNames: ['Calculator', 'calc'],   searchTerm: 'Calculator',         macOSAppName: 'Calculator' },
+const APP_ALIASES: Record<string, { processNames: string[]; searchTerm: string; macOSAppName?: string; executable?: string; alwaysNewInstance?: boolean }> = {
+  'paint':        { processNames: ['mspaint'],              searchTerm: 'Paint',   executable: 'mspaint.exe', alwaysNewInstance: true },
+  'mspaint':      { processNames: ['mspaint'],              searchTerm: 'Paint',   executable: 'mspaint.exe', alwaysNewInstance: true },
+  'notepad':      { processNames: ['notepad', 'Notepad'],   searchTerm: 'Notepad', executable: 'notepad.exe', alwaysNewInstance: true, macOSAppName: 'TextEdit' },
+  'calculator':   { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator', macOSAppName: 'Calculator' },
+  'calc':         { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator', macOSAppName: 'Calculator' },
   'chrome':       { processNames: ['chrome', 'Google Chrome'], searchTerm: 'Chrome',          macOSAppName: 'Google Chrome' },
   'google chrome': { processNames: ['chrome', 'Google Chrome'], searchTerm: 'Chrome',         macOSAppName: 'Google Chrome' },
   'firefox':      { processNames: ['firefox'],              searchTerm: 'Firefox',            macOSAppName: 'Firefox' },
   'safari':       { processNames: ['Safari'],               searchTerm: 'Safari',             macOSAppName: 'Safari' },
   'edge':         { processNames: ['msedge'],               searchTerm: 'Edge',               macOSAppName: 'Microsoft Edge' },
+  'microsoft edge': { processNames: ['msedge'],            searchTerm: 'Edge',               macOSAppName: 'Microsoft Edge' },
+  'outlook':      { processNames: ['OUTLOOK', 'olk'],       searchTerm: 'Outlook',            macOSAppName: 'Microsoft Outlook' },
+  'microsoft outlook': { processNames: ['OUTLOOK', 'olk'],  searchTerm: 'Outlook',            macOSAppName: 'Microsoft Outlook' },
   'explorer':     { processNames: ['explorer'],             searchTerm: 'File Explorer',      macOSAppName: 'Finder' },
   'finder':       { processNames: ['Finder'],               searchTerm: 'Finder',             macOSAppName: 'Finder' },
   'file explorer': { processNames: ['explorer'],            searchTerm: 'File Explorer',      macOSAppName: 'Finder' },
@@ -78,12 +82,17 @@ const APP_ALIASES: Record<string, { processNames: string[]; searchTerm: string; 
 };
 
 /** Browser process names for URL navigation */
-const BROWSER_PROCESSES = ['chrome', 'msedge', 'firefox', 'brave', 'opera'];
+const BROWSER_PROCESSES = getBrowserProcessNames();
 
 /** Readiness polling config */
 const READY_POLL_INTERVAL = 300;  // ms between polls
 const READY_TIMEOUT = 8000;       // max ms to wait for app readiness
 const READY_SETTLE_MS = 500;      // extra ms after window appears (let UI render)
+
+// WebView2/Electron apps freeze if hit with UIA queries during startup.
+// These need longer settle times before any interaction.
+const WEBVIEW2_APPS = /\b(olk|outlook|teams|slack|discord|spotify|vscode|code)\b/i;
+const WEBVIEW2_SETTLE_MS = 4000;  // 4s settle for WebView2 apps
 
 export class ActionRouter {
   private a11y: AccessibilityBridge;
@@ -144,10 +153,18 @@ export class ActionRouter {
     }
 
     // 2. "type [text]" / "type '[text]'" / "enter [text]"
-    const typeMatch = rawTask.match(/^(?:type|enter|write|input)\s+(?:['"]([^'"]*)['"]\s*|(\S.*))$/i);
+    // NOTE: "write" is excluded — it implies creative composition (needs LLM), not raw typing
+    const typeMatch = rawTask.match(/^(?:type|enter|input)\s+(?:['"]([^'"]*)['"]\s*|(\S.*))$/i);
     if (typeMatch) {
       this.telemetry.nonShortcutHandled += 1;
       return this.handleType(typeMatch[1] ?? typeMatch[2]);
+    }
+
+    // 2b. "save as [filename] [on the desktop / in folder]"
+    const saveAsMatch = rawTask.match(/^save\s+as\s+(.+)$/i);
+    if (saveAsMatch) {
+      this.telemetry.nonShortcutHandled += 1;
+      return this.handleSaveAs(saveAsMatch[1].trim());
     }
 
     // 3. "go to [url]" / "navigate to [url]" / "visit [url]"
@@ -211,14 +228,43 @@ export class ActionRouter {
     }
 
     // 10. "find <text>" → Ctrl/Cmd+F then type
+    // Only match explicit in-page find requests (with quotes or "in page" qualifier)
+    // NOT intent-based tasks like "find the cheapest flight" or "find a restaurant"
     const mod = PLATFORM === 'darwin' ? 'Super' : 'Control'; // Cmd on macOS, Ctrl on Windows/Linux
-    const findMatch = rawTask.match(/^(?:find|search in page|search within|search)\s+(.+)$/i);
+    const findMatch = rawTask.match(/^(?:search in page|search within|find in page|find on page)\s+(.+)$/i)
+      || rawTask.match(/^(?:find|search)\s+['"](.+)['"]$/i); // only quoted strings
     if (findMatch) {
       await this.desktop.keyPress(`${mod}+f`);
       await this.delay(200);
       await this.desktop.typeText(findMatch[1]);
       this.telemetry.nonShortcutHandled += 1;
       return { handled: true, description: `Find "${findMatch[1]}"` };
+    }
+
+    // 10b. "search for X [on google]" — type query in browser address bar
+    const searchForMatch = rawTask.match(/^search\s+(?:for\s+)?(.+?)(?:\s+on\s+(?:google|bing|duckduckgo))?$/i);
+    if (searchForMatch) {
+      const query = searchForMatch[1].trim();
+      // Ensure a browser is focused
+      try {
+        const windows = await this.a11y.getWindows();
+        const browser = windows.find(w =>
+          BROWSER_PROCESSES.some(bp => w.processName.toLowerCase().includes(bp)) && !w.isMinimized
+        );
+        if (browser) {
+          await this.a11y.focusWindow(undefined, browser.processId);
+          await this.delay(400);
+        }
+      } catch { /* proceed anyway */ }
+
+      // Ctrl+L to focus address bar, type query, Enter
+      await this.desktop.keyPress(`${mod}+l`);
+      await this.delay(300);
+      await this.desktop.typeText(query);
+      await this.delay(200);
+      await this.desktop.keyPress('Return');
+      this.telemetry.nonShortcutHandled += 1;
+      return { handled: true, description: `Searched for "${query}" via address bar` };
     }
 
     // 11. Screenshot / show desktop / lock screen
@@ -263,29 +309,107 @@ export class ActionRouter {
     const normalized = appName.toLowerCase().replace(/['"]/g, '');
     const alias = APP_ALIASES[normalized];
 
-    // Check if app is already running
+    // Document-creation apps (Notepad, Paint, etc.) always get a new instance.
+    // Other apps (browsers, Calculator, etc.) reuse existing windows.
+    let windowsBefore: WindowInfo[] = [];
     try {
-      const windows = await this.a11y.getWindows();
-      const running = this.findWindowForApp(windows, normalized, alias);
+      windowsBefore = await this.a11y.getWindows(true);
 
-      if (running) {
-        // App is running — just focus it
-        const result = await this.a11y.focusWindow(undefined, running.processId);
-        if (result.success) {
-          return {
-            handled: true,
-            description: `Focused existing "${running.title}" window`,
-          };
+      if (!alias?.alwaysNewInstance) {
+        const running = this.findWindowForApp(windowsBefore, normalized, alias);
+        if (running) {
+          const result = await this.a11y.focusWindow(undefined, running.processId);
+          if (result.success) {
+            await this.maximizeWindow({ hwnd: running.handle });
+            await this.delay(200);
+            return {
+              handled: true,
+              description: `Focused existing "${running.title}" window`,
+            };
+          }
         }
       }
     } catch {
       // a11y unavailable, proceed with launch
     }
 
+    // For apps with known executables, spawn directly (always new instance, faster than Start Menu)
+    if (alias?.executable && PLATFORM === 'win32') {
+      try {
+        require('child_process').exec(`start "" "${alias.executable}"`);
+        const newWin = await this.waitForAppReady(alias.searchTerm || appName, windowsBefore);
+        if (newWin) {
+          await this.maximizeWindow({ hwnd: newWin.handle, pid: newWin.processId });
+          return { handled: true, description: `Opened new ${appName} window` };
+        }
+      } catch {
+        // Fall through to Start Menu
+      }
+    }
+
+    // For Chrome/Edge on Windows: launch directly with --profile-directory=Default
+    // to bypass the "Who's using Chrome?" profile picker entirely.
+    if (PLATFORM === 'win32' && /^(chrome|google chrome|edge|microsoft edge)$/i.test(normalized)) {
+      const directResult = await this.launchBrowserDirect(normalized, windowsBefore);
+      if (directResult) return directResult;
+    }
+
     // App not running — launch via Start Menu (or open -a on macOS)
     const searchTerm = alias?.searchTerm || appName;
     const macOSAppName = alias?.macOSAppName || appName;
     return this.launchViaStartMenu(searchTerm, macOSAppName);
+  }
+
+  /**
+   * Launch Chrome/Edge directly with --profile-directory=Default to skip profile picker.
+   * Returns null if direct launch fails (caller falls back to Start Menu).
+   */
+  private async launchBrowserDirect(normalized: string, windowsBefore: WindowInfo[]): Promise<RouteResult | null> {
+    const customExe = getBrowserExePath();
+    const isChrome = /chrome/i.test(normalized);
+    const exePaths = customExe
+      ? [customExe]
+      : isChrome
+        ? [
+            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+          ]
+        : [
+            'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+            'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          ];
+
+    const searchTerm = isChrome ? 'Chrome' : 'Edge';
+
+    for (const exePath of exePaths) {
+      try {
+        // Check if exe exists before trying to spawn
+        const { existsSync } = await import('fs');
+        if (!existsSync(exePath)) continue;
+
+        console.log(`   🚀 Direct launch: ${exePath} --profile-directory=Default`);
+        const child = spawn(exePath, ['--profile-directory=Default', '--disable-session-crashed-bubble', '--no-first-run'], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+
+        // Wait for window to appear
+        const readyResult = await this.waitForAppReady(searchTerm, windowsBefore);
+        if (readyResult) {
+          await this.maximizeWindow({ hwnd: readyResult.handle });
+          await this.delay(200);
+          return {
+            handled: true,
+            description: `Launched "${searchTerm}" with default profile — window ready & maximized (${readyResult.title})`,
+          };
+        }
+        // Window didn't appear — fall through
+      } catch {
+        continue;
+      }
+    }
+    return null; // direct launch failed, fall back to Start Menu
   }
 
   private findWindowForApp(
@@ -350,7 +474,7 @@ export class ActionRouter {
       // Maximize the new window for consistent layout
       if (readyResult) {
         try {
-          await this.desktop.keyPress('Super+Up');
+          await this.maximizeWindow({ hwnd: readyResult.handle });
           await this.delay(200);
         } catch { /* non-critical */ }
       }
@@ -368,6 +492,46 @@ export class ActionRouter {
         error: String(err),
       };
     }
+  }
+
+  /**
+   * Maximize a window via Win32 API.
+   * If hwnd is provided, uses that handle directly (most reliable for multi-process apps like Edge).
+   * If pid is provided, finds the window by process ID.
+   * Otherwise, maximizes the foreground window.
+   */
+  private async maximizeWindow(opts?: { hwnd?: number; pid?: number }): Promise<void> {
+    if (process.platform !== 'win32') {
+      await this.desktop.keyPress(process.platform === 'darwin' ? 'ctrl+cmd+f' : 'Super+Up');
+      return;
+    }
+    try {
+      // Win11 snap layouts are persistent — ShowWindow alone can't override them.
+      // Use SetWindowPos to forcefully resize, then maximize.
+      const typeDef = `'using System; using System.Runtime.InteropServices; public class WinMax { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f); [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }'`;
+      const maximizeSeq = `$w=[WinMax]::GetSystemMetrics(0); $ht=[WinMax]::GetSystemMetrics(1); [WinMax]::ShowWindow($h,1)|Out-Null; Start-Sleep -m 100; [WinMax]::SetWindowPos($h,[IntPtr]::Zero,0,0,$w,$ht,0x0040)|Out-Null; Start-Sleep -m 100; [WinMax]::SetForegroundWindow($h)|Out-Null; [WinMax]::ShowWindow($h,3)|Out-Null`;
+      let cmd: string;
+      if (opts?.hwnd) {
+        cmd = `Add-Type -TypeDefinition ${typeDef}; $h=[IntPtr]${opts.hwnd}; ${maximizeSeq}; Write-Host "hwnd=${opts.hwnd} OK"`;
+      } else if (opts?.pid) {
+        cmd = `$p=Get-Process -Id ${opts.pid} -ErrorAction Stop; $h=$p.MainWindowHandle; if($h -ne [IntPtr]::Zero){ Add-Type -TypeDefinition ${typeDef}; ${maximizeSeq}; Write-Host "pid=${opts.pid} hwnd=$h OK" } else { Write-Host "pid=${opts.pid} no-main-window" }`;
+      } else {
+        cmd = `Add-Type -TypeDefinition ${typeDef}; $h=[WinMax]::GetForegroundWindow(); [WinMax]::ShowWindow($h,3)|Out-Null; Write-Host "hwnd=$h OK"`;
+      }
+      console.log(`   📐 Maximizing window${opts?.hwnd ? ` (hwnd ${opts.hwnd})` : opts?.pid ? ` (pid ${opts.pid})` : ''}...`);
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { timeout: 5000, windowsHide: true });
+      console.log(`   📐 ${stdout.trim()}`);
+    } catch (e: any) {
+      console.warn(`   ⚠️ PowerShell maximize failed: ${e?.message} — falling back to Alt+Space+X`);
+      await this.desktop.keyPress('alt+space');
+      await this.delay(150);
+      await this.desktop.keyPress('x');
+    }
+  }
+
+  /** Backward-compatible alias */
+  private async maximizeForegroundWindow(pidOrHwnd?: number): Promise<void> {
+    return this.maximizeWindow(pidOrHwnd ? { pid: pidOrHwnd } : undefined);
   }
 
   /**
@@ -405,9 +569,11 @@ export class ActionRouter {
             : false;
 
           if (matchesProcess || matchesTitle || matchesSearch) {
-            console.log(`   ✅ Window detected: "${w.title}" (pid:${w.processId}) — settling ${READY_SETTLE_MS}ms`);
-            // Give the window a moment to finish rendering its UI
-            await this.delay(READY_SETTLE_MS);
+            const isWebView2 = WEBVIEW2_APPS.test(w.processName) || WEBVIEW2_APPS.test(w.title);
+            const settleMs = isWebView2 ? WEBVIEW2_SETTLE_MS : READY_SETTLE_MS;
+            console.log(`   ✅ Window detected: "${w.title}" (pid:${w.processId}) — settling ${settleMs}ms${isWebView2 ? ' (WebView2)' : ''}`);
+            // Give the window time to finish rendering — WebView2 apps need longer
+            await this.delay(settleMs);
             return w;
           }
         }
@@ -420,11 +586,140 @@ export class ActionRouter {
     return null;
   }
 
+  // ─── Helper: Launch Edge with CDP port ─────────────────────────────
+
+  /**
+   * Try to launch a browser with --remote-debugging-port so CDPDriver can connect.
+   * Uses configured exe path if set, otherwise tries common Edge installation paths.
+   */
+  private async launchEdgeWithCDP(url: string): Promise<boolean> {
+    const cdpPort = getCDPPort();
+    const customExe = getBrowserExePath();
+    const browserPaths = customExe
+      ? [customExe]
+      : PLATFORM === 'darwin'
+        ? [
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          ]
+        : PLATFORM === 'linux'
+          ? [
+              '/usr/bin/microsoft-edge',
+              '/usr/bin/google-chrome',
+              '/usr/bin/google-chrome-stable',
+              '/usr/bin/chromium',
+              '/usr/bin/chromium-browser',
+            ]
+          : [
+              'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+            ];
+    for (const browserPath of browserPaths) {
+      try {
+        spawn(browserPath, [
+          `--remote-debugging-port=${cdpPort}`,
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-session-crashed-bubble',
+          url,
+        ], { detached: true, stdio: 'ignore' }).unref();
+        console.log(`   🔌 Launched browser with CDP port ${cdpPort} — ${url}`);
+        return true;
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  // ─── Handler: Save As ──────────────────────────────────────────────
+
+  private async handleSaveAs(descriptor: string): Promise<RouteResult> {
+    // Parse "filename on the desktop" / "filename in Documents" / just "filename"
+    let filename = descriptor;
+    let folder = '';
+
+    const onDesktopMatch = descriptor.match(/^(.+?)\s+on\s+(?:the\s+)?desktop$/i);
+    const inFolderMatch = descriptor.match(/^(.+?)\s+(?:in|to)\s+(?:the\s+)?(.+)$/i);
+
+    if (onDesktopMatch) {
+      filename = onDesktopMatch[1].trim();
+      folder = os.platform() === 'win32'
+        ? `${process.env.USERPROFILE || 'C:\\Users\\' + os.userInfo().username}\\Desktop`
+        : `${os.homedir()}/Desktop`;
+    } else if (inFolderMatch) {
+      filename = inFolderMatch[1].trim();
+      const folderName = inFolderMatch[2].trim().toLowerCase();
+      const home = os.homedir();
+      const folderMap: Record<string, string> = {
+        'documents': `${home}${os.platform() === 'win32' ? '\\Documents' : '/Documents'}`,
+        'downloads': `${home}${os.platform() === 'win32' ? '\\Downloads' : '/Downloads'}`,
+        'desktop': `${home}${os.platform() === 'win32' ? '\\Desktop' : '/Desktop'}`,
+      };
+      folder = folderMap[folderName] || '';
+    }
+
+    const fullPath = folder
+      ? (os.platform() === 'win32' ? `${folder}\\${filename}` : `${folder}/${filename}`)
+      : filename;
+
+    try {
+      // Press Ctrl+Shift+S for Save As dialog
+      await this.desktop.keyPress('Control+Shift+s');
+      await this.delay(1500); // Wait for Save As dialog to fully render
+
+      // Select all text in the filename field and type the path
+      await this.desktop.keyPress('Control+a');
+      await this.delay(100);
+      await this.desktop.typeText(fullPath);
+      await this.delay(300);
+
+      // Press Enter to save
+      await this.desktop.keyPress('Return');
+      await this.delay(1000);
+
+      // Handle potential "overwrite?" confirmation dialog
+      // If a confirmation dialog appears, press Enter again to confirm
+      try {
+        const activeWin = await this.a11y.getActiveWindow().catch(() => null);
+        if (activeWin && /confirm|replace|overwrite|save as/i.test(activeWin.title)) {
+          await this.desktop.keyPress('Return');
+          await this.delay(500);
+        }
+      } catch { /* non-critical */ }
+
+      return {
+        handled: true,
+        description: `Saved file as "${fullPath}" via Ctrl+Shift+S → Save As dialog`,
+      };
+    } catch (err) {
+      return {
+        handled: false,
+        description: `Save As failed: ${err}`,
+        error: String(err),
+      };
+    }
+  }
+
   // ─── Handler: Type Text ────────────────────────────────────────────
 
   private async handleType(text: string): Promise<RouteResult> {
     try {
-      await this.desktop.typeText(text);
+      // Use clipboard paste for longer text — avoids autocomplete interference in Notepad
+      // Guard: writeClipboard may not exist if a11y bridge is unavailable
+      if (text.length > 10 && typeof this.a11y.writeClipboard === 'function') {
+        try {
+          await this.a11y.writeClipboard(text);
+          await this.delay(50);
+          await this.desktop.keyPress(PLATFORM === 'darwin' ? 'Super+v' : 'Control+v');
+          await this.delay(200);
+        } catch {
+          // Clipboard bridge failed — fall back to direct typing
+          await this.desktop.typeText(text);
+        }
+      } else {
+        await this.desktop.typeText(text);
+      }
       return {
         handled: true,
         description: `Typed "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`,
@@ -469,9 +764,20 @@ export class ActionRouter {
         await this.a11y.focusWindow(undefined, browser.processId);
         await this.delay(300);
       } else {
-        // No browser running — launch default browser via OS default handler
+        // No browser running — launch Edge with CDP debugging port for DOM access
+        const launched = await this.launchEdgeWithCDP(fullUrl);
+        if (launched) {
+          await this.delay(2500);
+          return {
+            handled: true,
+            description: `Opened ${fullUrl} in browser (CDP port ${getCDPPort()} enabled for DOM interaction)`,
+          };
+        }
+        // Fall back to OS default browser
         if (PLATFORM === 'darwin') {
           await execFileAsync('open', [fullUrl]);
+        } else if (PLATFORM === 'linux') {
+          await execFileAsync('xdg-open', [fullUrl]);
         } else {
           await execFileAsync('explorer', [fullUrl]);
         }
@@ -530,10 +836,11 @@ export class ActionRouter {
           // If a11y click failed but we have coordinates, click there
           if ((result as any).clickPoint) {
             const pt = (result as any).clickPoint;
-            await this.desktop.mouseClick(pt.x, pt.y);
+            const mc = this.desktop.physicalToMouse(pt.x, pt.y);
+            await this.desktop.mouseClick(mc.x, mc.y);
             return {
               handled: true,
-              description: `Clicked "${elementName}" at (${pt.x}, ${pt.y})`,
+              description: `Clicked "${elementName}" at (${mc.x}, ${mc.y})`,
             };
           }
         }
@@ -542,10 +849,11 @@ export class ActionRouter {
         if (el.bounds && el.bounds.width > 0) {
           const cx = el.bounds.x + Math.floor(el.bounds.width / 2);
           const cy = el.bounds.y + Math.floor(el.bounds.height / 2);
-          await this.desktop.mouseClick(cx, cy);
+          const mc = this.desktop.physicalToMouse(cx, cy);
+          await this.desktop.mouseClick(mc.x, mc.y);
           return {
             handled: true,
-            description: `Clicked "${elementName}" at center (${cx}, ${cy})`,
+            description: `Clicked "${elementName}" at center (${mc.x}, ${mc.y})`,
           };
         }
       }
@@ -629,7 +937,7 @@ export class ActionRouter {
       if (action === 'minimize') {
         await this.desktop.keyPress('Super+Down');
       } else {
-        await this.desktop.keyPress('Super+Up');
+        await this.maximizeForegroundWindow();
       }
 
       return {

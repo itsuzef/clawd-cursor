@@ -8,9 +8,14 @@
 import type { Express } from 'express';
 import { VERSION } from './version';
 
-export function mountDashboard(app: Express): void {
+export function mountDashboard(app: Express, getToken?: () => string): void {
   app.get('/', (_req, res) => {
-    res.type('html').send(DASHBOARD_HTML);
+    // Inject auth token into dashboard so client-side JS can authenticate API calls.
+    // SECURITY: Token injected into page JS is acceptable for localhost-only binding.
+    // If remote access is ever added, switch to httpOnly cookie auth.
+    const token = getToken?.() ?? '';
+    const html = DASHBOARD_HTML.replace('__CLAWD_TOKEN_PLACEHOLDER__', token);
+    res.type('html').send(html);
   });
 }
 
@@ -529,6 +534,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
 <script>
 (function() {
+  // Auth token injected by server — used for all API calls
+  var __TOKEN = '__CLAWD_TOKEN_PLACEHOLDER__';
+  function authHeaders(extra) {
+    var h = { 'Authorization': 'Bearer ' + __TOKEN };
+    if (extra) { for (var k in extra) h[k] = extra[k]; }
+    return h;
+  }
+
   // State
   let currentTab = 'task';
   let connected = false;
@@ -637,7 +650,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     try {
       const res = await fetch('/task', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ task })
       });
       const data = await res.json();
@@ -695,7 +708,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     try {
       await fetch('/confirm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ approved })
       });
       confirmBanner.classList.remove('visible');
@@ -708,7 +721,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   window.killSwitch = async function() {
     if (!confirm('Are you sure you want to stop Clawd Cursor?')) return;
     try {
-      await fetch('/stop', { method: 'POST' });
+      await fetch('/stop', { method: 'POST', headers: authHeaders() });
       setConnected(false);
       statusDot.className = 'status-dot idle';
       statusText.textContent = 'Stopped';
@@ -753,7 +766,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   // Favorites
   async function loadFavorites() {
     try {
-      var res = await fetch('/favorites');
+      var res = await fetch('/favorites', { headers: authHeaders() });
       if (res.ok) {
         favorites = await res.json();
         renderFavorites();
@@ -800,7 +813,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     // When starring, check for credentials
     if (!isFav && looksLikeCredential(item.task)) {
       var msg = '🔒 This task may contain sensitive info (API key, password, or token).\\n\\n' +
-        'Starred commands are saved locally in .clawd-favorites.json on your machine — ' +
+        'Starred commands are saved locally in .clawdcursor-favorites.json on your machine — ' +
         'never sent over the network. Your credentials stay secure on your device.\\n\\n' +
         'Star this command anyway?';
       if (!confirm(msg)) return;
@@ -809,7 +822,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     try {
       var res = await fetch('/favorites', {
         method: isFav ? 'DELETE' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ task: item.task })
       });
       if (res.ok) {
@@ -835,7 +848,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     try {
       var res = await fetch('/favorites', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ task: text })
       });
       if (res.ok) {
@@ -852,7 +865,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   // Logs polling
   async function pollLogs() {
     try {
-      const res = await fetch('/logs');
+      const res = await fetch('/logs', { headers: authHeaders() });
       if (!res.ok) return;
       const logs = await res.json();
       if (logs.length === 0) return;

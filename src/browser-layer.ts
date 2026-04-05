@@ -19,10 +19,9 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { ClawdConfig, StepResult } from './types';
 import type { PipelineConfig } from './providers';
+import { getCDPPort } from './browser-config';
 
 const execFileAsync = promisify(execFile);
-
-const CDP_PORT = 9222;
 
 interface BrowserAction {
   action: string;
@@ -141,11 +140,12 @@ export class BrowserLayer {
 
   /**
    * Try to connect to an existing Chrome instance via CDP.
-   * User must launch Chrome with: chrome.exe --remote-debugging-port=9222
+   * User must launch the browser with: --remote-debugging-port=<cdpPort>
    */
   async connectToExistingChrome(): Promise<boolean> {
     try {
-      this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`, {
+      const cdpPort = getCDPPort(this.config);
+      this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`, {
         timeout: 3000,
       });
       const contexts = this.browser.contexts();
@@ -158,7 +158,7 @@ export class BrowserLayer {
         this.page = await this.context.newPage();
       }
       this.connected = true;
-      console.log(`   🌐 Connected to existing Chrome via CDP (port ${CDP_PORT})`);
+      console.log(`   🌐 Connected to existing browser via CDP (port ${cdpPort})`);
       return true;
     } catch {
       return false;
@@ -238,6 +238,8 @@ export class BrowserLayer {
         `], { timeout: 5000 });
       } else if (process.platform === 'darwin') {
         await execFileAsync('osascript', ['-e', 'tell application "Google Chrome" to activate'], { timeout: 5000 });
+      } else if (process.platform === 'linux') {
+        await execFileAsync('sh', ['-lc', `if command -v wmctrl >/dev/null 2>&1; then wmctrl -xa chrome || wmctrl -xa Chromium || wmctrl -xa firefox; elif command -v xdotool >/dev/null 2>&1; then xdotool search --onlyvisible --class 'chrome|chromium|firefox' windowactivate %@; else exit 1; fi`], { timeout: 5000 });
       }
       console.log(`   🪟 Brought browser to foreground`);
     } catch (e: any) {
@@ -502,7 +504,9 @@ export class BrowserLayer {
       if (this.browser && !(this.browser as any)._initializer?.wsEndpoint?.includes('127.0.0.1')) {
         await this.browser.close();
       }
-    } catch {}
+    } catch (err) {
+      console.debug(`[BrowserLayer] cleanup error (non-critical): ${err}`);
+    }
     this.browser = null;
     this.context = null;
     this.page = null;

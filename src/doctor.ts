@@ -1,12 +1,14 @@
 /**
  * 🩺 Clawd Cursor Doctor - diagnoses setup and auto-configures the pipeline.
  *
- * Tests:
- * 1. Screen capture (nut-js)
- * 2. Accessibility bridge (PowerShell / osascript)
- * 3. Input control (keyboard/mouse)
- * 4. AI provider connectivity + model availability (ALL providers in parallel)
- * 5. Builds optimal mixed 3-layer pipeline config
+ * Phases:
+ * 1. Screen capture test (nut-js)
+ * 2. Accessibility bridge test (PowerShell / osascript)
+ * 3. AI provider scan — all providers in parallel
+ * 4. Model verification — text: instruction-following, vision: real image input
+ * 5. Smoke test — a11y→LLM round-trip (reads active window, confirms via model)
+ * 6. Interactive pipeline selection
+ * 7. Save config
  */
 
 import * as fs from 'fs';
@@ -18,6 +20,7 @@ import { NativeDesktop } from './native-desktop';
 import { AccessibilityBridge } from './accessibility';
 import {
   PROVIDERS,
+  PROVIDER_ENV_VARS,
   detectProvider,
   buildPipeline,
   scanProviders,
@@ -30,9 +33,10 @@ import type {
   ModelTestResult,
 } from './providers';
 import { DEFAULT_CONFIG } from './types';
-import { resolveApiConfig } from './openclaw-credentials';
+import { resolveApiConfig } from './credentials';
+import { callVisionLLMDirect } from './llm-client';
 
-const CONFIG_FILE = '.clawd-config.json';
+const CONFIG_FILE = '.clawdcursor-config.json';
 const execFileAsync = promisify(execFile);
 
 interface DiagResult {
@@ -74,7 +78,7 @@ export async function quickSetup(): Promise<PipelineConfig | null> {
   // 3. Build best pipeline automatically
   const pipeline = buildMixedPipeline(scanResults, modelTests);
 
-  // 4. Save to .clawd-config.json
+  // 4. Save to .clawdcursor-config.json
   savePipelineConfig(pipeline, scanResults);
 
   // 5. Return pipeline
@@ -156,83 +160,18 @@ async function quickTestModelAsync(
 }
 
 /**
- * Quick model test with 5s timeout.
+ * Quick model test with 5s timeout — uses real tests for both text and vision.
  */
 async function quickTestModel(
   provider: ProviderProfile,
   apiKey: string,
   model: string,
-  _isVision: boolean,
+  isVision: boolean,
 ): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
-  const start = performance.now();
-
-  try {
-    if (provider.openaiCompat) {
-      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...provider.authHeader(apiKey),
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 5,
-          messages: [{ role: 'user', content: 'OK' }],
-        }),
-        signal: AbortSignal.timeout(5000), // 5s timeout for quick setup
-      });
-
-      const data = await response.json() as any;
-      if (data.error) {
-        const msg = typeof data.error === 'object' && data.error !== null
-          ? (data.error.message || JSON.stringify(data.error))
-          : String(data.error);
-        return { ok: false, error: msg };
-      }
-      const text = data.choices?.[0]?.message?.content || '';
-      if (!text) return { ok: false, error: 'Empty response' };
-
-      return { ok: true, latencyMs: Math.round(performance.now() - start) };
-    } else {
-      // Anthropic API
-      const response = await fetch(`${provider.baseUrl}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...provider.authHeader(apiKey),
-          ...provider.extraHeaders,
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 5,
-          messages: [{ role: 'user', content: 'OK' }],
-        }),
-        signal: AbortSignal.timeout(5000), // 5s timeout for quick setup
-      });
-
-      const data = await response.json() as any;
-      if (data.type === 'error' && data.error) {
-        const err = data.error;
-        const msg = typeof err === 'object' && err !== null
-          ? (err.message || JSON.stringify(err))
-          : String(err);
-        return { ok: false, error: msg };
-      }
-      if (data.error) {
-        const msg = typeof data.error === 'object' && data.error !== null
-          ? (data.error.message || JSON.stringify(data.error))
-          : String(data.error);
-        return { ok: false, error: msg };
-      }
-
-      return { ok: true, latencyMs: Math.round(performance.now() - start) };
-    }
-  } catch (err: any) {
-    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      return { ok: false, error: 'Timeout (5s)' };
-    }
-    return { ok: false, error: err.message || String(err) };
+  if (isVision) {
+    return testVisionModel(provider, apiKey, model);
   }
+  return testTextModel(provider, apiKey, model);
 }
 
 export async function runDoctor(opts: {
@@ -243,6 +182,18 @@ export async function runDoctor(opts: {
   visionModel?: string;
   save?: boolean;
 }): Promise<PipelineConfig | null> {
+  // Doctor is interactive-only. If stdin is not a TTY (e.g. run in background,
+  // piped, or via a script), exit immediately instead of hanging forever waiting
+  // for user input that will never come.
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error(
+      '\n❌  clawdcursor doctor requires an interactive terminal.\n' +
+      '    Open a terminal window and run: clawdcursor doctor\n' +
+      '    Do NOT run it in the background, piped, or from a script.\n'
+    );
+    process.exit(1);
+  }
+
   const results: DiagResult[] = [];
 
   console.log(`\n🩺 Clawd Cursor Doctor - diagnosing your setup...\n`);
@@ -273,6 +224,64 @@ export async function runDoctor(opts: {
     results.push({ name: 'Screen capture', ok: false, detail: String(err) });
     console.log(`   ❌ ${err}`);
     desktop.disconnect();
+  }
+
+  // ─── 1b. macOS Permissions (Screen Recording + Accessibility) ───
+  if (process.platform === 'darwin') {
+    console.log('🍎 macOS permissions...');
+    // Screen Recording: try to capture — if it fails with "not permitted" TCC denied it
+    try {
+      const { execFileAsync } = await import('child_process').then(m => ({
+        execFileAsync: require('util').promisify(m.execFile) as (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>,
+      }));
+      // osascript can query Accessibility permission
+      const { stdout: axOut } = await execFileAsync('osascript', [
+        '-e', 'tell application "System Events" to return (UI elements enabled as string)',
+      ]).catch(() => ({ stdout: 'false', stderr: '' }));
+      const axOk = axOut.trim() === 'true';
+      results.push({
+        name: 'macOS Accessibility permission',
+        ok: axOk,
+        detail: axOk
+          ? 'Granted — clawdcursor can read UI elements'
+          : 'DENIED — open System Settings → Privacy & Security → Accessibility → enable Terminal/Node',
+      });
+      if (axOk) {
+        console.log('   ✅ Accessibility permission granted');
+      } else {
+        console.log('   ❌ Accessibility permission DENIED');
+        console.log('   → System Settings → Privacy & Security → Accessibility → enable your terminal');
+      }
+    } catch {
+      results.push({ name: 'macOS Accessibility permission', ok: false, detail: 'Could not query — run manually in a terminal' });
+    }
+
+    // Screen Recording: attempt a screencapture dry run
+    try {
+      const { execFileAsync } = await import('child_process').then(m => ({
+        execFileAsync: require('util').promisify(m.execFile) as (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>,
+      }));
+      const tmpFile = `/tmp/.clawdcursor-scrtest-${Date.now()}.png`;
+      const { stderr } = await execFileAsync('screencapture', ['-x', '-t', 'png', tmpFile])
+        .catch(e => ({ stdout: '', stderr: String(e) }));
+      const denied = stderr.toLowerCase().includes('not permitted') || stderr.toLowerCase().includes('permission');
+      try { require('fs').unlinkSync(tmpFile); } catch { /* cleanup */ }
+      results.push({
+        name: 'macOS Screen Recording permission',
+        ok: !denied,
+        detail: denied
+          ? 'DENIED — open System Settings → Privacy & Security → Screen Recording → enable Terminal/Node'
+          : 'Granted — clawdcursor can capture the screen',
+      });
+      if (denied) {
+        console.log('   ❌ Screen Recording permission DENIED');
+        console.log('   → System Settings → Privacy & Security → Screen Recording → enable your terminal');
+      } else {
+        console.log('   ✅ Screen Recording permission granted');
+      }
+    } catch {
+      results.push({ name: 'macOS Screen Recording permission', ok: false, detail: 'Could not verify — check manually' });
+    }
   }
 
   // ─── 2. Accessibility Bridge ─────────────────────────────────────
@@ -339,6 +348,13 @@ export async function runDoctor(opts: {
       groq: 'GROQ_API_KEY — https://console.groq.com (fast inference)',
       together: 'TOGETHER_API_KEY — https://api.together.xyz (open models)',
       deepseek: 'DEEPSEEK_API_KEY — https://platform.deepseek.com (reasoning)',
+      gemini: 'GEMINI_API_KEY — https://aistudio.google.com (Gemini 2.5 Flash — budget pick, 1M ctx, handles text+vision with one model)',
+      mistral: 'MISTRAL_API_KEY — https://console.mistral.ai (Pixtral vision)',
+      xai: 'XAI_API_KEY — https://console.x.ai (Grok vision)',
+      alibaba: 'DASHSCOPE_API_KEY — https://dashscope.console.aliyun.com (Qwen)',
+      fireworks: 'FIREWORKS_API_KEY — https://fireworks.ai (fast open models)',
+      cohere: 'COHERE_API_KEY — https://dashboard.cohere.com (Command R)',
+      perplexity: 'PERPLEXITY_API_KEY — https://www.perplexity.ai (online search)',
     };
     for (const scan of unavailableCloud) {
       if (keyInfo[scan.key]) {
@@ -347,45 +363,69 @@ export async function runDoctor(opts: {
     }
     console.log(`      Set in .env file or as environment variable, then re-run: clawdcursor doctor`);
 
-    // Offer to input key right now if interactive
+    // Offer to add a provider interactively
     if (process.stdin.isTTY && process.stdout.isTTY) {
       const rlSetup = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const keyInput = await new Promise<string>(resolve =>
-        rlSetup.question('\n   🔑 Paste an API key now to add a provider (or Enter to skip): ', resolve)
-      );
-      rlSetup.close();
+      const ask = (q: string) => new Promise<string>(resolve => rlSetup.question(q, resolve));
 
-      const trimmedKey = keyInput.trim();
-      if (trimmedKey) {
-        const detectedKey = detectProvider(trimmedKey);
-        if (detectedKey && PROVIDERS[detectedKey]) {
-          const matchingScan = scanResults.find(s => s.key === detectedKey);
+      // Step 1: Pick a provider
+      const providerList = [
+        { key: 'anthropic', label: 'Anthropic (Claude)', envVar: 'ANTHROPIC_API_KEY' },
+        { key: 'openai',    label: 'OpenAI (GPT-4o)',    envVar: 'OPENAI_API_KEY' },
+        { key: 'kimi',      label: 'Kimi / Moonshot',    envVar: 'MOONSHOT_API_KEY' },
+        { key: 'gemini',    label: 'Google Gemini',       envVar: 'GEMINI_API_KEY' },
+        { key: 'groq',      label: 'Groq',               envVar: 'GROQ_API_KEY' },
+        { key: 'deepseek',  label: 'DeepSeek',            envVar: 'DEEPSEEK_API_KEY' },
+        { key: 'together',  label: 'Together AI',         envVar: 'TOGETHER_API_KEY' },
+        { key: 'mistral',   label: 'Mistral AI',          envVar: 'MISTRAL_API_KEY' },
+        { key: 'xai',       label: 'xAI (Grok)',          envVar: 'XAI_API_KEY' },
+        { key: 'alibaba',   label: 'Alibaba (Qwen)',      envVar: 'DASHSCOPE_API_KEY' },
+        { key: 'fireworks', label: 'Fireworks AI',         envVar: 'FIREWORKS_API_KEY' },
+        { key: 'cohere',    label: 'Cohere',              envVar: 'COHERE_API_KEY' },
+        { key: 'perplexity',label: 'Perplexity',          envVar: 'PERPLEXITY_API_KEY' },
+      ];
+
+      console.log('\n   Select a provider to configure (or Enter to skip):\n');
+      for (let i = 0; i < providerList.length; i++) {
+        const p = providerList[i];
+        const existing = scanResults.find(s => s.key === p.key);
+        const status = existing?.available ? ' ✅ (key found)' : '';
+        console.log(`      ${String(i + 1).padStart(2)}. ${p.label}${status}`);
+      }
+
+      const choice = await ask('\n   Enter number (1-13) or press Enter to skip: ');
+      const choiceNum = parseInt(choice.trim());
+
+      if (choiceNum >= 1 && choiceNum <= providerList.length) {
+        const selected = providerList[choiceNum - 1];
+        console.log(`\n   Selected: ${selected.label}`);
+
+        // Step 2: Paste the key
+        const keyInput = await ask(`   🔑 Paste your ${selected.label} API key: `);
+        const trimmedKey = keyInput.trim();
+
+        if (trimmedKey) {
+          const matchingScan = scanResults.find(s => s.key === selected.key);
           if (matchingScan) {
             matchingScan.available = true;
             matchingScan.apiKey = trimmedKey;
             matchingScan.detail = `key added (${trimmedKey.substring(0, 8)}...)`;
-            console.log(`   ✅ Detected ${PROVIDERS[detectedKey].name} key! Testing...`);
-
-            // Save to .env for persistence
-            const envPath = path.join(process.cwd(), '.env');
-            const envVarNames: Record<string, string> = {
-              anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY',
-              kimi: 'MOONSHOT_API_KEY', groq: 'GROQ_API_KEY',
-              together: 'TOGETHER_API_KEY', deepseek: 'DEEPSEEK_API_KEY',
-            };
-            const envVarName = envVarNames[detectedKey] || 'AI_API_KEY';
-            const envLine = `${envVarName}=${trimmedKey}\n`;
-            try {
-              fs.appendFileSync(envPath, envLine);
-              console.log(`   💾 Saved to .env as ${envVarName}`);
-            } catch {
-              console.log(`   ⚠️ Could not save to .env — set ${envVarName} manually`);
-            }
           }
-        } else {
-          console.log(`   ⚠️ Could not detect provider for this key. Set it manually in .env`);
+
+          // Save to .env
+          const envPath = path.join(process.cwd(), '.env');
+          const envLine = `${selected.envVar}=${trimmedKey}\n`;
+          try {
+            fs.appendFileSync(envPath, envLine);
+            console.log(`   💾 Saved to .env as ${selected.envVar}`);
+          } catch {
+            console.log(`   ⚠️ Could not save to .env — set ${selected.envVar}=${trimmedKey} manually`);
+          }
+          console.log(`   ✅ ${selected.label} configured! Testing...`);
         }
       }
+
+      rlSetup.close();
     }
   }
 
@@ -432,16 +472,71 @@ export async function runDoctor(opts: {
     results.push({ name: 'Vision model', ok: false, detail: 'No working vision model found' });
   }
 
-  // ─── 5. Interactive provider/model selection ───────────────────
+  // ─── 5. Smoke Test — end-to-end pipeline sanity ─────────────
+  if (workingText.length > 0) {
+    console.log(`\n🧪 Smoke test...`);
+    const bestText = workingText[0];
+    const smokeProvider = PROVIDERS[bestText.providerKey];
+    const smokeScan = scanResults.find(s => s.key === bestText.providerKey);
+    const smokeKey = smokeScan?.apiKey || '';
+
+    // Quick round-trip: read active window title via a11y, ask LLM to echo it
+    let smokeOk = false;
+    try {
+      const smokeA11y = new AccessibilityBridge();
+      const activeWin = await smokeA11y.getActiveWindow();
+      const windowTitle = activeWin?.title || 'Terminal';
+
+      // Send window title to text model, ask it to confirm
+      const smokeInstruction = `The active window is titled "${windowTitle}". Reply with exactly: SMOKE_PASS`;
+
+      let smokeText = '';
+      if (smokeProvider.openaiCompat) {
+        const res = await fetch(`${smokeProvider.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...smokeProvider.authHeader(smokeKey) },
+          body: JSON.stringify({ model: bestText.model, max_tokens: 15, temperature: 0, messages: [{ role: 'user', content: smokeInstruction }] }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json() as any;
+        smokeText = data.choices?.[0]?.message?.content || '';
+      } else {
+        const res = await fetch(`${smokeProvider.baseUrl}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...smokeProvider.authHeader(smokeKey), ...smokeProvider.extraHeaders },
+          body: JSON.stringify({ model: bestText.model, max_tokens: 15, messages: [{ role: 'user', content: smokeInstruction }] }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json() as any;
+        smokeText = data.content?.[0]?.text || '';
+      }
+
+      smokeOk = smokeText.includes('SMOKE_PASS');
+      if (smokeOk) {
+        console.log(`   ✅ A11y → LLM round-trip passed (window: "${windowTitle}")`);
+        results.push({ name: 'Smoke test (a11y→LLM)', ok: true, detail: `Window "${windowTitle}" — model confirmed` });
+      } else {
+        console.log(`   ⚠️  LLM responded but didn't confirm (got: "${smokeText.substring(0, 40)}")`);
+        results.push({ name: 'Smoke test (a11y→LLM)', ok: false, detail: `Model didn't follow instruction: "${smokeText.substring(0, 40)}"` });
+      }
+    } catch (err) {
+      console.log(`   ⚠️  Smoke test skipped: ${err}`);
+      results.push({ name: 'Smoke test (a11y→LLM)', ok: false, detail: `Error: ${err}` });
+    }
+  }
+
+  // ─── 6. Interactive provider/model selection ───────────────────
   const recommendedPipeline = buildMixedPipeline(scanResults, modelTests);
   const gpuInfo = await detectGpuInfo();
   if (gpuInfo) {
     console.log(`\n🎮 GPU detected: ${gpuInfo}`);
   }
 
+  const allVision = modelTests.filter(t => t.role === 'vision');
   const selected = await promptPipelineSelection(
     workingText,
     workingVision,
+    allVision,
     recommendedPipeline,
   );
   const pipeline = buildPipelineFromSelection(scanResults, selected);
@@ -454,13 +549,13 @@ export async function runDoctor(opts: {
     console.log(`   🖥️  Computer Use API: enabled (Anthropic native)`);
   }
 
-  // ─── 6. Save Config ─────────────────────────────────────────────
+  // ─── 7. Save Config ─────────────────────────────────────────────
   if (opts.save !== false) {
     savePipelineConfig(pipeline, scanResults);
   }
 
-  // ─── 7. OpenClaw Skill Registration ──────────────────────────────
-  await registerOpenClawSkill(results);
+  // ─── 8. External Skill Registration (optional) ─────────────────
+  await registerExternalSkills(results);
 
   // ─── Summary ────────────────────────────────────────────────────
   printSummary(results, pipeline);
@@ -545,10 +640,10 @@ async function runSingleProviderFlow(
     }
   }
 
-  // Test vision model (Layer 3)
+  // Test vision model (Layer 3) — with actual image
   if (apiKey) {
     console.log(`   Testing ${visionModel} (vision)...`);
-    const visionResult = await testModel(provider, apiKey, visionModel, false);
+    const visionResult = await testModel(provider, apiKey, visionModel, true);
     if (visionResult.ok) {
       visionModelWorks = true;
       results.push({
@@ -600,20 +695,34 @@ async function runSingleProviderFlow(
 
   // Save Config
   if (opts.save !== false) {
-    const configPath = path.join(process.cwd(), CONFIG_FILE);
+    const configPath = path.join(path.resolve(__dirname, '..'), CONFIG_FILE);
+    // SECURITY: this file stores provider/model names and base URLs only.
+    // API keys are NEVER written here; they must live in env vars or .env files.
+    const singleTextEntry = {
+      enabled: pipeline.layer2.enabled,
+      model: pipeline.layer2.model,
+      baseUrl: pipeline.layer2.baseUrl,
+      provider: providerKey,
+    };
+    const singleVisionEntry = {
+      enabled: pipeline.layer3.enabled,
+      model: pipeline.layer3.model,
+      computerUse: pipeline.layer3.computerUse,
+      provider: providerKey,
+    };
     const configData = {
       provider: providerKey,
       pipeline: {
-        layer2: {
-          enabled: pipeline.layer2.enabled,
-          model: pipeline.layer2.model,
-          baseUrl: pipeline.layer2.baseUrl,
-        },
-        layer3: {
-          enabled: pipeline.layer3.enabled,
-          model: pipeline.layer3.model,
-          computerUse: pipeline.layer3.computerUse,
-        },
+        textModel: singleTextEntry,
+        visionModel: singleVisionEntry,
+        layer2: singleTextEntry,
+        layer3: singleVisionEntry,
+      },
+      compilation: {
+        ocr: true,
+        a11y: true,
+        cdp: true,
+        parallel: true,
       },
       diagnosedAt: new Date().toISOString(),
     };
@@ -621,8 +730,8 @@ async function runSingleProviderFlow(
     console.log(`\n💾 Config saved to ${CONFIG_FILE}`);
   }
 
-  // OpenClaw Skill Registration
-  await registerOpenClawSkill(results);
+  // External Skill Registration (optional)
+  await registerExternalSkills(results);
 
   // Summary
   printSummary(results, pipeline);
@@ -801,6 +910,7 @@ async function detectGpuInfo(): Promise<string | null> {
 async function promptPipelineSelection(
   workingText: ModelTestResult[],
   workingVision: ModelTestResult[],
+  allVision: ModelTestResult[],
   recommended: PipelineConfig,
 ): Promise<PipelineSelection> {
   const recommendedText = recommended.layer2.enabled
@@ -831,11 +941,15 @@ async function promptPipelineSelection(
       workingText,
       recommendedText,
     );
+    // For vision: if no working models, show ALL tested models (including failed)
+    // so the user can still pick one — the test image might have been the issue, not the model.
+    const visionOptions = workingVision.length > 0 ? workingVision : allVision;
     const layer3 = await promptCategoryChoice(
       rl,
       'VISION LLM (Layer 3)',
-      workingVision,
+      visionOptions,
       recommendedVision,
+      workingVision.length === 0, // showFailedWarning
     );
     return { layer2, layer3 };
   } finally {
@@ -848,19 +962,26 @@ async function promptCategoryChoice(
   title: string,
   options: ModelTestResult[],
   recommendedChoice: ModelChoice | null,
+  showFailedWarning: boolean = false,
 ): Promise<ModelChoice | null> {
   console.log(`\n${title}:`);
 
   if (options.length === 0) {
-    console.log('   No working models found. This layer will be disabled.');
+    console.log('   No models found. This layer will be disabled.');
     return null;
+  }
+
+  if (showFailedWarning) {
+    console.log('   ⚠️  No models passed auto-test (test image may be the issue, not the model).');
+    console.log('   Pick one anyway — most vision models work fine:\n');
   }
 
   options.forEach((opt, idx) => {
     const providerName = PROVIDERS[opt.providerKey]?.name || opt.providerKey;
     const recommendedMark = (recommendedChoice && opt.providerKey === recommendedChoice.providerKey && opt.model === recommendedChoice.model) ? ' ★ recommended' : '';
     const latency = opt.latencyMs ? `, ${opt.latencyMs}ms` : '';
-    console.log(`   ${idx + 1}. ${opt.model} (${providerName}${latency})${recommendedMark}`);
+    const status = opt.ok ? '✅' : '⚠️';
+    console.log(`   ${idx + 1}. ${status} ${opt.model} (${providerName}${latency})${recommendedMark}`);
   });
 
   const recommendedIndex = recommendedChoice
@@ -955,7 +1076,8 @@ async function testModelAsync(
  * Save pipeline config to disk, including multi-provider info.
  */
 function savePipelineConfig(pipeline: PipelineConfig, scanResults: ProviderScanResult[]): void {
-  const configPath = path.join(process.cwd(), CONFIG_FILE);
+  // Always save to the package directory so loadPipelineConfig finds it reliably
+  const configPath = path.join(path.resolve(__dirname, '..'), CONFIG_FILE);
 
   // Determine which providers are actually used
   const layer2ProviderKey = providerKeyForUrl(pipeline.layer2.baseUrl) || pipeline.providerKey;
@@ -963,22 +1085,36 @@ function savePipelineConfig(pipeline: PipelineConfig, scanResults: ProviderScanR
   const layer2Scan = scanResults.find(s => s.key === layer2ProviderKey);
   const layer3Scan = scanResults.find(s => s.key === layer3ProviderKey);
 
+  const textModelEntry = {
+    enabled: pipeline.layer2.enabled,
+    model: pipeline.layer2.model,
+    baseUrl: pipeline.layer2.baseUrl,
+    provider: layer2ProviderKey,
+  };
+  const visionModelEntry = {
+    enabled: pipeline.layer3.enabled,
+    model: pipeline.layer3.model,
+    baseUrl: pipeline.layer3.baseUrl,
+    computerUse: pipeline.layer3.computerUse,
+    provider: layer3ProviderKey,
+  };
+
   const configData = {
     provider: pipeline.providerKey,
     pipeline: {
-      layer2: {
-        enabled: pipeline.layer2.enabled,
-        model: pipeline.layer2.model,
-        baseUrl: pipeline.layer2.baseUrl,
-        provider: layer2ProviderKey,
-      },
-      layer3: {
-        enabled: pipeline.layer3.enabled,
-        model: pipeline.layer3.model,
-        baseUrl: pipeline.layer3.baseUrl,
-        computerUse: pipeline.layer3.computerUse,
-        provider: layer3ProviderKey,
-      },
+      // Primary field names (v0.7.5+)
+      textModel: textModelEntry,
+      visionModel: visionModelEntry,
+      // Legacy field names for backward compatibility
+      layer2: textModelEntry,
+      layer3: visionModelEntry,
+    },
+    // Compilation features — which perception channels are enabled
+    compilation: {
+      ocr: true,
+      a11y: true,
+      cdp: true,
+      parallel: true,
     },
     // Store API keys by provider so we can reconstruct later
     providerKeys: Object.fromEntries(
@@ -1021,13 +1157,16 @@ function printNoProvidersHelp(results: DiagResult[]): void {
   console.log(`   Option 1 (Free, local):`);
   console.log(`      Install Ollama: https://ollama.ai`);
   console.log(`      Then: ollama pull <model>  (e.g. qwen2.5:7b, llama3.2, gemma2)\n`);
-  console.log(`   Option 2 (Cloud):`);
-  console.log(`      Get an API key from any OpenAI-compatible provider:`);
-  console.log(`      - Anthropic: https://console.anthropic.com (has Computer Use)`);
-  console.log(`      - OpenAI: https://platform.openai.com`);
-  console.log(`      - Groq: https://console.groq.com`);
-  console.log(`      - Together: https://api.together.xyz`);
-  console.log(`      - DeepSeek: https://platform.deepseek.com`);
+  console.log(`   Option 2 (Cloud — Budget pick):`);
+  console.log(`      Google Gemini 2.5 Flash — one model handles both text + vision roles`);
+  console.log(`      Cost: ~$0.15/1M input tokens, 1M context window`);
+  console.log(`      Get key: https://aistudio.google.com (free tier available)`);
+  console.log(`      Set: GEMINI_API_KEY=AIza...\n`);
+  console.log(`   Option 3 (Cloud — Best quality):`);
+  console.log(`      - Anthropic: https://console.anthropic.com (Computer Use, best accuracy)`);
+  console.log(`      - OpenAI: https://platform.openai.com (GPT-4o vision)`);
+  console.log(`      - Groq: https://console.groq.com (fastest inference)`);
+  console.log(`      - DeepSeek: https://platform.deepseek.com (reasoning)`);
   console.log(`      - Any OpenAI-compatible endpoint`);
   console.log(`      Then: clawdcursor install --api-key YOUR_KEY\n`);
 
@@ -1077,92 +1216,54 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
 }
 
 /**
- * Register Clawd Cursor as an OpenClaw skill by symlinking into the workspace skills folder.
+ * Register Clawd Cursor as a skill in detected external platforms (OpenClaw, Codex, etc.).
+ * Purely optional — skips silently if no platforms are installed.
  */
-async function registerOpenClawSkill(results: DiagResult[]): Promise<void> {
-  console.log('🔗 OpenClaw skill registration...');
+async function registerExternalSkills(results: DiagResult[]): Promise<void> {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  if (!homeDir) return;
 
-  try {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-    if (!homeDir) {
-      console.log('   ⚠️  Could not determine home directory — skipping');
-      return;
-    }
+  const clawdCursorRoot = path.resolve(__dirname, '..');
 
-    // Check common OpenClaw workspace locations
-    const candidates = [
-      path.join(homeDir, '.openclaw', 'workspace', 'skills'),
-      path.join(homeDir, '.openclaw-dev', 'workspace', 'skills'),
-    ];
+  // Each entry: [platform name, skills directory path, target folder name]
+  const platforms: [string, string, string][] = [
+    ['OpenClaw', path.join(homeDir, '.openclaw', 'workspace', 'skills'), 'clawdcursor'],
+    ['OpenClaw (dev)', path.join(homeDir, '.openclaw-dev', 'workspace', 'skills'), 'clawdcursor'],
+    ['OpenClaw (flat)', path.join(homeDir, '.openclaw', 'skills'), 'clawdcursor'],
+    ['Codex', path.join(homeDir, '.codex', 'skills'), 'clawdcursor'],
+  ];
 
-    let skillsDir: string | null = null;
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        skillsDir = candidate;
-        break;
-      }
-    }
+  let registered = 0;
+  for (const [name, skillsDir, folderName] of platforms) {
+    if (!fs.existsSync(skillsDir)) continue;
 
-    if (!skillsDir) {
-      console.log('   ℹ️  OpenClaw not detected — skipping skill registration');
-      console.log('   💡 Install OpenClaw (https://openclaw.ai) to use Clawd Cursor as an AI skill');
-      return;
-    }
+    const skillTarget = path.join(skillsDir, folderName);
 
-    const skillTarget = path.join(skillsDir, 'clawdcursor');
-    const clawdCursorRoot = path.resolve(__dirname, '..');
-
-    // Check if already registered
     if (fs.existsSync(skillTarget)) {
-      // Verify it points to the right place
-      try {
-        const stat = fs.lstatSync(skillTarget);
-        if (stat.isSymbolicLink()) {
-          const linkTarget = fs.readlinkSync(skillTarget);
-          if (path.resolve(linkTarget) === clawdCursorRoot) {
-            console.log('   ✅ Already registered as OpenClaw skill');
-            results.push({ name: 'OpenClaw skill', ok: true, detail: 'Registered (symlink)' });
-            return;
-          }
-          // Wrong symlink — remove and recreate
-          fs.unlinkSync(skillTarget);
-        } else {
-          // It's a real directory — check if SKILL.md exists and is current
-          const existingSkill = path.join(skillTarget, 'SKILL.md');
-          if (fs.existsSync(existingSkill)) {
-            console.log('   ✅ Already registered as OpenClaw skill');
-            results.push({ name: 'OpenClaw skill', ok: true, detail: 'Registered (directory)' });
-            return;
-          }
-        }
-      } catch {
-        // Can't read — try to recreate
-      }
+      registered++;
+      continue; // Already registered
     }
 
-    // Create symlink (or copy on Windows if symlink fails)
     try {
       fs.symlinkSync(clawdCursorRoot, skillTarget, process.platform === 'win32' ? 'junction' : 'dir');
-      console.log('   ✅ Registered as OpenClaw skill');
-      console.log(`   📂 ${skillTarget} → ${clawdCursorRoot}`);
-      results.push({ name: 'OpenClaw skill', ok: true, detail: 'Registered (symlink created)' });
-    } catch (symlinkErr) {
-      // Symlink failed (permissions) — copy SKILL.md instead
+      // Silent in v0.7.0 — standalone, external skill link is optional
+      results.push({ name: `${name} skill`, ok: true, detail: 'Registered' });
+      registered++;
+    } catch {
       try {
         fs.mkdirSync(skillTarget, { recursive: true });
         fs.copyFileSync(
           path.join(clawdCursorRoot, 'SKILL.md'),
           path.join(skillTarget, 'SKILL.md')
         );
-        console.log('   ✅ Registered as OpenClaw skill (copied SKILL.md)');
-        results.push({ name: 'OpenClaw skill', ok: true, detail: 'Registered (SKILL.md copied)' });
-      } catch (copyErr) {
-        console.log(`   ❌ Failed to register: ${copyErr}`);
-        results.push({ name: 'OpenClaw skill', ok: false, detail: String(copyErr) });
-      }
+        results.push({ name: `${name} skill`, ok: true, detail: 'Registered (SKILL.md copied)' });
+        registered++;
+      } catch { /* non-critical */ }
     }
-  } catch (err) {
-    console.log(`   ⚠️  ${err}`);
+  }
+
+  if (registered === 0) {
+    // No external platforms found — that's fine, clawdcursor works standalone
   }
 }
 
@@ -1180,9 +1281,9 @@ async function checkForUpdates(results: DiagResult[]): Promise<void> {
     const timeout = setTimeout(() => controller.abort(), 5000);
 
     const res = await fetch(
-      'https://api.github.com/repos/AmrDab/clawd-cursor/releases/latest',
+      'https://api.github.com/repos/AmrDab/clawdcursor/releases/latest',
       {
-        headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'clawd-cursor-doctor' },
+        headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'clawdcursor-doctor' },
         signal: controller.signal,
       },
     );
@@ -1244,19 +1345,36 @@ function compareVersions(a: string, b: string): number {
 }
 
 /**
- * Test if a model is responding.
+ * Test if a model is responding AND can follow instructions.
+ * Text models: "Reply with exactly: CLAWD_OK" → verify response contains CLAWD_OK.
+ * Vision models: send a 1x1 green pixel → verify non-empty meaningful response.
  */
 async function testModel(
   provider: ProviderProfile,
   apiKey: string,
   model: string,
-  _isVision: boolean,
+  isVision: boolean,
+): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+  if (isVision) {
+    return testVisionModel(provider, apiKey, model);
+  }
+  return testTextModel(provider, apiKey, model);
+}
+
+/** Text model: verify instruction-following, not just connectivity */
+async function testTextModel(
+  provider: ProviderProfile,
+  apiKey: string,
+  model: string,
 ): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
   const start = performance.now();
+  const TIMEOUT = 8000;
+  const INSTRUCTION = 'Reply with exactly one word: CLAWD_OK — nothing else.';
 
   try {
+    let text = '';
+
     if (provider.openaiCompat) {
-      // OpenAI-compatible API (OpenAI, Ollama, Kimi)
       const response = await fetch(`${provider.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -1266,22 +1384,17 @@ async function testModel(
         body: JSON.stringify({
           model,
           max_tokens: 10,
-          messages: [{ role: 'user', content: 'Reply OK' }],
+          // Omit temperature for reasoning models (kimi-k2.5 etc.) that reject temperature=0
+          ...(provider.reasoningVisionModel && model === provider.visionModel ? {} : { temperature: 0 }),
+          messages: [{ role: 'user', content: INSTRUCTION }],
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(TIMEOUT),
       });
-
       const data = await response.json() as any;
       if (data.error) {
-        const msg = typeof data.error === 'object' && data.error !== null
-          ? (data.error.message || JSON.stringify(data.error))
-          : String(data.error);
-        return { ok: false, error: msg };
+        return { ok: false, error: extractErrorMessage(data.error) };
       }
-      const text = data.choices?.[0]?.message?.content || '';
-      if (!text) return { ok: false, error: 'Empty response' };
-
-      return { ok: true, latencyMs: Math.round(performance.now() - start) };
+      text = data.choices?.[0]?.message?.content || '';
     } else {
       // Anthropic API
       const response = await fetch(`${provider.baseUrl}/messages`, {
@@ -1294,37 +1407,103 @@ async function testModel(
         body: JSON.stringify({
           model,
           max_tokens: 10,
-          messages: [{ role: 'user', content: 'Reply OK' }],
+          messages: [{ role: 'user', content: INSTRUCTION }],
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(TIMEOUT),
       });
-
       const data = await response.json() as any;
       if (data.type === 'error' && data.error) {
-        const err = data.error;
-        const msg = typeof err === 'object' && err !== null
-          ? (err.message || JSON.stringify(err))
-          : String(err);
-        const hint = (err.type === 'not_found_error' || err.type === 'invalid_request_error')
+        const hint = (data.error.type === 'not_found_error' || data.error.type === 'invalid_request_error')
           ? ' — check model id matches your provider'
           : '';
-        return { ok: false, error: msg + hint };
+        return { ok: false, error: extractErrorMessage(data.error) + hint };
       }
       if (data.error) {
-        const msg = typeof data.error === 'object' && data.error !== null
-          ? (data.error.message || JSON.stringify(data.error))
-          : String(data.error);
-        return { ok: false, error: msg };
+        return { ok: false, error: extractErrorMessage(data.error) };
       }
-
-      return { ok: true, latencyMs: Math.round(performance.now() - start) };
+      text = data.content?.[0]?.text || '';
     }
+
+    if (!text) return { ok: false, error: 'Empty response' };
+
+    // Verify instruction-following
+    if (!text.includes('CLAWD_OK')) {
+      return { ok: false, error: `Model responded but didn't follow instructions (got: "${text.substring(0, 50)}")` };
+    }
+
+    return { ok: true, latencyMs: Math.round(performance.now() - start) };
   } catch (err: any) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      return { ok: false, error: 'Timeout (15s)' };
+      return { ok: false, error: `Timeout (${TIMEOUT / 1000}s)` };
     }
     return { ok: false, error: err.message || String(err) };
   }
+}
+
+/** Vision model: send a real image and verify the model can process it */
+async function testVisionModel(
+  provider: ProviderProfile,
+  apiKey: string,
+  model: string,
+): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+  const start = performance.now();
+  const TIMEOUT = 10000; // vision needs slightly more time
+
+  // 64x64 solid green JPEG (292 bytes) — JPEG is universally supported by all vision APIs.
+  // PNG fails on some providers (e.g., Kimi rejects PNG with "failed to decode image").
+  const TEST_IMAGE = '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCABAAEADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAT/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCABNEfAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAf/2Q==';
+  const TEST_IMAGE_MIME = 'image/jpeg';
+
+  try {
+    const text = await callVisionLLMDirect({
+      baseUrl: provider.baseUrl,
+      model,
+      apiKey,
+      isAnthropic: !provider.openaiCompat,
+      providerProfile: provider,  // passes reasoningVisionModel flag for temperature handling
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: TEST_IMAGE_MIME, data: TEST_IMAGE } },
+          { type: 'text', text: 'What color is this image? Reply with one word.' },
+        ],
+      }],
+      maxTokens: 20,
+      timeoutMs: TIMEOUT,
+      retries: 0,
+    });
+
+    if (!text) return { ok: false, error: 'Empty response — model may not support vision' };
+
+    // Any non-empty response proves the model accepted the image
+    // Bonus: check if it said "green" (but don't require it — some models describe differently)
+    const lower = text.toLowerCase();
+    const recognizedColor = lower.includes('green') || lower.includes('color');
+    return {
+      ok: true,
+      latencyMs: Math.round(performance.now() - start),
+      ...(recognizedColor ? {} : {}), // response is valid either way
+    };
+  } catch (err: any) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      return { ok: false, error: `Timeout (${TIMEOUT / 1000}s)` };
+    }
+    // Common error: model doesn't support multimodal input
+    const msg = err.message || String(err);
+    if (msg.includes('image') || msg.includes('multimodal') || msg.includes('vision')) {
+      return { ok: false, error: `Model does not support vision input: ${msg}` };
+    }
+    return { ok: false, error: msg };
+  }
+}
+
+/** Extract a human-readable error message from an API error response */
+function extractErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object' && error !== null) {
+    return (error as any).message || JSON.stringify(error);
+  }
+  return String(error);
 }
 
 /**
@@ -1353,34 +1532,47 @@ export function loadPipelineConfig(): PipelineConfig | null {
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const providerKey = raw.provider || 'ollama';
     const provider = PROVIDERS[providerKey] || PROVIDERS['ollama'];
+    // Resolve API key: check provider-scoped env vars FIRST, then fall back to
+    // generic resolution. This prevents OpenClaw auth-profiles (e.g. a stale
+    // Anthropic key) from overriding the correct provider-specific key.
+    const scopedEnvKey = (PROVIDER_ENV_VARS[providerKey] || [])
+      .map(k => process.env[k])
+      .find(v => v && v.length > 0) || '';
     const resolvedDefault = resolveApiConfig();
-    const defaultApiKey = resolvedDefault.apiKey;
+    const defaultApiKey = scopedEnvKey || resolvedDefault.apiKey;
 
-    // Support mixed-provider configs saved by the new doctor
-    const layer2BaseUrl = raw.pipeline?.layer2?.baseUrl ?? provider.baseUrl;
-    const layer3BaseUrl = raw.pipeline?.layer3?.baseUrl ?? provider.baseUrl;
-    const layer3ProviderKey = raw.pipeline?.layer3?.provider || providerKey;
-    const layer3ComputerUse = raw.pipeline?.layer3?.computerUse ?? false;
-    const explicitLayer3ApiKey = raw.pipeline?.layer3?.apiKey;
+    // Support both v0.7.5+ (textModel/visionModel) and legacy (layer2/layer3) field names
+    const layer2Data = raw.pipeline?.textModel ?? raw.pipeline?.layer2;
+    const layer3Data = raw.pipeline?.visionModel ?? raw.pipeline?.layer3;
+
+    const layer2BaseUrl = layer2Data?.baseUrl ?? provider.baseUrl;
+    const layer3BaseUrl = layer3Data?.baseUrl ?? provider.baseUrl;
+    const layer2ProviderKey = layer2Data?.provider || providerKey;
+    const layer3ProviderKey = layer3Data?.provider || providerKey;
+    const layer3ComputerUse = layer3Data?.computerUse ?? false;
+
+    // Resolve API keys PER LAYER based on each layer's provider.
+    // Mixed pipelines (e.g., Kimi text + Anthropic vision) need different keys.
+    const layer2ApiKey = resolveProviderApiKey(layer2ProviderKey, defaultApiKey);
+    const layer3ApiKey = resolveProviderApiKey(layer3ProviderKey, defaultApiKey);
 
     return {
       provider,
       providerKey,
-      apiKey: defaultApiKey,
+      apiKey: layer2ApiKey, // primary key = text layer key (most LLM calls use text)
       layer1: true,
       layer2: {
-        enabled: raw.pipeline?.layer2?.enabled ?? false,
-        model: raw.pipeline?.layer2?.model ?? provider.textModel,
+        enabled: layer2Data?.enabled ?? false,
+        model: layer2Data?.model ?? provider.textModel,
         baseUrl: layer2BaseUrl,
+        apiKey: layer2ApiKey, // per-layer key for mixed-provider pipelines
       },
       layer3: {
-        enabled: raw.pipeline?.layer3?.enabled ?? false,
-        model: raw.pipeline?.layer3?.model ?? provider.visionModel,
+        enabled: layer3Data?.enabled ?? false,
+        model: layer3Data?.model ?? provider.visionModel,
         baseUrl: layer3BaseUrl,
         computerUse: layer3ComputerUse,
-        apiKey: layer3ComputerUse
-          ? (explicitLayer3ApiKey || resolveProviderApiKey(layer3ProviderKey, defaultApiKey))
-          : undefined,
+        apiKey: layer3ApiKey, // always resolve per-layer, not just for CU
       },
     };
   } catch {

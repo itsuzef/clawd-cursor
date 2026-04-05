@@ -13,11 +13,87 @@ import { DEFAULT_CONFIG } from './types';
 import type { ClawdConfig } from './types';
 import { VERSION } from './version';
 import dotenv from 'dotenv';
-import { resolveApiConfig } from './openclaw-credentials';
+import { resolveApiConfig } from './credentials';
 import * as fs from 'fs';
 import * as path from 'path';
+import { migrateFromLegacyDir } from './paths';
 
 dotenv.config();
+
+// Migrate data from legacy ~/.openclaw/clawdcursor/ to ~/.clawdcursor/
+migrateFromLegacyDir();
+
+// ── Auth helper ──────────────────────────────────────────────────────────────
+// Reads the saved Bearer token from ~/.clawdcursor/token (written by start/serve).
+function loadAuthToken(): string {
+  try {
+    const tokenPath = path.join(require('os').homedir(), '.clawdcursor', 'token');
+    return fs.readFileSync(tokenPath, 'utf-8').trim();
+  } catch {
+    return '';
+  }
+}
+function authHeaders(): Record<string, string> {
+  const token = loadAuthToken();
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
+// ── Emoji gate (shared utility) ──────────────────────────────────────────────
+import { e } from './format';
+
+// ── Single-instance pidfile lock ─────────────────────────────────────────────
+// Prevents duplicate start/mcp/serve processes from accumulating (a common
+// source of stale processes when Cursor/editors restart the MCP server).
+
+const PID_DIR = path.join(require('os').homedir(), '.clawdcursor');
+
+function pidFilePath(mode: 'start' | 'mcp' | 'serve'): string {
+  return path.join(PID_DIR, `${mode}.pid`);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    // Signal 0 checks existence without sending a real signal.
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if another instance is already running for this mode.
+ * Returns the stale pid if a live duplicate is found, otherwise null.
+ * Writes the current pid to the lockfile on success.
+ */
+function claimPidFile(mode: 'start' | 'mcp' | 'serve'): number | null {
+  try {
+    if (!fs.existsSync(PID_DIR)) fs.mkdirSync(PID_DIR, { recursive: true });
+    const pidFile = pidFilePath(mode);
+    if (fs.existsSync(pidFile)) {
+      const existing = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (!isNaN(existing) && existing !== process.pid && isProcessAlive(existing)) {
+        return existing; // live duplicate found
+      }
+    }
+    fs.writeFileSync(pidFile, String(process.pid), { encoding: 'utf-8', mode: 0o600 });
+    return null;
+  } catch {
+    return null; // non-fatal — lock is best-effort
+  }
+}
+
+function releasePidFile(mode: 'start' | 'mcp' | 'serve'): void {
+  try {
+    const pidFile = pidFilePath(mode);
+    if (fs.existsSync(pidFile)) {
+      const stored = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (stored === process.pid) fs.unlinkSync(pidFile);
+    }
+  } catch {
+    // non-fatal
+  }
+}
 
 const program = new Command();
 
@@ -50,7 +126,7 @@ async function forceKillPort(port: number): Promise<boolean> {
       if (pids.size === 0) return false;
       for (const pid of pids) {
         execSync(`taskkill /F /PID ${pid}`);
-        console.log(`🐾 Killed process ${pid}`);
+        console.log(`${e('🐾', '>')} Killed process ${pid}`);
       }
       return true;
     } catch {
@@ -67,7 +143,7 @@ async function forceKillPort(port: number): Promise<boolean> {
 }
 
 program
-  .name('clawd-cursor')
+  .name('clawdcursor')
   .description('🐾 AI Desktop Agent — native screen control')
   .version(VERSION);
 
@@ -82,17 +158,53 @@ program
   .option('--base-url <url>', 'Custom API base URL (OpenAI-compatible)')
   .option('--api-key <key>', 'AI provider API key')
   .option('--debug', 'Save screenshots to debug/ folder (off by default)')
+  .option('--v2', 'Use v2 agent (simplified tool-calling loop, no decomposer)')
+  .option('--accept', 'Accept desktop control consent non-interactively and start')
   .action(async (opts) => {
+    // Single-instance guard
+    const existingPid = claimPidFile('start');
+    if (existingPid !== null) {
+      console.error(`${e('❌', '[ERR]')} clawdcursor start is already running (pid ${existingPid}). Run \`clawdcursor stop\` first.`);
+      process.exit(1);
+    }
+
+    // Handle consent before anything else
+    const { hasConsent, writeConsentFile, runOnboarding } = await import('./onboarding');
+    if (opts.accept) {
+      writeConsentFile();
+      console.log('  Consent recorded.\n');
+    } else if (!hasConsent()) {
+      const accepted = await runOnboarding('start', parseInt(opts.port, 10) || 3847);
+      if (!accepted) process.exit(1);
+    }
+
+    // Pre-check: is the port already in use? Do this BEFORE expensive init.
+    const requestedPort = parseInt(opts.port, 10) || 3847;
+    const requestedHost = '127.0.0.1';
+    const net = await import('net');
+    const portFree = await new Promise<boolean>((resolve) => {
+      const tester = net.createServer()
+        .once('error', () => resolve(false))
+        .once('listening', () => { tester.close(); resolve(true); });
+      tester.listen(requestedPort, requestedHost);
+    });
+    if (!portFree) {
+      console.error(`\n${e('❌', '[ERR]')} Port ${requestedPort} is already in use.`);
+      console.error(`Another clawdcursor instance may be running.`);
+      console.error(`Run 'clawdcursor stop' first, or use --port <other_port>`);
+      process.exit(1);
+    }
+
     // Auto-setup on first run
-    const configPath = path.join(__dirname, '..', '.clawd-config.json');
+    const configPath = path.join(__dirname, '..', '.clawdcursor-config.json');
     if (!fs.existsSync(configPath)) {
-      console.log('🔍 First run — auto-detecting AI providers...\n');
+      console.log(`${e('🔍', '*')} First run — auto-detecting AI providers...\n`);
       const { quickSetup } = await import('./doctor');
       const pipeline = await quickSetup();
       if (pipeline) {
-        console.log('✅ Auto-configured! Run `clawdcursor doctor` to customize.\n');
+        console.log(`${e('✅', '[OK]')} Auto-configured! Run \`clawdcursor doctor\` to customize.\n`);
       } else {
-        console.log('⚠️  No AI providers found. Layer 1 (Action Router) will still work.');
+        console.log(`${e('⚠️', '[WARN]')}  No AI providers found. Layer 1 (Action Router) will still work.`);
         console.log('   Run `clawdcursor doctor` to set up AI providers.\n');
       }
     }
@@ -123,45 +235,274 @@ program
       debug: opts.debug || false,
     };
 
-    console.log(`
-🐾 ╔═══════════════════════════════════════╗
-   ║       CLAWD CURSOR v${VERSION}             ║
-   ║   AI Desktop Agent — Smart Pipeline   ║
-   ╚═══════════════════════════════════════╝
-`);
+    console.log(`\x1b[32m\u2713\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m\u2014 desktop control active on ${config.server.host}:${config.server.port}\x1b[0m`);
 
-    if (resolvedApi.source === 'openclaw') {
-      console.log('🔗 Using OpenClaw agent credentials for AI provider routing');
-      console.log(`   Text: ${resolvedApi.textModel || 'auto'} via ${resolvedApi.textBaseUrl || 'default'}`);
-      console.log(`   Vision: ${resolvedApi.visionModel || 'auto'} via ${resolvedApi.visionBaseUrl || 'default'}`);
+    if (resolvedApi.source === 'external') {
+      console.log(`${e('🔗', '--')} External credentials detected — pipeline config (.clawdcursor-config.json) takes priority`);
     }
 
+    // ── V2 Agent: simplified tool-calling loop ──────────────────────────────
+    if (opts.v2) {
+      console.log(`\n${e('🚀', '>')} Agent v2 — unified tool-calling loop`);
+
+      const { loadPipelineConfig } = await import('./doctor');
+      const pipelineConfig = loadPipelineConfig();
+      if (!pipelineConfig || !pipelineConfig.layer2.enabled) {
+        console.error(`${e('❌', '[ERR]')} Agent v2 requires a configured AI provider. Run: clawdcursor doctor`);
+        releasePidFile('start');
+        process.exit(1);
+      }
+
+      const toolCtx = await createToolContext();
+      await toolCtx.ensureInitialized();
+
+      const { AgentV2 } = await import('./agent-v2');
+      const agentV2 = new AgentV2({
+        pipelineConfig,
+        toolCtx,
+        debugDir: opts.debug ? path.join(process.cwd(), 'debug') : null,
+      });
+
+      // Set up HTTP server with tool server + v2 task endpoint
+      const express = (await import('express')).default;
+      const { createToolServer } = await import('./tool-server');
+      const { randomBytes } = await import('crypto');
+
+      const tokenDir = path.join(require('os').homedir(), '.clawdcursor');
+      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+      const serverToken = randomBytes(32).toString('hex');
+      fs.writeFileSync(path.join(tokenDir, 'token'), serverToken, { encoding: 'utf-8', mode: 0o600 });
+
+      const app = express();
+      app.use(express.json());
+
+      // Auth middleware
+      const authMiddleware = (req: any, res: any, next: any) => {
+        if (req.method === 'GET') return next();
+        const bearer = (req.headers['authorization'] || '').replace('Bearer ', '');
+        if (!bearer || bearer !== serverToken) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+        next();
+      };
+      app.use(authMiddleware);
+
+      // Health
+      app.get('/health', (_req: any, res: any) => res.json({ status: 'ok', version: VERSION, mode: 'agent-v2', tools: 40 }));
+
+      // Tool server (same as serve mode)
+      app.use(createToolServer(toolCtx));
+
+      // V2 task endpoint
+      let v2Busy = false;
+      let v2LastResult: any = null;
+
+      app.post('/task', async (req: any, res: any) => {
+        const task = req.body?.task;
+        if (!task || typeof task !== 'string') {
+          return res.status(400).json({ error: 'Missing "task" in body' });
+        }
+        if (v2Busy) {
+          return res.status(409).json({ error: 'Agent is busy' });
+        }
+
+        v2Busy = true;
+        res.json({ accepted: true, task });
+
+        // Execute async
+        try {
+          v2LastResult = await agentV2.executeTask(task);
+          console.log(`\n${e('📋', '>')} Task ${v2LastResult.success ? 'SUCCEEDED' : 'FAILED'}: ${v2LastResult.message}`);
+          console.log(`   ${v2LastResult.steps.length} steps, ${v2LastResult.llmCalls} LLM calls, ${(v2LastResult.duration / 1000).toFixed(1)}s`);
+        } catch (err) {
+          console.error(`${e('❌', '[ERR]')} Task crashed:`, err);
+          v2LastResult = { success: false, message: `Crashed: ${err}`, steps: [], llmCalls: 0 };
+        } finally {
+          v2Busy = false;
+        }
+      });
+
+      app.get('/status', (_req: any, res: any) => {
+        res.json({ status: v2Busy ? 'running' : 'idle', lastResult: v2LastResult });
+      });
+
+      app.post('/abort', (_req: any, res: any) => {
+        // TODO: implement abort for v2
+        res.json({ ok: true });
+      });
+
+      app.post('/stop', (_req: any, res: any) => {
+        res.json({ stopped: true });
+        setTimeout(() => { releasePidFile('start'); process.exit(0); }, 100);
+      });
+
+      app.listen(config.server.port, config.server.host, () => {
+        console.log(`\n${e('🌐', '[NET]')} Agent v2 server: http://${config.server.host}:${config.server.port}`);
+        console.log(`${e('🔑', '[KEY]')} Auth token: ${serverToken.slice(0, 8)}...`);
+        console.log(`   POST /task     — {"task": "..."}`);
+        console.log(`   GET  /status   — Agent state`);
+        console.log(`   POST /execute/{tool} — Execute any tool directly`);
+        console.log(`   GET  /tools    — Tool schemas`);
+        console.log(`\nReady. ${e('🐾', '')}`);
+      });
+
+      // Prevent unhandled rejections from crashing the process
+      process.on('uncaughtException', (err) => {
+        console.error(`[v2] Uncaught exception: ${err.message}\n${err.stack}`);
+      });
+      process.on('unhandledRejection', (reason) => {
+        console.error(`[v2] Unhandled rejection: ${reason}`);
+      });
+      process.on('SIGINT', () => { releasePidFile('start'); process.exit(0); });
+      process.on('SIGTERM', () => { releasePidFile('start'); process.exit(0); });
+      return; // Skip legacy agent path
+    }
+
+    // ── Legacy Agent (v1) ─────────────────────────────────────────────────────
     const agent = new Agent(config);
 
     try {
       await agent.connect();
     } catch (err) {
-      console.error(`\n❌ Failed to initialize native desktop control: ${err}`);
+      console.error(`\n${e('❌', '[ERR]')} Failed to initialize native desktop control: ${err}`);
       console.error(`\nThis usually means @nut-tree-fork/nut-js couldn't access the screen.`);
       console.error(`Make sure you're running this on a desktop with a display.`);
       process.exit(1);
     }
 
-    // Start API server
+    // Start API server (agent API + tool API on same port)
     const app = createServer(agent, config);
-    app.listen(config.server.port, config.server.host, () => {
-      console.log(`\n🌐 API server: http://${config.server.host}:${config.server.port}`);
-      console.log(`\nEndpoints:`);
+
+    // Mount model-agnostic tool server alongside agent API
+    // POST /execute/* requires auth; GET /tools and GET /docs are public
+    try {
+      const { createToolServer } = await import('./tool-server');
+      const { requireAuth } = await import('./server');
+      const toolCtx = {
+        desktop: agent.getDesktop(),
+        a11y: (agent as any).a11y,
+        cdp: (agent as any).cdpDriver,
+        getMouseScaleFactor: () => 1,  // start command uses agent's own scaling
+        getScreenshotScaleFactor: () => agent.getDesktop().getScaleFactor(),
+        ensureInitialized: async () => {},  // agent already initialized
+      };
+      app.use('/execute', requireAuth);  // auth gate on all tool execution
+      app.use(createToolServer(toolCtx));
+    } catch (err) {
+      console.warn('Tool server not loaded:', (err as Error).message);
+    }
+
+    app.listen(config.server.port, config.server.host, async () => {
+      // Generate auth token ONLY after port binds successfully
+      // This prevents overwriting a valid token when start fails (e.g. EADDRINUSE)
+      const { initServerToken } = await import('./server');
+      const serverToken = initServerToken();
+      const tokenPath = require('path').join(require('os').homedir(), '.clawdcursor', 'token');
+      console.log(`\n\x1b[32m${e('🌐', '[NET]')} API server:\x1b[0m http://${config.server.host}:${config.server.port}`);
+      console.log(`\x1b[33m${e('🔑', '[KEY]')} Auth token:\x1b[0m ${serverToken.slice(0, 8)}...`);
+      console.log(`\x1b[90m   (full token saved to ${tokenPath})\x1b[0m`);
+      console.log(`\nAgent endpoints:`);
       console.log(`  POST /task     — {"task": "Open Chrome and go to github.com"}`);
       console.log(`  GET  /status   — Agent state`);
-      console.log(`  POST /confirm  — {"approved": true|false}`);
       console.log(`  POST /abort    — Stop current task`);
-      console.log(`\nReady. Send a task to get started! 🐾`);
+      console.log(`\nTool server (model-agnostic):`);
+      console.log(`  GET  /tools    — Tool schemas (OpenAI function format)`);
+      console.log(`  POST /execute/{name} — Execute any tool`);
+      console.log(`  GET  /docs     — Tool documentation`);
+      console.log(`\nAll mutating endpoints require: \x1b[36mAuthorization: Bearer <token>\x1b[0m`);
+
+      // Validate API key on startup — refuse to serve tasks with a dead key
+      const { loadPipelineConfig } = await import('./doctor');
+      const pipelineConfig = loadPipelineConfig();
+      if (pipelineConfig && pipelineConfig.layer2.enabled) {
+        try {
+          const { callTextLLMDirect } = await import('./llm-client');
+          // Resolve the correct API key and format for the TEXT model's provider
+          // (may differ from the main provider in mixed pipelines)
+          const { PROVIDERS, PROVIDER_ENV_VARS } = await import('./providers');
+          const { inferProviderFromBaseUrl } = await import('./credentials');
+          const layer2ProviderKey = inferProviderFromBaseUrl(pipelineConfig.layer2.baseUrl) || pipelineConfig.providerKey;
+          const layer2Provider = PROVIDERS[layer2ProviderKey] || pipelineConfig.provider;
+          const layer2ApiKey = (PROVIDER_ENV_VARS[layer2ProviderKey] || [])
+            .map((k: string) => process.env[k]).find((v: string | undefined) => v && v.length > 0)
+            || pipelineConfig.apiKey;
+          await callTextLLMDirect({
+            baseUrl: pipelineConfig.layer2.baseUrl,
+            model: pipelineConfig.layer2.model,
+            apiKey: layer2ApiKey,
+            isAnthropic: !layer2Provider.openaiCompat,
+            messages: [{ role: 'user', content: 'Reply with just the word "ok"' }],
+            maxTokens: 5,
+            timeoutMs: 10000,
+            retries: 0,
+          });
+          console.log(`${e('✅', '[OK]')} API key validated for ${layer2Provider.name}`);
+        } catch (err: any) {
+          if (err.name === 'LLMAuthError') {
+            console.error(`\n${e('❌', '[ERR]')} API key INVALID for ${pipelineConfig.provider.name} (${pipelineConfig.layer2.model})`);
+            console.error(`   The saved config has an expired or revoked key.\n`);
+            // Delete stale config so next start re-detects
+            const staleConfig = require('path').join(require('path').resolve(__dirname, '..'), '.clawdcursor-config.json');
+            try { require('fs').unlinkSync(staleConfig); } catch { /* ok */ }
+            console.error(`   ${e('🗑️', '[DEL]')}  Removed stale config. Fix your key and restart:`);
+            console.error(`   1. Update your API key in .env or environment variables`);
+            console.error(`   2. Run: clawdcursor start   (will re-detect providers)`);
+            console.error(`   Or run: clawdcursor doctor   to reconfigure manually\n`);
+            releasePidFile('start');
+            agent.disconnect();
+            process.exit(1);
+          } else if (err.name === 'LLMBillingError') {
+            console.error(`\n${e('❌', '[ERR]')} API credits exhausted for ${pipelineConfig.provider.name}`);
+            console.error(`   Add credits or switch providers, then restart.`);
+            console.error(`   Run: clawdcursor doctor   to reconfigure\n`);
+            releasePidFile('start');
+            agent.disconnect();
+            process.exit(1);
+          } else {
+            console.warn(`${e('⚠️', '[WARN]')} Could not validate API key: ${err.message?.substring(0, 100)}`);
+            // Network error or timeout — don't exit, might be transient
+          }
+        }
+      } else if (!pipelineConfig) {
+        // Only exit if there are also no external credentials (OpenClaw, env vars, etc.)
+        const hasExternalModels = !!(config.ai.model || config.ai.visionModel);
+        if (!hasExternalModels) {
+          console.error(`\n${e('❌', '[ERR]')} No AI providers configured.`);
+          console.error(`   clawdcursor needs at least one working LLM to execute tasks.\n`);
+          console.error(`   Option 1 (Free, local): Install Ollama → https://ollama.ai`);
+          console.error(`      Then: ollama pull qwen2.5:7b\n`);
+          console.error(`   Option 2 (API key): Set an environment variable:`);
+          console.error(`      ANTHROPIC_API_KEY, OPENAI_API_KEY, MOONSHOT_API_KEY, etc.\n`);
+          console.error(`   Then run: clawdcursor start\n`);
+          releasePidFile('start');
+          agent.disconnect();
+          process.exit(1);
+        } else {
+          console.log(`${e('✅', '[OK]')} Using externally configured models: text=${config.ai.model} | vision=${config.ai.visionModel}`);
+        }
+      }
+
+      // Warn if text model context window is below recommended minimum
+      const { MIN_RECOMMENDED_CONTEXT } = await import('./providers');
+      const ctxWindow = pipelineConfig?.provider?.textContextWindow;
+      if (ctxWindow && ctxWindow < MIN_RECOMMENDED_CONTEXT) {
+        console.warn(`${e('⚠️', '[WARN]')} Text model context window (${Math.round(ctxWindow / 1000)}K) is below the recommended minimum (${Math.round(MIN_RECOMMENDED_CONTEXT / 1000)}K).`);
+        console.warn(`   Web pages with many elements may overflow. Consider using a larger model.`);
+        console.warn(`   Run: clawdcursor doctor   to switch models\n`);
+      }
+
+      console.log(`\nReady. ${e('🐾', '')}`);
     });
 
     // Graceful shutdown
     process.on('SIGINT', () => {
-      console.log('\n👋 Shutting down...');
+      console.log(`\n${e('👋', '--')} Shutting down...`);
+      releasePidFile('start');
+      agent.disconnect();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      releasePidFile('start');
       agent.disconnect();
       process.exit(0);
     });
@@ -182,15 +523,15 @@ program
     });
 
     if (opts.reset) {
-      const configPath = path.join(__dirname, '..', '.clawd-config.json');
+      const configPath = path.join(__dirname, '..', '.clawdcursor-config.json');
       if (fs.existsSync(configPath)) {
         fs.unlinkSync(configPath);
-        console.log('🗑️  Cleared saved config — re-detecting from scratch\n');
+        console.log(`${e('🗑️', '[DEL]')}  Cleared saved config — re-detecting from scratch\n`);
       }
     }
 
     // Only use explicit CLI flags for single-provider override.
-    // OpenClaw auto-detected credentials should go through multi-provider scan.
+    // Auto-detected external credentials should go through multi-provider scan.
     const isExplicit = !!(opts.apiKey || opts.provider);
     await runDoctor({
       apiKey: isExplicit ? resolvedApi.apiKey : undefined,
@@ -214,23 +555,23 @@ program
     }
     const isClawd = await isClawdInstance(port);
     if (!isClawd) {
-      console.log('🐾 No running instance found on port ' + port);
+      console.log(`${e('🐾', '>')} No running instance found on port ` + port);
       return;
     }
 
     // Abort first so any active task exits quickly before shutdown.
     try {
-      await fetch(`http://127.0.0.1:${port}/abort`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+      await fetch(`http://127.0.0.1:${port}/abort`, { method: 'POST', headers: authHeaders(), signal: AbortSignal.timeout(2000) });
     } catch {
       // Best effort only.
     }
 
     const url = `http://127.0.0.1:${port}/stop`;
     try {
-      const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      const res = await fetch(url, { method: 'POST', headers: authHeaders(), signal: AbortSignal.timeout(5000) });
       const data = await res.json() as any;
       if (data.stopped) {
-        console.log('🐾 Clawd Cursor stopped');
+        console.log(`${e('🐾', '>')} Clawd Cursor stopped`);
       } else {
         console.error('Unexpected response:', JSON.stringify(data));
       }
@@ -246,16 +587,16 @@ program
         // Still alive — keep waiting
       } catch {
         // Connection refused = dead = success
-        console.log('✅ Server confirmed stopped');
+        console.log(`${e('✅', '[OK]')} Server confirmed stopped`);
         return;
       }
     }
-    console.log('⚠️  Graceful stop did not complete — force killing...');
+    console.log(`${e('⚠️', '[WARN]')}  Graceful stop did not complete — force killing...`);
     const killed = await forceKillPort(port);
     if (killed) {
-      console.log('🐾 Clawd Cursor force stopped');
+      console.log(`${e('🐾', '>')} Clawd Cursor force stopped`);
     } else {
-      console.error('❌ Could not force stop process on port ' + port);
+      console.error(`${e('❌', '[ERR]')} Could not force stop process on port ` + port);
     }
   });
 
@@ -268,12 +609,20 @@ program
 
     const sendTask = async (taskText: string) => {
       try {
-        console.log(`\n🐾 Sending: ${taskText}`);
+        console.log(`\n${e('🐾', '>')} Sending: ${taskText}`);
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ task: taskText }),
         });
+        if (res.status === 401) {
+          console.error('Auth failed (401). Token mismatch — run: clawdcursor stop && clawdcursor start');
+          return;
+        }
+        if (!res.ok) {
+          console.error(`Server error (${res.status}). Check server logs.`);
+          return;
+        }
         const data = await res.json();
         console.log(JSON.stringify(data, null, 2));
       } catch {
@@ -291,6 +640,7 @@ program
       const { execFile: spawnExec } = await import('child_process');
       const platform = os.platform();
 
+      const token = loadAuthToken();
       const scriptContent = platform === 'win32'
         ? // Windows: PowerShell script
           `
@@ -298,36 +648,52 @@ $host.UI.RawUI.WindowTitle = "Clawd Cursor - Task Console"
 Write-Host "Clawd Cursor - Interactive Task Mode" -ForegroundColor Cyan
 Write-Host "   Type a task and press Enter. Type 'quit' to exit." -ForegroundColor Gray
 Write-Host ""
+$headers = @{ "Content-Type" = "application/json"${token ? `; "Authorization" = "Bearer ${token}"` : ''} }
 while ($true) {
     $task = Read-Host "Enter task"
     if (-not $task -or $task -eq "quit" -or $task -eq "exit") {
-        Write-Host "👋 Bye!"
+        Write-Host "Bye!"
         break
     }
-    Write-Host "🐾 Sending: $task" -ForegroundColor Yellow
+    # Strip control characters (Ctrl+L, etc.) that break JSON
+    $task = $task -replace '[\\x00-\\x1f]', ''
+    $task = $task.Trim()
+    if (-not $task) { continue }
+    Write-Host "> Sending: $task" -ForegroundColor Yellow
     try {
-        $response = Invoke-RestMethod -Uri http://127.0.0.1:${opts.port}/task -Method POST -ContentType "application/json" -Body ('{"task": "' + $task.Replace('"', '\\"') + '"}')
+        $jsonBody = @{ task = $task } | ConvertTo-Json -Compress
+        $response = Invoke-RestMethod -Uri http://127.0.0.1:${opts.port}/task -Method POST -Headers $headers -Body $jsonBody
         $response | ConvertTo-Json -Depth 5
     } catch {
-        Write-Host "Failed to connect. Is clawdcursor start running?" -ForegroundColor Red
+        if ($_.Exception.Response) {
+            $code = [int]$_.Exception.Response.StatusCode
+            if ($code -eq 401) {
+                Write-Host 'Auth failed (401). Token mismatch. Run: clawdcursor stop then clawdcursor start' -ForegroundColor Red
+            } else {
+                Write-Host "Server error ($code). Check server logs." -ForegroundColor Red
+            }
+        } else {
+            Write-Host 'Failed to connect. Is clawdcursor start running?' -ForegroundColor Red
+        }
     }
     Write-Host ""
 }
 `
         : // macOS/Linux: bash script
           `
-echo "🐾 Clawd Cursor — Interactive Task Mode"
+echo "Clawd Cursor - Interactive Task Mode"
 echo "   Type a task and press Enter. Type 'quit' to exit."
 echo ""
+AUTH_HEADER="${token ? `Authorization: Bearer ${token}` : ''}"
 while true; do
     printf "Enter task: "
     read task
     if [ -z "$task" ] || [ "$task" = "quit" ] || [ "$task" = "exit" ]; then
-        echo "👋 Bye!"
+        echo "Bye!"
         break
     fi
-    echo "🐾 Sending: $task"
-    curl -s -X POST http://127.0.0.1:${opts.port}/task -H "Content-Type: application/json" -d "{\\"task\\": \\"$task\\"}" | python3 -m json.tool 2>/dev/null || echo "Failed to connect. Is clawdcursor start running?"
+    echo "> Sending: $task"
+    curl -s -X POST http://127.0.0.1:${opts.port}/task -H "Content-Type: application/json"${token ? ' -H "$AUTH_HEADER"' : ''} -d "{\\"task\\": \\"$task\\"}" | python3 -m json.tool 2>/dev/null || echo "Failed to connect. Is clawdcursor start running?"
     echo ""
 done
 `;
@@ -336,7 +702,7 @@ done
         // Write temp PS1 and open in new Windows Terminal / PowerShell window
         const fs = await import('fs');
         const path = await import('path');
-        const tmpScript = path.join(os.tmpdir(), `clawd-task-${Date.now()}.ps1`);
+        const tmpScript = path.join(os.tmpdir(), `clawdcursor-task-${Date.now()}.ps1`);
         fs.writeFileSync(tmpScript, scriptContent);
         spawnExec('powershell.exe', [
           '-Command', `Start-Process powershell -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File','${tmpScript}'`
@@ -344,132 +710,34 @@ done
       } else if (platform === 'darwin') {
         const fs = await import('fs');
         const path = await import('path');
-        const tmpScript = path.join(os.tmpdir(), `clawd-task-${Date.now()}.sh`);
+        const tmpScript = path.join(os.tmpdir(), `clawdcursor-task-${Date.now()}.sh`);
         fs.writeFileSync(tmpScript, scriptContent, { mode: 0o755 });
         spawnExec('open', ['-a', 'Terminal', tmpScript], { detached: true, stdio: 'ignore' } as any);
       } else {
         // Linux fallback
         const fs = await import('fs');
         const path = await import('path');
-        const tmpScript = path.join(os.tmpdir(), `clawd-task-${Date.now()}.sh`);
+        const tmpScript = path.join(os.tmpdir(), `clawdcursor-task-${Date.now()}.sh`);
         fs.writeFileSync(tmpScript, scriptContent, { mode: 0o755 });
-        spawnExec('x-terminal-emulator', ['-e', tmpScript], { detached: true, stdio: 'ignore' } as any);
+        // $TERMINAL may be set with surrounding quotes on some distros — strip them before use.
+        const termEnv = (process.env.TERMINAL || '').replace(/^["']|["']$/g, '').trim();
+        const termExec = termEnv || 'x-terminal-emulator';
+        spawnExec(termExec, ['-e', tmpScript], { detached: true, stdio: 'ignore' } as any);
       }
 
-      console.log('🐾 Task console opened in a new terminal window.');
+      console.log(`${e('🐾', '>')} Task console opened in a new terminal window.`);
     }
-  });
-
-program
-  .command('dashboard')
-  .description('Open the Clawd Cursor web dashboard in your browser')
-  .option('--port <port>', 'API server port', '3847')
-  .action(async (opts) => {
-    const url = `http://127.0.0.1:${opts.port}`;
-    console.log('🐾 Opening dashboard... Make sure clawdcursor start is running.');
-
-    const os = await import('os');
-    const { exec: execCmd } = await import('child_process');
-    const platform = os.platform();
-
-    if (platform === 'win32') {
-      execCmd(`start ${url}`);
-    } else if (platform === 'darwin') {
-      execCmd(`open ${url}`);
-    } else {
-      execCmd(`xdg-open ${url}`);
-    }
-  });
-
-program
-  .command('kill')
-  .description('Force kill a running Clawd Cursor instance')
-  .option('--port <port>', 'API server port', '3847')
-  .action(async (opts) => {
-    // Validate port is numeric to prevent command injection
-    const port = parseInt(opts.port, 10);
-    if (isNaN(port) || port < 1 || port > 65535) {
-      console.error('Invalid port number');
-      process.exit(1);
-    }
-
-    // Verify it's actually a Clawd Cursor instance before killing
-    const isClawd = await isClawdInstance(port);
-    if (!isClawd) {
-      console.log('🐾 No running instance found on port ' + port);
-      return;
-    }
-
-    // Try graceful stop
-    try {
-      await fetch(`http://127.0.0.1:${port}/stop`, { method: 'POST', signal: AbortSignal.timeout(3000) });
-    } catch {
-      // May fail if server dies mid-response — that's OK
-    }
-
-    // Wait and verify it died
-    await new Promise(r => setTimeout(r, 1500));
-
-    try {
-      await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
-      // Still alive — force kill
-      console.log('⚠️  Graceful stop failed — force killing...');
-      const killed = await forceKillPort(port);
-      if (killed) {
-        console.log('🐾 Clawd Cursor force killed');
-      } else {
-        console.error('Could not find process to kill');
-      }
-    } catch {
-      // Connection refused = dead = success
-      console.log('🐾 Clawd Cursor killed');
-    }
-  });
-
-program
-  .command('install')
-  .description('Register Clawd Cursor as an OpenClaw skill and save config')
-  .option('--api-key <key>', 'AI provider API key')
-  .option('--provider <provider>', 'AI provider (auto-detected, or specify: anthropic|openai|ollama|kimi|groq|...)')
-  .action(async (opts) => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const os = await import('os');
-
-    console.log('\n🐾 Installing Clawd Cursor...\n');
-
-    const clawdRoot = path.resolve(__dirname, '..');
-
-    // 1. Save API key to .env if provided
-    if (opts.apiKey) {
-      const envPath = path.join(clawdRoot, '.env');
-      const envContent = `AI_API_KEY=${opts.apiKey}\n`;
-      fs.writeFileSync(envPath, envContent);
-      console.log('   ✅ API key saved to .env');
-    }
-
-    // 2. Run doctor (auto-configures pipeline + registers OpenClaw skill)
-    const { runDoctor } = await import('./doctor');
-    const resolvedApi = resolveApiConfig({
-      apiKey: opts.apiKey,
-      provider: opts.provider,
-    });
-    await runDoctor({
-      apiKey: resolvedApi.apiKey,
-      provider: resolvedApi.provider || opts.provider,
-      baseUrl: resolvedApi.baseUrl,
-      textModel: resolvedApi.textModel,
-      visionModel: resolvedApi.visionModel,
-      save: true,
-    });
-
-    console.log('\n🐾 Installation complete! Run: clawdcursor start');
   });
 
 program
   .command('uninstall')
-  .description('Remove all Clawd Cursor config, data, and OpenClaw skill registration')
+  .description('Remove all Clawd Cursor config, data, and skill registrations')
   .action(async () => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.error(`\n${e('❌', '[ERR]')}  clawdcursor uninstall requires an interactive terminal.\n`);
+      process.exit(1);
+    }
+
     const fs = await import('fs');
     const path = await import('path');
     const os = await import('os');
@@ -477,7 +745,7 @@ program
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>((resolve) => {
-      rl.question('\n⚠️  This will remove all Clawd Cursor config and data. Continue? (y/N) ', resolve);
+      rl.question(`\n${e('⚠️', '[WARN]')}  This will remove all Clawd Cursor config and data. Continue? (y/N) `, resolve);
     });
     rl.close();
 
@@ -486,37 +754,89 @@ program
       return;
     }
 
-    console.log('\n🗑️  Uninstalling Clawd Cursor...\n');
+    console.log(`\n${e('🗑️', '[DEL]')}  Uninstalling Clawd Cursor...\n`);
     const clawdRoot = path.resolve(__dirname, '..');
+    const homeDir = os.homedir();
     let removed = 0;
 
-    // 1. Remove config files
+    // 0. Stop any running server first (before deleting token)
+    try {
+      const tokenPath = path.join(homeDir, '.clawdcursor', 'token');
+      if (fs.existsSync(tokenPath)) {
+        const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+        const resp = await fetch('http://127.0.0.1:3847/stop', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (resp.ok) {
+          console.log(`   ${e('🛑', '[STOP]')}  Stopped running server`);
+          // Give it a moment to shut down
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    } catch { /* server not running — that's fine */ }
+
+    // 0b. Fallback: if /stop didn't work, try killing via pidfile
+    for (const mode of ['start', 'mcp', 'serve'] as const) {
+      try {
+        const pidFile = path.join(homeDir, '.clawdcursor', `${mode}.pid`);
+        if (fs.existsSync(pidFile)) {
+          const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+          if (!isNaN(pid) && pid !== process.pid) {
+            try {
+              process.kill(pid, 0); // check if alive
+              process.kill(pid, 'SIGTERM');
+              console.log(`   ${e('🛑', '[STOP]')}  Killed running ${mode} process (pid ${pid})`);
+              await new Promise(r => setTimeout(r, 500));
+            } catch { /* process already dead */ }
+          }
+        }
+      } catch { /* pidfile read failed — that's fine */ }
+    }
+
+    // 1. Remove config files in project root
     const configFiles = [
-      path.join(clawdRoot, '.clawd-config.json'),
-      path.join(clawdRoot, '.clawd-favorites.json'),
+      path.join(clawdRoot, '.clawdcursor-config.json'),
+      path.join(clawdRoot, '.clawdcursor-favorites.json'),
       path.join(clawdRoot, '.env'),
     ];
     for (const f of configFiles) {
       if (fs.existsSync(f)) {
         fs.unlinkSync(f);
-        console.log(`   🗑️  Removed ${path.basename(f)}`);
+        console.log(`   ${e('🗑️', '[DEL]')}  Removed ${path.basename(f)}`);
         removed++;
       }
     }
 
-    // 2. Remove debug folder
-    const debugDir = path.join(clawdRoot, 'debug');
-    if (fs.existsSync(debugDir)) {
-      fs.rmSync(debugDir, { recursive: true, force: true });
-      console.log('   🗑️  Removed debug/');
+    // 2. Remove ~/.clawdcursor data directory (token, consent, task logs, pid)
+    const dataDir = path.join(homeDir, '.clawdcursor');
+    if (fs.existsSync(dataDir)) {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      console.log(`   ${e('🗑️', '[DEL]')}  Removed ${dataDir}`);
+      removed++;
+    }
+    // Also remove legacy data directory
+    const legacyDataDir = path.join(homeDir, '.clawd-cursor');
+    if (fs.existsSync(legacyDataDir)) {
+      fs.rmSync(legacyDataDir, { recursive: true, force: true });
+      console.log(`   ${e('🗑️', '[DEL]')}  Removed legacy ${legacyDataDir}`);
       removed++;
     }
 
-    // 3. Remove OpenClaw skill registration
-    const homeDir = os.homedir();
+    // 3. Remove debug folder
+    const debugDir = path.join(clawdRoot, 'debug');
+    if (fs.existsSync(debugDir)) {
+      fs.rmSync(debugDir, { recursive: true, force: true });
+      console.log(`   ${e('🗑️', '[DEL]')}  Removed debug/`);
+      removed++;
+    }
+
+    // 4. Remove external skill registrations (OpenClaw, Codex, etc.)
     const skillPaths = [
       path.join(homeDir, '.openclaw', 'workspace', 'skills', 'clawdcursor'),
       path.join(homeDir, '.openclaw-dev', 'workspace', 'skills', 'clawdcursor'),
+      path.join(homeDir, '.openclaw', 'skills', 'clawdcursor'),
+      path.join(homeDir, '.codex', 'skills', 'clawdcursor'),
     ];
     for (const sp of skillPaths) {
       if (fs.existsSync(sp)) {
@@ -526,25 +846,399 @@ program
         } else {
           fs.rmSync(sp, { recursive: true, force: true });
         }
-        console.log(`   🗑️  Removed OpenClaw skill: ${sp}`);
+        console.log(`   ${e('🗑️', '[DEL]')}  Removed skill registration: ${sp}`);
         removed++;
       }
     }
 
-    // 4. Remove dist folder
+    // 5. Remove MCP server entries from known config files
+    const mcpConfigs = [
+      // Claude Code
+      path.join(homeDir, '.claude', 'settings.json'),
+      path.join(homeDir, '.claude', 'settings.local.json'),
+      // Cursor
+      path.join(homeDir, '.cursor', 'mcp.json'),
+      // Windsurf
+      path.join(homeDir, '.windsurf', 'mcp.json'),
+      path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json'),
+      // VS Code / Continue
+      path.join(homeDir, '.vscode', 'mcp.json'),
+    ];
+    for (const configPath of mcpConfigs) {
+      try {
+        if (!fs.existsSync(configPath)) continue;
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const json = JSON.parse(raw);
+        // Look for "clawdcursor" or "clawd-cursor" key in mcpServers
+        const servers = json.mcpServers || json.servers || {};
+        let found = false;
+        for (const key of Object.keys(servers)) {
+          if (key.toLowerCase().includes('clawdcursor') || key.toLowerCase().includes('clawd-cursor')) {
+            delete servers[key];
+            found = true;
+          }
+        }
+        if (found) {
+          fs.writeFileSync(configPath, JSON.stringify(json, null, 2) + '\n');
+          console.log(`   ${e('🗑️', '[DEL]')}  Removed MCP entry from ${configPath}`);
+          removed++;
+        }
+      } catch { /* skip unreadable configs */ }
+    }
+
+    // 6. Remove dist folder
     const distDir = path.join(clawdRoot, 'dist');
     if (fs.existsSync(distDir)) {
       fs.rmSync(distDir, { recursive: true, force: true });
-      console.log('   🗑️  Removed dist/');
+      console.log(`   ${e('🗑️', '[DEL]')}  Removed dist/`);
       removed++;
     }
+
+    // 7. Unlink global npm command
+    try {
+      const { execSync } = await import('child_process');
+      execSync('npm unlink -g clawdcursor', { stdio: 'pipe', timeout: 15000 });
+      console.log(`   ${e('🗑️', '[DEL]')}  Removed global clawdcursor command`);
+      removed++;
+    } catch { /* may not be linked globally */ }
 
     if (removed === 0) {
       console.log('   Nothing to clean up.');
     }
 
-    console.log(`\n🐾 Uninstalled. To fully remove, delete the clawd-cursor folder:`);
+    console.log(`\n${e('🐾', '>')} Fully uninstalled. To remove the source code, delete:`);
     console.log(`   ${clawdRoot}\n`);
+  });
+
+// ── Shared subsystem initialization (used by mcp + serve) ──
+
+async function createToolContext() {
+  const { NativeDesktop } = await import('./native-desktop');
+  const { AccessibilityBridge } = await import('./accessibility');
+  const { CDPDriver } = await import('./cdp-driver');
+  const { DEFAULT_CONFIG } = await import('./types');
+  const { DEFAULT_CDP_PORT } = await import('./browser-config');
+
+  const desktop = new NativeDesktop({ ...DEFAULT_CONFIG });
+  const a11y = new AccessibilityBridge();
+  const cdp = new CDPDriver(DEFAULT_CDP_PORT);
+
+  let initialized = false;
+  let initPromise: Promise<void> | null = null;
+  let mouseScaleFactor = 1;
+  let screenshotScaleFactor = 1;
+
+  const ensureInitialized = async (): Promise<void> => {
+    if (initialized) return;
+    if (initPromise) return initPromise;
+    initPromise = (async () => {
+      await desktop.connect();
+      screenshotScaleFactor = desktop.getScaleFactor();
+      try {
+        const { execFileSync } = await import('child_process');
+        let logicalW = 0;
+        if (process.platform === 'win32') {
+          const result = execFileSync('powershell.exe', [
+            '-NoProfile', '-Command',
+            "Add-Type -AssemblyName System.Windows.Forms; $s=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \"$($s.Width),$($s.Height)\"",
+          ], { timeout: 10000, encoding: 'utf-8' }).trim();
+          logicalW = parseInt(result.split(',')[0]);
+        } else if (process.platform === 'darwin') {
+          const result = execFileSync('osascript', ['-e',
+            'use framework "AppKit"\nreturn (current application\'s NSScreen\'s mainScreen\'s frame()\'s size\'s width) as integer',
+          ], { timeout: 5000, encoding: 'utf-8' }).trim();
+          logicalW = parseInt(result);
+        } else {
+          // Linux: try xrandr primary resolution
+          const output = execFileSync('xrandr', ['--query'], { timeout: 5000, encoding: 'utf-8' });
+          const match = output.match(/primary\s+(\d+)x(\d+)/);
+          if (match) logicalW = parseInt(match[1]);
+        }
+        if (logicalW > 0) mouseScaleFactor = logicalW / 1280;
+      } catch {
+        mouseScaleFactor = screenshotScaleFactor;
+      }
+      await a11y.warmup();
+      initialized = true;
+      console.log('Subsystems initialized');
+    })();
+    return initPromise;
+  };
+
+  return {
+    desktop, a11y, cdp,
+    getMouseScaleFactor: () => mouseScaleFactor,
+    getScreenshotScaleFactor: () => screenshotScaleFactor,
+    ensureInitialized,
+  };
+}
+
+// ── MCP Mode (for Claude Code, Cursor, Windsurf, Zed, etc.) ──
+
+program
+  .command('mcp')
+  .description('Run as MCP tool server over stdio (for Claude Code, Cursor, Windsurf, Zed)')
+  .action(async () => {
+    // Single-instance guard (MCP servers can accumulate when editors restart them)
+    const existingMcpPid = claimPidFile('mcp');
+    if (existingMcpPid !== null) {
+      process.stderr.write(`[ERROR] clawdcursor mcp is already running (pid ${existingMcpPid}). Kill it first.\n`);
+      process.exit(1);
+    }
+
+    // MCP mode: stdout is protocol, logs go to stderr
+    const stderrWrite = (prefix: string, args: any[]) =>
+      process.stderr.write(`${prefix}${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}\n`);
+    console.log = (...args: any[]) => stderrWrite('', args);
+    console.warn = (...args: any[]) => stderrWrite('[WARN] ', args);
+    console.error = (...args: any[]) => stderrWrite('[ERROR] ', args);
+
+    // Consent gate — must be accepted before MCP tools become active
+    const { hasConsent } = await import('./onboarding');
+    if (!hasConsent()) {
+      process.stderr.write(
+        `\nERROR: clawdcursor requires one-time consent before use.\n` +
+        `This tool gives AI models full control of your desktop.\n\n` +
+        `Run one of the following, then retry:\n` +
+        `  clawdcursor consent          # interactive consent prompt\n` +
+        `  clawdcursor consent --accept # non-interactive (CI/scripts)\n` +
+        `  clawdcursor start            # consent + start agent\n\n`
+      );
+      process.exit(1);
+    }
+
+    console.log('clawdcursor MCP mode starting...');
+
+    const { getAllTools } = await import('./tools');
+    const ctx = await createToolContext();
+
+    // Dynamic import MCP SDK (ESM package from CJS)
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js' as any);
+    const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js' as any);
+    const { z } = await import('zod');
+
+    const server = new McpServer({ name: 'clawdcursor', version: '0.7.2' });
+
+    // Register all tools from the unified registry
+    const tools = getAllTools();
+    for (const tool of tools) {
+      // Convert parameters to Zod schema
+      const zodParams: Record<string, any> = {};
+      for (const [key, def] of Object.entries(tool.parameters)) {
+        let schema: any;
+        if (def.type === 'number') schema = z.number();
+        else if (def.type === 'boolean') schema = z.boolean();
+        else schema = z.string();
+        if (def.enum) schema = z.enum(def.enum as [string, ...string[]]);
+        schema = schema.describe(def.description);
+        if (def.required === false) schema = schema.optional();
+        zodParams[key] = schema;
+      }
+
+      server.tool(
+        tool.name,
+        tool.description,
+        Object.keys(zodParams).length > 0 ? zodParams : undefined as any,
+        async (params: any) => {
+          const result = await tool.handler(params, ctx);
+          const content: any[] = [];
+          if (result.image) {
+            content.push({ type: 'image', data: result.image.data, mimeType: result.image.mimeType });
+          }
+          content.push({ type: 'text', text: result.text });
+          return { content, isError: result.isError };
+        },
+      );
+    }
+
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.log(`clawdcursor MCP ready — ${tools.length} tools registered`);
+
+    ctx.ensureInitialized().catch((err: any) => {
+      console.error('Subsystem init failed:', err?.message);
+    });
+
+    // Release pidfile on exit so a fresh restart can claim it immediately
+    const releaseMcp = () => { releasePidFile('mcp'); process.exit(0); };
+    process.on('SIGINT', releaseMcp);
+    process.on('SIGTERM', releaseMcp);
+  });
+
+// ── Tool Server (model-agnostic, no LLM needed) ──
+
+program
+  .command('serve')
+  .description('Start the tool server only (no autonomous agent, no LLM). Any AI model can connect via HTTP.')
+  .option('--port <port>', 'HTTP server port', '3847')
+  .option('--skip-consent', 'Skip consent prompt (requires NODE_ENV=development)')
+  .action(async (opts) => {
+    // Single-instance guard
+    const existingServePid = claimPidFile('serve');
+    if (existingServePid !== null) {
+      console.error(`${e('❌', '[ERR]')} clawdcursor serve is already running (pid ${existingServePid}). Run \`clawdcursor stop\` first.`);
+      process.exit(1);
+    }
+
+    const { runOnboarding, hasConsent } = await import('./onboarding');
+
+    // First-run consent — --skip-consent only works in development mode
+    const canSkip = opts.skipConsent && process.env.NODE_ENV === 'development';
+    if (!canSkip && !hasConsent()) {
+      const accepted = await runOnboarding();
+      if (!accepted) process.exit(1);
+    }
+
+    const port = parseInt(opts.port);
+    const express = (await import('express')).default;
+    const { createToolServer } = await import('./tool-server');
+    const { VERSION } = await import('./version');
+    const { randomBytes } = await import('crypto');
+    const os = await import('os');
+
+    // Generate auth token (same pattern as start mode)
+    const tokenDir = path.join(os.homedir(), '.clawdcursor');
+    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+    const serveToken = randomBytes(32).toString('hex');
+    fs.writeFileSync(path.join(tokenDir, 'token'), serveToken, { encoding: 'utf-8', mode: 0o600 });
+
+    console.log(`\n${e('🐾', '>')} clawdcursor v${VERSION} — Tool Server mode`);
+    console.log('   No LLM. No autonomous agent. Just OS primitives over HTTP.\n');
+
+    const ctx = await createToolContext();
+
+    // Create HTTP server with tool routes
+    const app = express();
+    app.use(express.json());
+
+    // Auth middleware — require Bearer token on mutating (non-GET) endpoints
+    app.use((req: any, res: any, next: any) => {
+      if (req.method === 'GET') return next(); // GET /tools, /docs, /health are read-only
+      const authHeader = req.headers['authorization'] || '';
+      const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      if (!bearer || bearer !== serveToken) {
+        return res.status(401).json({ error: 'Unauthorized — include Authorization: Bearer <token> header. Token is at ~/.clawdcursor/token' });
+      }
+      next();
+    });
+
+    app.use(createToolServer(ctx));
+
+    app.listen(port, '127.0.0.1', () => {
+      console.log(`   Tool server: http://127.0.0.1:${port}`);
+      console.log(`   Tool schemas: http://127.0.0.1:${port}/tools`);
+      console.log(`   Documentation: http://127.0.0.1:${port}/docs`);
+      console.log(`   Execute: POST http://127.0.0.1:${port}/execute/{tool_name}`);
+      console.log(`\n   ${e('🔑', '[KEY]')} Auth token: ${serveToken.slice(0, 8)}...`);
+      console.log(`   (full token saved to ~/.clawdcursor/token)`);
+      console.log(`   All POST endpoints require: Authorization: Bearer <token>`);
+      console.log(`\n   Ready. Connect your AI model.\n`);
+    });
+
+    // Background init — includes desktop + CDP warmup
+    ctx.ensureInitialized().catch((err: any) => {
+      console.error('Subsystem init failed:', err?.message);
+    });
+    // CDP warmup: try connecting to running browser (best-effort, non-fatal)
+    // Without this, all web tasks fall back to pure vision — no DOM access
+    if (ctx.cdp) {
+      ctx.cdp.connect().then(() => {
+        console.log(`   🌐 CDP connected to browser`);
+      }).catch(() => {
+        console.log(`   ℹ️  CDP: no browser detected (will retry when web tools are called)`);
+      });
+    }
+
+    process.on('SIGINT', () => {
+      console.log('\n   Shutting down...');
+      releasePidFile('serve');
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      releasePidFile('serve');
+      process.exit(0);
+    });
+  });
+
+program
+  .command('report')
+  .description('Send an error report to help improve clawdcursor. Shows a preview before sending.')
+  .option('--log <path>', 'Path to a specific task log file')
+  .option('--note <text>', 'Add a note describing what went wrong')
+  .option('--save-only', 'Save report locally without sending')
+  .action(async (opts) => {
+    const { interactiveReport, buildReport, saveReportLocally, submitReport } = await import('./report');
+
+    if (!process.stdin.isTTY) {
+      // Non-interactive: build and submit directly
+      const report = buildReport(opts.log, opts.note);
+      if (opts.saveOnly) {
+        const p = saveReportLocally(report);
+        console.log(`Report saved: ${p}`);
+      } else {
+        const result = await submitReport(report);
+        if (result.success) {
+          console.log(`Report sent. ID: ${result.reportId}`);
+        } else {
+          const p = saveReportLocally(report);
+          console.log(`Send failed: ${result.error}. Saved locally: ${p}`);
+        }
+      }
+      return;
+    }
+
+    // Interactive mode
+    await interactiveReport();
+  });
+
+// ── Consent management ──────────────────────────────────────────────────────
+program
+  .command('consent')
+  .description('Manage desktop control consent (required before MCP/REST use)')
+  .option('--accept', 'Accept consent non-interactively (CI/scripted environments)')
+  .option('--revoke', 'Remove stored consent')
+  .option('--status', 'Show current consent status')
+  .action(async (opts) => {
+    const { hasConsent, writeConsentFile, revokeConsent, runOnboarding } = await import('./onboarding');
+
+    if (opts.status) {
+      if (hasConsent()) {
+        console.log(`${e('✅', '[OK]')}  Consent: accepted — clawdcursor is authorized to control this desktop.`);
+      } else {
+        console.log(`${e('❌', '[ERR]')}  Consent: not given — run \`clawdcursor consent\` to authorize.`);
+      }
+      return;
+    }
+
+    if (opts.revoke) {
+      revokeConsent();
+      console.log('  Consent revoked. clawdcursor will require re-authorization before next use.');
+      return;
+    }
+
+    if (opts.accept) {
+      writeConsentFile();
+      console.log('  Consent accepted. clawdcursor can now control your desktop.');
+      console.log('  Run `clawdcursor start` or `clawdcursor mcp` to begin.\n');
+      return;
+    }
+
+    // Interactive flow
+    const accepted = await runOnboarding('consent');
+    if (accepted) {
+      console.log('  Run `clawdcursor start` or `clawdcursor mcp` to begin.\n');
+    } else {
+      process.exit(1);
+    }
+  });
+
+program
+  .command('guides [subcommand] [args...]')
+  .description('Manage app guides — install keyboard shortcuts for 86+ apps')
+  .action(async (subcommand?: string, args?: string[]) => {
+    const { guidesCommand } = await import('./guide-registry');
+    const allArgs = [subcommand, ...(args || [])].filter(Boolean) as string[];
+    await guidesCommand(allArgs);
   });
 
 program.parse();
