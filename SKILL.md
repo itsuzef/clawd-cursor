@@ -104,6 +104,41 @@ POST /abort                                              → stop current task
 
 Use `delegate_to_agent` tool to submit tasks from within MCP/REST sessions. Requires `clawdcursor start` running on port 3847.
 
+**Polling pattern:**
+```
+POST /task  {"task": "...", "returnPartial": true}
+→ poll GET /status every 2s:
+    "acting"           → still running, keep polling
+    "waiting_confirm"  → STOP. Ask user → POST /confirm {"approved": true}
+    "idle"             → done, check GET /task-logs for result
+→ if 60s+ with no progress: POST /abort, retry with simpler phrasing
+```
+
+**returnPartial mode** — send `{"returnPartial": true}` with POST /task:
+ClawdCursor skips Stage 3 (expensive vision) and returns control to you if Stage 2 fails:
+```json
+{"partial": true, "stepsCompleted": [...], "context": "got stuck on dialog"}
+```
+You finish the task with MCP tools, then call POST /learn to save what worked.
+
+**POST /learn — adaptive learning:**
+After completing a task with your own tool calls, teach ClawdCursor for next time:
+```json
+POST /learn
+{
+  "processName": "EXCEL",
+  "task": "create table with headers",
+  "actions": [
+    {"action": "key", "description": "Ctrl+Home to go to A1"},
+    {"action": "type", "description": "Type header name"},
+    {"action": "key", "description": "Tab to next column"}
+  ],
+  "shortcuts": {"next_cell": "Tab", "next_row": "Enter"},
+  "tips": ["Use Tab between columns, Enter between rows"]
+}
+```
+This enriches the app's guide JSON. Stage 2 reads it on the next run — no vision fallback needed.
+
 ---
 
 ## The Universal Loop
@@ -326,6 +361,28 @@ Speed: ⚡ Free/instant · 🔵 Cheap · 🟡 Moderate · 🔴 Vision (expensive
 | `navigate_browser` | Open URL (auto-enables CDP) | ⚡ First step for browser tasks |
 | `wait` | Pause N seconds | ⚡ After opening apps, let UI render |
 | `delegate_to_agent` | Send task to built-in autonomous agent | 🟡 Complex multi-step tasks (requires `clawdcursor start`) |
+
+---
+
+## Provider Setup (agent mode only)
+
+| Provider | Setup | Cost |
+|----------|-------|------|
+| **Ollama** (local) | `ollama pull qwen2.5:7b && ollama serve` | $0 — fully offline, no data leaves machine |
+| **Any cloud** | Set env var: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MOONSHOT_API_KEY`, etc. | Varies |
+| **OpenClaw users** | Auto-detected from `~/.openclaw/agents/main/auth-profiles.json` | No extra setup |
+
+Run `clawdcursor doctor` to auto-detect and validate providers.
+
+---
+
+## Security
+
+- **Network isolation:** Binds to `127.0.0.1` only. Verify: `netstat -an | findstr 3847` — should show `127.0.0.1:3847`, never `0.0.0.0:3847`
+- **Ollama:** 100% offline. Screenshots stay in RAM, never leave the machine.
+- **Cloud providers:** Screenshots/text sent only to your configured provider. No telemetry, no analytics, no third-party logging.
+- **Token auth:** All mutating POST endpoints require `Authorization: Bearer <token>`. Token at `~/.clawdcursor/token`.
+- **Safety tiers:** Auto / Preview / Confirm. Agents must **never self-approve Confirm actions**.
 
 ---
 
