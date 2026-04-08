@@ -1,10 +1,11 @@
 #!/bin/bash
 # Clawd Cursor Installer for macOS / Linux
 # Usage: curl -fsSL https://clawdcursor.com/install.sh | bash
+# Specify version: VERSION=v0.7.6 curl -fsSL https://clawdcursor.com/install.sh | bash
 
 set -e
 
-VERSION="v0.7.5"
+VERSION="${VERSION:-main}"
 INSTALL_DIR="$HOME/clawdcursor"
 
 echo ""
@@ -35,12 +36,15 @@ echo "  ✅ $(git --version)"
 
 # ── 3. Clone or update ───────────────────────────────────────────────────────
 echo ""
+DISPLAY_VERSION="$VERSION"
+[ "$VERSION" = "main" ] && DISPLAY_VERSION="latest (main)"
+
 if [ -d "$INSTALL_DIR/.git" ]; then
     # Update existing install
-    echo "  📦 Updating to $VERSION..."
+    echo "  📦 Updating to $DISPLAY_VERSION..."
     cd "$INSTALL_DIR"
-    git fetch --tags --quiet 2>/dev/null
-    git checkout "$VERSION" --quiet 2>/dev/null || {
+    git fetch --all --tags --quiet 2>/dev/null
+    git checkout "$VERSION" --quiet 2>/dev/null && git pull --quiet 2>/dev/null || {
         echo "  ⚠️  Update failed, doing fresh install..."
         cd "$HOME"
         rm -rf "$INSTALL_DIR"
@@ -49,10 +53,10 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 elif [ -d "$INSTALL_DIR" ]; then
     # Corrupted — no .git, remove and reclone
     rm -rf "$INSTALL_DIR"
-    echo "  📦 Downloading $VERSION..."
+    echo "  📦 Downloading $DISPLAY_VERSION..."
     git clone https://github.com/AmrDab/clawdcursor.git --branch "$VERSION" "$INSTALL_DIR" --quiet
 else
-    echo "  📦 Downloading $VERSION..."
+    echo "  📦 Downloading $DISPLAY_VERSION..."
     git clone https://github.com/AmrDab/clawdcursor.git --branch "$VERSION" "$INSTALL_DIR" --quiet
 fi
 
@@ -64,6 +68,22 @@ npm install --loglevel error 2>/dev/null
 # ── 5. Build ──────────────────────────────────────────────────────────────────
 echo "  🔨 Building..."
 npm run build 2>/dev/null
+
+# ── 5b. Build native macOS helper (if on macOS) ──────────────────────────────
+if [ "$(uname)" = "Darwin" ]; then
+    if command -v swift &>/dev/null; then
+        echo "  🔨 Building macOS native helper..."
+        cd "$INSTALL_DIR/native"
+        if ./build.sh >/dev/null 2>&1; then
+            echo "  ✅ Native helper built"
+        else
+            echo "  ⚠️  Native helper build failed (optional — will use fallback)"
+        fi
+        cd "$INSTALL_DIR"
+    else
+        echo "  ⚠️  Swift not found — skipping native helper (install Xcode Command Line Tools)"
+    fi
+fi
 
 # ── 6. Link ───────────────────────────────────────────────────────────────────
 echo "  🔗 Linking..."

@@ -1,8 +1,9 @@
 # Clawd Cursor Installer for Windows
 # Usage: powershell -c "irm https://clawdcursor.com/install.ps1 | iex"
+# Specify version: $env:VERSION='v0.7.6'; irm https://clawdcursor.com/install.ps1 | iex
 
 $ErrorActionPreference = "Continue"
-$VERSION = "v0.7.5"
+$VERSION = if ($env:VERSION) { $env:VERSION } else { "main" }
 $INSTALL_DIR = "$HOME\clawdcursor"
 
 Write-Host ""
@@ -37,19 +38,22 @@ Write-Host "  [OK] $gitVer" -ForegroundColor Green
 
 # ── 3. Clone or update ───────────────────────────────────────────────────────
 Write-Host ""
+$DISPLAY_VERSION = if ($VERSION -eq "main") { "latest (main)" } else { $VERSION }
+
 if (Test-Path "$INSTALL_DIR\.git") {
     # Update existing install
-    Write-Host "  Updating to $VERSION..." -ForegroundColor Cyan
+    Write-Host "  Updating to $DISPLAY_VERSION..." -ForegroundColor Cyan
     Push-Location $INSTALL_DIR
-    git fetch --tags --quiet 2>&1 | Out-Null
+    git fetch --all --tags --quiet 2>&1 | Out-Null
     git checkout $VERSION --quiet 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -eq 0) {
+        git pull --quiet 2>&1 | Out-Null
+        Pop-Location
+    } else {
         Write-Host "  Update failed, doing fresh install..." -ForegroundColor Yellow
         Pop-Location; Set-Location $HOME
         Remove-Item -Recurse -Force $INSTALL_DIR 2>$null
         git clone https://github.com/AmrDab/clawdcursor.git --branch $VERSION $INSTALL_DIR --quiet 2>&1 | Out-Null
-    } else {
-        Pop-Location
     }
 } else {
     # Fresh install (remove corrupted dir if exists)
@@ -57,7 +61,7 @@ if (Test-Path "$INSTALL_DIR\.git") {
         Set-Location $HOME
         Remove-Item -Recurse -Force $INSTALL_DIR 2>$null
     }
-    Write-Host "  Downloading $VERSION..." -ForegroundColor Cyan
+    Write-Host "  Downloading $DISPLAY_VERSION..." -ForegroundColor Cyan
     git clone https://github.com/AmrDab/clawdcursor.git --branch $VERSION $INSTALL_DIR --quiet 2>&1 | Out-Null
 }
 if ($LASTEXITCODE -ne 0) {
