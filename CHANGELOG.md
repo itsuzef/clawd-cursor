@@ -2,6 +2,14 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.7.7] - 2026-04-08 — Installer Fixes
+
+### Fixed
+- **Installers default to main branch** — install.sh and install.ps1 now use `main` instead of hardcoded non-existent tag
+- **macOS installer builds native helper** — install.sh now runs `./native/build.sh` on Darwin if Swift is available
+- **Version override support** — `VERSION=v0.7.7 curl ... | bash` or `$env:VERSION='v0.7.7'` to install specific release
+- **Auto-pull on update** — installers now run `git pull` after checkout to get latest changes
+
 ## [0.7.6] - 2026-04-08 — macOS Native Host App
 
 ### Added

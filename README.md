@@ -19,7 +19,15 @@
 
 ---
 
-## What's New in v0.7.6
+## What's New in v0.7.7
+
+**Fixed installers. Auto-builds macOS native helper.**
+
+- **Installers now work** — fixed hardcoded non-existent tag; scripts default to `main` branch
+- **macOS auto-build** — install.sh automatically builds native helper on Darwin if Swift is available
+- **Version override** — install specific release with `VERSION=v0.7.7 curl ... | bash`
+
+### v0.7.6 features (still present)
 
 **macOS Native Host App. Single permission grant. Localhost IPC.**
 
@@ -86,9 +94,9 @@
 - **Clipboard fallback** — catches a11y bridge failure, falls back to typeText
 - **Install verification** — `scripts/verify-install.js` checks Node version + native deps with platform-specific fix guidance
 
-### v0.6.3 vs v0.7.6
+### v0.6.3 vs v0.7.7
 
-| | v0.6.3 | v0.7.6 |
+| | v0.6.3 | v0.7.7 |
 |---|---|---|
 | **Architecture** | 4-layer pipeline (L0-L3) | 3-stage pipeline: deterministic → text LLM → vision LLM |
 | **Transport** | REST API only | REST + MCP stdio + tools-only server |
