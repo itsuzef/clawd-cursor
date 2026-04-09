@@ -1196,7 +1196,12 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
   
   console.log(`\n${'═'.repeat(50)}`);
   if (allOk) {
-    console.log(`✅ All systems go! Run 'clawdcursor start' to begin.`);
+    console.log(`✅ All systems go!\n`);
+    console.log(`   Next step — pick one:`);
+    console.log(`     clawdcursor start    Full agent mode (built-in AI brain)`);
+    console.log(`     clawdcursor serve    Tools-only mode (bring your own AI)\n`);
+    console.log(`   Run now:`);
+    console.log(`     clawdcursor start`);
   } else {
     const failures = results.filter(r => !r.ok);
     console.log(`⚠️  ${failures.length} issue(s) detected:`);

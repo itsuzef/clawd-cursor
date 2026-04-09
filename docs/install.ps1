@@ -1,6 +1,6 @@
 # Clawd Cursor Installer for Windows
 # Usage: powershell -c "irm https://clawdcursor.com/install.ps1 | iex"
-# Specify version: $env:VERSION='v0.7.9'; irm https://clawdcursor.com/install.ps1 | iex
+# Specify version: $env:VERSION='v0.7.10'; irm https://clawdcursor.com/install.ps1 | iex
 
 $ErrorActionPreference = "Continue"
 $VERSION = if ($env:VERSION) { $env:VERSION } else { "main" }
@@ -132,6 +132,13 @@ if ($exe) {
 }
 
 Write-Host ""
-Write-Host "  Quick start:" -ForegroundColor White
-Write-Host "    clawdcursor start     Launch the agent (auto-configures on first run)" -ForegroundColor Gray
+Write-Host "  ┌────────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
+Write-Host "  │  Next steps:                                               │" -ForegroundColor Cyan
+Write-Host "  ├────────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
+Write-Host "  │  1. clawdcursor doctor    Set up API keys & check perms   │" -ForegroundColor White
+Write-Host "  │  2. clawdcursor start     Launch the agent                │" -ForegroundColor White
+Write-Host "  └────────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Run now:" -ForegroundColor White
+Write-Host "    clawdcursor doctor" -ForegroundColor Yellow
 Write-Host ""

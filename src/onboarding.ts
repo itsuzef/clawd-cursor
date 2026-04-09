@@ -126,7 +126,9 @@ ${contextNote}
 
   if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
     saveConsent();
-    console.log('\n  Consent saved. You won\'t be asked again.\n');
+    console.log('\n  ✅ Consent saved. You won\'t be asked again.\n');
+    console.log('  Next step:');
+    console.log('    clawdcursor doctor\n');
     return true;
   }
 

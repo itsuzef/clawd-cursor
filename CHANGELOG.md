@@ -2,6 +2,13 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.7.10] - 2026-04-08 — Guided Setup Flow
+
+### Changed
+- **Installer shows next steps** — after install, displays clear guidance: `clawdcursor doctor` → `clawdcursor start`
+- **Doctor shows run options** — after passing all checks, shows both `start` (full agent) and `serve` (tools-only) modes
+- **Consent shows next step** — after granting consent, directs users to `clawdcursor doctor`
+
 ## [0.7.9] - 2026-04-08 — UX Improvements
 
 ### Changed

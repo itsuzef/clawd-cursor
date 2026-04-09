@@ -1,7 +1,7 @@
 #!/bin/bash
 # Clawd Cursor Installer for macOS / Linux
 # Usage: curl -fsSL https://clawdcursor.com/install.sh | bash
-# Specify version: VERSION=v0.7.9 curl -fsSL https://clawdcursor.com/install.sh | bash
+# Specify version: VERSION=v0.7.10 curl -fsSL https://clawdcursor.com/install.sh | bash
 
 set -e
 
@@ -105,6 +105,13 @@ else
 fi
 
 echo ""
-echo "  Quick start:"
-echo "    clawdcursor start     Launch the agent (auto-configures on first run)"
+echo "  ┌────────────────────────────────────────────────────────────┐"
+echo "  │  Next steps:                                               │"
+echo "  ├────────────────────────────────────────────────────────────┤"
+echo "  │  1. clawdcursor doctor    Set up API keys & check perms   │"
+echo "  │  2. clawdcursor start     Launch the agent                │"
+echo "  └────────────────────────────────────────────────────────────┘"
+echo ""
+echo "  Run now:"
+echo "    clawdcursor doctor"
 echo ""
