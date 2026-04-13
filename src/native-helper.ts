@@ -14,7 +14,7 @@ import * as readline from 'readline';
 const IS_MACOS = process.platform === 'darwin';
 const HOST_PORT = parseInt(process.env.CLAWDCURSOR_HOST_PORT || '3848', 10);
 const HOST_BASE_URL = `http://127.0.0.1:${HOST_PORT}`;
-const ALLOW_MAC_FALLBACK = process.env.CLAWDCURSOR_ALLOW_MAC_HELPER_FALLBACK === '1';
+
 
 interface JsonRpcRequest {
   id: number;
@@ -182,6 +182,8 @@ export class NativeHelper {
     const id = ++this.requestId;
     const request: JsonRpcRequest = { id, method, params };
 
+    const timeoutMs = method === 'captureScreen' ? 90000 : 30000;
+
     if (this.useHostIpc) {
       await ensureHostAppRunning();
       const res = await fetch(`${HOST_BASE_URL}/rpc`, {
@@ -191,7 +193,7 @@ export class NativeHelper {
           'x-clawdcursor-token': getOrCreateHostToken(),
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
         throw new Error(`Host IPC call failed (${res.status})`);
@@ -214,7 +216,6 @@ export class NativeHelper {
         return;
       }
 
-      const timeoutMs = 30000; // 30 second timeout
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Request ${method} timed out after ${timeoutMs}ms`));
@@ -306,8 +307,77 @@ export function getNativeHelper(): NativeHelper {
   return instance;
 }
 
+// Functional permission probes — test what ClawdCursor can ACTUALLY do.
+// The permission-check binary reports the app bundle's TCC grants, but these
+// can differ from the terminal's grants. We probe using the same binaries
+// that clawdcursor start/doctor use, so status matches reality.
+
+async function probeScreenRecording(): Promise<boolean> {
+  // Try screenshot-helper first (the actual capture mechanism clawdcursor uses)
+  const screenshotHelperPath = getNativeHelperPath('screenshot-helper');
+  if (fs.existsSync(screenshotHelperPath)) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const tmp = `/tmp/.clawdcursor-probe-${process.pid}.png`;
+      const proc = spawn(screenshotHelperPath, ['--fullscreen', tmp]);
+      const timeout = setTimeout(() => { proc.kill(); resolve(false); }, 5000);
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        try {
+          if (code === 0 && fs.existsSync(tmp) && fs.statSync(tmp).size > 100) {
+            fs.unlinkSync(tmp);
+            resolve(true);
+          } else {
+            try { fs.unlinkSync(tmp); } catch { /* */ }
+            resolve(false);
+          }
+        } catch { resolve(false); }
+      });
+    });
+    if (ok) return true;
+  }
+
+  // Fallback: try screencapture (tests the terminal's own TCC grant)
+  return new Promise((resolve) => {
+    const tmp = `/tmp/.clawdcursor-probe2-${process.pid}.png`;
+    const proc = spawn('screencapture', ['-x', '-t', 'png', tmp]);
+    const timeout = setTimeout(() => { proc.kill(); resolve(false); }, 5000);
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      try {
+        if (code === 0 && fs.existsSync(tmp) && fs.statSync(tmp).size > 100) {
+          fs.unlinkSync(tmp);
+          resolve(true);
+        } else {
+          try { fs.unlinkSync(tmp); } catch { /* */ }
+          resolve(false);
+        }
+      } catch { resolve(false); }
+    });
+  });
+}
+
+async function probeAccessibility(): Promise<boolean> {
+  // Must test actual WINDOW access — process enumeration works without assistive access,
+  // but window/UI element queries require it. This matches what isShellAvailable() checks.
+  return new Promise((resolve) => {
+    const proc = spawn('osascript', ['-l', 'JavaScript', '-e',
+      'var se = Application("System Events"); ' +
+      'var p = se.processes.whose({frontmost: true})[0]; ' +
+      'p.windows.length; true']);
+    const timeout = setTimeout(() => { proc.kill(); resolve(false); }, 5000);
+    let stdout = '';
+    proc.stdout.on('data', (d) => { stdout += d; });
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      resolve(code === 0 && stdout.trim().length > 0);
+    });
+  });
+}
+
 // Quick permission check (doesn't need full helper running)
 // On non-macOS platforms, returns permissions as granted (not applicable)
+// Uses functional probes to test the terminal's actual capabilities,
+// merged with the app bundle's permission-check for best accuracy.
 export async function checkPermissionsQuick(): Promise<PermissionStatus> {
   // On non-macOS platforms, permissions aren't needed in the same way
   if (!IS_MACOS) {
@@ -319,39 +389,85 @@ export async function checkPermissionsQuick(): Promise<PermissionStatus> {
     };
   }
 
+  // Try native binary first (checks the app bundle's TCC grants)
+  let binaryResult: PermissionStatus | null = null;
+
   if (await isHostRunning()) {
-    const res = await fetch(`${HOST_BASE_URL}/status`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      return res.json() as Promise<PermissionStatus>;
+    try {
+      const res = await fetch(`${HOST_BASE_URL}/status`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        binaryResult = await res.json() as PermissionStatus;
+      }
+    } catch { /* fall through */ }
+  }
+
+  if (!binaryResult) {
+    const permissionCheckPath = getNativeHelperPath('permission-check');
+    if (fs.existsSync(permissionCheckPath)) {
+      try {
+        binaryResult = await new Promise<PermissionStatus>((resolve, reject) => {
+          const proc = spawn(permissionCheckPath, []);
+          let stdout = '';
+          const timeout = setTimeout(() => { proc.kill(); reject(new Error('timeout')); }, 10000);
+          proc.stdout.on('data', (data) => { stdout += data; });
+          proc.on('close', (code) => {
+            clearTimeout(timeout);
+            if (code !== 0) { reject(new Error('non-zero exit')); return; }
+            try { resolve(JSON.parse(stdout)); } catch { reject(new Error('parse error')); }
+          });
+        });
+      } catch { /* fall through to probes */ }
     }
   }
 
-  if (!ALLOW_MAC_FALLBACK) {
-    throw new Error('ClawdCursor host is required on macOS. Build/launch ClawdCursor.app or set CLAWDCURSOR_ALLOW_MAC_HELPER_FALLBACK=1 for temporary dev fallback.');
+  // Functional probes — test what the terminal can ACTUALLY do.
+  // If the binary says denied but the probe succeeds, the terminal has the permission.
+  // If the binary says granted, trust it (no need to probe).
+  const [probeScreen, probeAx] = await Promise.all([
+    (binaryResult?.screenRecording) ? Promise.resolve(true) : probeScreenRecording(),
+    (binaryResult?.accessibility) ? Promise.resolve(true) : probeAccessibility(),
+  ]);
+
+  return {
+    accessibility: (binaryResult?.accessibility ?? false) || probeAx,
+    screenRecording: (binaryResult?.screenRecording ?? false) || probeScreen,
+    processPath: binaryResult?.processPath ?? process.execPath,
+    bundleId: binaryResult?.bundleId ?? undefined,
+  };
+}
+
+// Request permissions with system popups (triggers macOS permission dialogs)
+// Spawns permission-check with --prompt (Accessibility) and --request-screen-recording flags
+export async function requestPermissions(): Promise<PermissionStatus> {
+  if (!IS_MACOS) {
+    return {
+      accessibility: true,
+      screenRecording: true,
+      processPath: process.execPath,
+      bundleId: undefined,
+    };
   }
 
   const permissionCheckPath = getNativeHelperPath('permission-check');
 
   if (!fs.existsSync(permissionCheckPath)) {
-    // Fall back to full helper
-    return getNativeHelper().checkPermissions();
+    throw new Error('permission-check binary not found. Run: cd native && ./build.sh');
   }
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(permissionCheckPath, []);
+    const proc = spawn(permissionCheckPath, ['--prompt', '--request-screen-recording']);
     let stdout = '';
     let stderr = '';
 
-    // 10 second timeout for permission check
     const timeout = setTimeout(() => {
       proc.kill();
       reject(new Error('permission-check timed out'));
-    }, 10000);
+    }, 30000);
 
-    proc.stdout.on('data', (data) => { stdout += data; });
-    proc.stderr.on('data', (data) => { stderr += data; });
+    proc.stdout.on('data', (data: Buffer) => { stdout += data; });
+    proc.stderr.on('data', (data: Buffer) => { stderr += data; });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code: number | null) => {
       clearTimeout(timeout);
       if (code !== 0) {
         reject(new Error(`permission-check failed: ${stderr}`));
@@ -439,6 +555,58 @@ function getOrCreateHostToken(): string {
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 18)}`;
   fs.writeFileSync(tokenPath, token, { mode: 0o600 });
   return token;
+}
+
+/**
+ * Capture the screen using the standalone screenshot-helper binary.
+ * This avoids the ReplayKit CPU spin bug (19% idle CPU after capture in-process)
+ * by running capture in an isolated subprocess that exits immediately.
+ *
+ * Returns { path, width, height } on success.
+ */
+export async function captureScreenViaHelper(outputPath?: string): Promise<{ path: string; width: number; height: number }> {
+  if (!IS_MACOS) {
+    throw new Error('screenshot-helper is only available on macOS');
+  }
+
+  const helperPath = getNativeHelperPath('screenshot-helper');
+  const tmpPath = outputPath || path.join(os.tmpdir(), `.clawdcursor-cap-${Date.now()}.png`);
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(helperPath, ['--fullscreen', tmpPath]);
+    let stdout = '';
+    let stderr = '';
+
+    const timeout = setTimeout(() => {
+      proc.kill();
+      reject(new Error('screenshot-helper timed out after 15s'));
+    }, 15000);
+
+    proc.stdout.on('data', (data) => { stdout += data; });
+    proc.stderr.on('data', (data) => { stderr += data; });
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code === 2) {
+        reject(new Error('Screen Recording permission denied — grant it in System Settings → Privacy & Security'));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`screenshot-helper failed (exit ${code}): ${stderr}`));
+        return;
+      }
+      try {
+        const result = JSON.parse(stdout.trim());
+        if (result.success) {
+          resolve({ path: result.path, width: result.width, height: result.height });
+        } else {
+          reject(new Error(`screenshot-helper returned failure: ${stdout}`));
+        }
+      } catch {
+        reject(new Error(`Invalid screenshot-helper output: ${stdout}`));
+      }
+    });
+  });
 }
 
 /**

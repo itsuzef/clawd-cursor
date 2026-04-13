@@ -56,11 +56,14 @@ interface A11yMetadata {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const CAPTURE_OCR_TIMEOUT = 8000;
-const CAPTURE_A11Y_TIMEOUT = 5000;
+const CAPTURE_A11Y_TIMEOUT = 8000;  // 8s — same budget as OCR. If A11y can't finish in time, proceed without it.
 
 // ─── SnapshotBuilder ─────────────────────────────────────────────────────────
 
 export class SnapshotBuilder {
+  private a11yConsecutiveFailures = 0;
+  private a11yDisabled = false;
+
   constructor(
     private ocr: OcrEngine,
     private a11y: AccessibilityBridge,
@@ -80,15 +83,19 @@ export class SnapshotBuilder {
     this.a11y.invalidateCache();
 
     // PARALLEL CAPTURE — OCR + A11y simultaneously
+    // Skip A11y if: shell unavailable, OR 2+ consecutive failures (auto-disable to avoid stalling pipeline)
+    const a11yAvailable = !this.a11yDisabled && await this.a11y.isShellAvailable();
     const [ocrSettled, a11ySettled] = await Promise.allSettled([
       Promise.race([
         this.ocr.recognizeScreen(),
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('OCR capture timeout')), CAPTURE_OCR_TIMEOUT)),
       ]),
-      Promise.race([
-        this.captureA11y(targetProcessId ?? 0),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('A11y capture timeout')), CAPTURE_A11Y_TIMEOUT)),
-      ]),
+      a11yAvailable
+        ? Promise.race([
+            this.captureA11y(targetProcessId ?? 0),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error('A11y capture timeout')), CAPTURE_A11Y_TIMEOUT)),
+          ])
+        : Promise.resolve({ win: null, tree: null, elements: [] } as A11yCaptureResult),
     ]);
 
     const ocrResult: OcrResult = ocrSettled.status === 'fulfilled'
@@ -99,7 +106,21 @@ export class SnapshotBuilder {
       : { win: null, tree: null, elements: [] };
 
     if (ocrSettled.status === 'rejected') console.warn(`   [Snapshot] ⚠️ OCR failed: ${ocrSettled.reason?.message ?? 'unknown'}`);
-    if (a11ySettled.status === 'rejected') console.warn(`   [Snapshot] ⚠️ A11y failed: ${a11ySettled.reason?.message ?? 'unknown'}`);
+    if (a11yAvailable) {
+      const a11yFailed = a11ySettled.status === 'rejected' || a11yData.elements.length === 0;
+      if (a11yFailed) {
+        this.a11yConsecutiveFailures++;
+        if (a11ySettled.status === 'rejected') {
+          console.warn(`   [Snapshot] ⚠️ A11y failed (${this.a11yConsecutiveFailures}x): ${a11ySettled.reason?.message ?? 'unknown'}`);
+        }
+        if (this.a11yConsecutiveFailures >= 2 && !this.a11yDisabled) {
+          this.a11yDisabled = true;
+          console.warn(`   [Snapshot] 🔇 A11y auto-disabled after ${this.a11yConsecutiveFailures} consecutive failures — OCR-only mode`);
+        }
+      } else {
+        this.a11yConsecutiveFailures = 0; // Reset on success
+      }
+    }
 
     // Extract window info
     let windowTitle = '';
@@ -338,10 +359,32 @@ ${a11ySnippet}`;
    */
   private async captureA11y(targetPid: number): Promise<A11yCaptureResult> {
     try {
+      // If we already know the target PID, skip getActiveWindow and run everything in parallel.
+      // getActiveWindow adds ~4s of osascript overhead on macOS — avoid when possible.
+      if (targetPid > 0) {
+        const [win, tree, rawElements] = await Promise.all([
+          this.a11y.getActiveWindow().catch(() => null),
+          this.a11y.getScreenContext(targetPid).catch(() => null),
+          this.a11y.findElement({ processId: targetPid }).catch(() => []),
+        ]);
+
+        const elements: UIElement[] = (Array.isArray(rawElements) ? rawElements : []).map(el => ({
+          name: el.name || '',
+          automationId: el.automationId || '',
+          controlType: el.controlType || '',
+          className: el.className || '',
+          isEnabled: el.isEnabled,
+          bounds: el.bounds || { x: 0, y: 0, width: 0, height: 0 },
+        }));
+
+        return { win, tree, elements };
+      }
+
+      // Fallback: no target PID — must get active window first
       const win = await this.a11y.getActiveWindow().catch(() => null);
       if (!win) return { win: null, tree: null, elements: [] };
 
-      const pid = targetPid || win.processId;
+      const pid = win.processId;
       const [tree, rawElements] = await Promise.all([
         this.a11y.getScreenContext(pid).catch(() => null),
         this.a11y.findElement({ processId: pid }).catch(() => []),

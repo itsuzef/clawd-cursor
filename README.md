@@ -19,15 +19,20 @@
 
 ---
 
-## What's New in v0.7.12
+## What's New in v0.7.14
 
-**Fixed installers. Auto-builds macOS native helper.**
+**Full macOS keyboard automation. Platform-aware pipeline. Node.js v25 fix.**
 
-- **Installers now work** — fixed hardcoded non-existent tag; scripts default to `main` branch
-- **macOS auto-build** — install.sh automatically builds native helper on Darwin if Swift is available
-- **Version override** — install specific release with `VERSION=v0.7.12 curl ... | bash`
+- **macOS keystrokes now work** — root cause was TCC blocking `CGEvent.post()` from Node child processes. Fixed by routing `keyPress()` through `osascript` + System Events (the Apple-sanctioned approach). Cmd+V, Cmd+N, Shift+Cmd+D — all work now.
+- **Platform-aware shortcuts** — `Cmd` on macOS, `Ctrl` on Windows/Linux throughout the pipeline. Browser URL bar, email compose, Find & Replace all use the right key for each OS.
+- **macOS Mail.app flow** — deterministic email compose flow for Mail.app (Cmd+N → To → Tab → Subject → Tab → Body → Cmd+Shift+D).
+- **Unified permission checking** — `doctor`, `status`, and `readiness` all query the same path: Host `/status` → `permission-check` binary → fallback. No more contradictory reports.
+- **Screenshot CPU fix** — screenshot capture now delegates to `screenshot-helper` subprocess, eliminating the ReplayKit CPU spin bug on macOS 14+.
+- **`clawdcursor grant`** — new command triggers macOS system permission dialogs directly from the CLI.
+- **Node.js v25 crash fix** — `EINVAL`/`setTypeOfService` socket error from undici's QoS call is caught and suppressed.
+- **`sharp` 0.33.0 → 0.33.5** — stable minor bump.
 
-### v0.7.6 features (still present)
+### v0.7.12 features (still present)
 
 **macOS Native Host App. Single permission grant. Localhost IPC.**
 
@@ -94,9 +99,9 @@
 - **Clipboard fallback** — catches a11y bridge failure, falls back to typeText
 - **Install verification** — `scripts/verify-install.js` checks Node version + native deps with platform-specific fix guidance
 
-### v0.6.3 vs v0.7.12
+### v0.6.3 vs v0.7.14
 
-| | v0.6.3 | v0.7.12 |
+| | v0.6.3 | v0.7.14 |
 |---|---|---|
 | **Architecture** | 4-layer pipeline (L0-L3) | 3-stage pipeline: deterministic → text LLM → vision LLM |
 | **Transport** | REST API only | REST + MCP stdio + tools-only server |

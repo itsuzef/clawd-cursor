@@ -70,6 +70,12 @@ interface A11yCaptureResult {
   elements: UIElement[];
 }
 
+// ─── Platform-aware constants ────────────────────────────────────────────────
+
+const IS_MAC = process.platform === 'darwin';
+const MOD = IS_MAC ? 'cmd' : 'ctrl';      // Primary modifier key name for prompts
+const MOD_LABEL = IS_MAC ? 'Cmd' : 'Ctrl'; // Human-readable label
+
 // ─── System prompt for the text LLM ─────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are ClawdCursor — an AI desktop automation agent with full control of the user's computer. You can see the screen through OCR and accessibility data, click any element, type text, drag to draw, press keyboard shortcuts, and interact with any application. You are the user's cursor and keyboard, acting on their behalf.
@@ -92,7 +98,7 @@ RESPONSE FORMAT — respond with ONLY valid JSON, no markdown:
 {"action":"double_click","x":150,"y":300,"description":"Double-click to select word"}
 {"action":"drag","startX":400,"startY":200,"endX":400,"endY":350,"description":"Draw a vertical line for the body"}
 {"action":"type","text":"Hello world","description":"Type greeting into the text field"}
-{"action":"key","key":"ctrl+s","description":"Save the document"}
+{"action":"key","key":"${MOD}+s","description":"Save the document"}
 {"action":"scroll","x":640,"y":400,"direction":"down","amount":3,"description":"Scroll down to see more content"}
 {"action":"wait","ms":1000,"reason":"Waiting for page to load"}
 {"action":"done","evidence":"The email was sent — confirmation banner visible at top"}
@@ -104,7 +110,7 @@ RESPONSE FORMAT — respond with ONLY valid JSON, no markdown:
 RULES:
 1. Return exactly ONE action per response — JSON only, no explanation
 2. Use the @(cx,cy) coordinates DIRECTLY for clicks — they are already the element centers
-3. Prefer keyboard shortcuts over mouse clicks when available (ctrl+s to save, ctrl+a to select all, etc.)
+3. Prefer keyboard shortcuts over mouse clicks when available (${MOD}+s to save, ${MOD}+a to select all, etc.). Platform: ${IS_MAC ? 'macOS — use Cmd (⌘) as primary modifier' : 'Windows — use Ctrl as primary modifier'}
 4. Say "done" ONLY when you see VISIBLE PROOF on screen that the task is complete
 5. Say "cannot_read" ONLY when OCR returned garbled/empty text (captchas, blank screens). NEVER use cannot_read because you think an app doesn't support something — instead, explore the toolbar and try (e.g., Paint has a Text tool "A", image editors have text layers, etc.)
 6. NEVER repeat a failed action — if clicking didn't work, try a different element or keyboard shortcut
@@ -120,7 +126,7 @@ RULES:
 16. For compound tasks (multiple steps like "select all, delete, then type X"), execute each sub-step in order. Do NOT skip sub-steps or declare "done" until ALL sub-steps are complete.
 17. DIGIT ACCURACY IS CRITICAL. When typing numbers, type EVERY single digit. For "100" you must press key "1", key "0", key "0" — all three digits. For "200" you must press key "2", key "0", key "0". NEVER skip zeros. Count your digits against the original number.
 18. After pressing "=" or "Return" in Calculator, the result should appear on screen. Say "done" with the result as evidence.
-19. For EMAIL apps (Outlook, Mail): Follow this EXACT sequence: (a) Click "New mail" button to open compose. (b) The To field is AUTOMATICALLY FOCUSED after compose opens — DO NOT click the To field. Just immediately type the email address. Then press key "Tab" to confirm the address and move to Subject. Do NOT press Return/Enter in the To field. (c) Type the subject, then press key "Tab" to move to Body. (d) Type the FULL email body. (e) CLICK the Send button (blue button at top-left of compose). NEVER use Return/Enter to send — it does NOT send emails, only adds a newline. You MUST click the Send button.
+19. For EMAIL/FORM fields: NEVER assume Tab order — different apps have different field layouts (some have Cc/Bcc between To and Subject). After EACH Tab press, READ the next OCR snapshot to see which field is now focused (look for cursor position or field label near the insertion point). If you land in the wrong field (e.g., Cc instead of Subject), press Tab again to skip it. For compose: (a) ${MOD}+n to open compose. (b) Type the email address in the auto-focused To field, then Tab. (c) CHECK which field you're in — if it's Cc or Bcc, Tab again until you reach Subject. (d) Type subject, Tab to Body. (e) Type body. (f) SEND: ${IS_MAC ? 'press "Shift+cmd+d"' : 'press "ctrl+Return"'}. NEVER use Return/Enter alone to send.
 20. When "introducing yourself", you ARE ClawdCursor — an AI desktop automation agent. Write as yourself. NEVER use placeholder text like "[Your Name]" or "[description]". Write a real introduction about what you can do.
 21. For DIALOGS and POPUPS: If an unexpected dialog appears, assess whether to interact with it or dismiss it with Escape. Do not keep clicking the same button that caused the dialog.
 22. DONE VERIFICATION: Only say "done" when the task is ACTUALLY complete. For emails: the compose window must be CLOSED (email sent). "Draft saved" means NOT sent. For typing: the text must be VISIBLE on screen.
@@ -128,7 +134,7 @@ RULES:
 24. Use "double_click" when you need to select text, open files, or activate items that require double-clicking.
 25. For SEARCH tasks: After typing a search query, you MUST press key "Return" or click the search button to EXECUTE the search. Seeing the query text in the search box does NOT mean the search is done — you need to see SEARCH RESULTS on screen. Only say "done" after results appear.
 26. NEVER say "done" right after a "type" action. ALWAYS take at least one more step after typing (press Enter, click a button, verify the result appeared) before declaring done.
-27. For FIND & REPLACE dialogs (Ctrl+H): The search/find field is auto-focused. Type the search term FIRST. Then you MUST CLICK the replace/replacement field (the SECOND text input, below the search field) before typing the replacement text. Then click "Replace All" or "Replace all" button. Do NOT type both terms without clicking between them — they will both go into the same field.
+27. For FIND & REPLACE dialogs (${MOD_LABEL}+H): The search/find field is auto-focused. Type the search term FIRST. Then you MUST CLICK the replace/replacement field (the SECOND text input, below the search field) before typing the replacement text. Then click "Replace All" or "Replace all" button. Do NOT type both terms without clicking between them — they will both go into the same field.
 28. For MULTI-FIELD FORMS: Each text field requires a separate CLICK before typing. Never assume Tab or Enter moved focus to the next field — ALWAYS click the target field explicitly, THEN type in the next step.
 29. When elements show [name:"X", id:Y] metadata from the accessibility tree, prefer a11y_click for MORE RELIABLE clicking: {"action":"a11y_click","name":"X","description":"..."}. The system invokes the element directly via UI Automation — no mouse coordinates needed. This is more reliable than coordinate-based clicks.
 30. For input fields with accessibility metadata, use a11y_set_value to type directly: {"action":"a11y_set_value","name":"Field Name","controlType":"Edit","value":"text to enter","description":"..."}. This bypasses clipboard and focus issues.
@@ -145,6 +151,9 @@ export class OcrReasoner {
   private lastClickCoords: { x: number; y: number } | null = null;
   private currentAppProcess: string = ''; // track active app for app-specific behavior
   private targetProcessId: number = 0; // active window process ID for accessibility lookups
+  private a11yFailCount: number = 0;      // consecutive A11y failures
+  private a11yAutoDisabled: boolean = false; // auto-disable after repeated failures
+  private typeFailCount: number = 0;      // consecutive type paste verification failures
 
   constructor(
     private ocr: OcrEngine,
@@ -263,16 +272,21 @@ export class OcrReasoner {
       this.a11y.invalidateCache();
       const captureTargetPid = targetWindow?.processId ?? 0;
       const CAPTURE_OCR_TIMEOUT = 8000;
-      const CAPTURE_A11Y_TIMEOUT = 5000;
+      const CAPTURE_A11Y_TIMEOUT = 8000;
+      // Skip A11y if auto-disabled after consecutive failures (avoids 8s stall per step)
+      const skipA11y = this.a11yAutoDisabled;
+      const captureStart = Date.now();
       const [ocrSettled, a11ySettled] = await Promise.allSettled([
         Promise.race([
           this.ocr.recognizeScreen(),
           new Promise<never>((_, rej) => setTimeout(() => rej(new Error('OCR capture timeout')), CAPTURE_OCR_TIMEOUT)),
         ]),
-        Promise.race([
-          this.captureA11y(captureTargetPid),
-          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('A11y capture timeout')), CAPTURE_A11Y_TIMEOUT)),
-        ]),
+        skipA11y
+          ? Promise.resolve({ win: null, tree: null, elements: [] } as A11yCaptureResult)
+          : Promise.race([
+              this.captureA11y(captureTargetPid),
+              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('A11y capture timeout')), CAPTURE_A11Y_TIMEOUT)),
+            ]),
       ]);
 
       const ocrResult = ocrSettled.status === 'fulfilled'
@@ -282,10 +296,32 @@ export class OcrReasoner {
         ? a11ySettled.value
         : { win: null, tree: null, elements: [] };
 
+      const captureMs = Date.now() - captureStart;
+      if (captureMs > 10000) console.warn(`   [OCR] ⚠️ Capture took ${captureMs}ms (OCR+A11y parallel)`);
       if (ocrSettled.status === 'rejected') console.warn(`   [OCR] ⚠️ OCR capture failed: ${ocrSettled.reason?.message ?? 'unknown'}`);
-      if (a11ySettled.status === 'rejected') console.warn(`   [OCR] ⚠️ A11y capture failed: ${a11ySettled.reason?.message ?? 'unknown'}`);
+      if (!skipA11y) {
+        const a11yFailed = a11ySettled.status === 'rejected' || a11yData.elements.length === 0;
+        if (a11yFailed) {
+          this.a11yFailCount++;
+          if (a11ySettled.status === 'rejected') {
+            console.warn(`   [OCR] ⚠️ A11y capture failed (${this.a11yFailCount}x): ${a11ySettled.reason?.message ?? 'unknown'}`);
+          }
+          if (this.a11yFailCount >= 2 && !this.a11yAutoDisabled) {
+            this.a11yAutoDisabled = true;
+            console.warn(`   [OCR] 🔇 A11y auto-disabled after ${this.a11yFailCount} consecutive failures — OCR-only mode (saves ~8s/step)`);
+          }
+        } else {
+          this.a11yFailCount = 0;
+        }
+      }
 
-      console.log(`   [OCR] Scan: ${ocrResult.elements.length} elements in ${ocrResult.durationMs}ms, top: "${ocrResult.elements[0]?.text || 'none'}" | A11y: ${a11yData.elements.length} elements`);
+      const a11yStatus = a11ySettled.status === 'rejected'
+        ? '❌ failed'
+        : a11yData.elements.length > 0
+          ? `✅ ${a11yData.elements.length} elements`
+          : a11yData.tree ? '⚠️ tree only (0 elements)' : '❌ 0 elements';
+      const winName = a11yData.win?.processName ?? ocrResult.elements[0]?.text ?? 'unknown';
+      console.log(`   [OCR] Scan: ${ocrResult.elements.length} OCR in ${ocrResult.durationMs}ms | A11y: ${a11yStatus} | App: ${winName}`);
 
       // Stagnation detection: fingerprint moved AFTER window filtering (see below)
 
@@ -526,18 +562,36 @@ export class OcrReasoner {
         }
 
         // Reject if task keywords aren't visible on screen.
-        // But: if the LLM already typed text (clipboard paste succeeded), the content
-        // may be in a canvas/iframe that OCR can't read (Google Docs, Figma, Notion, etc.)
-        // In that case, accept done after 1 rejection since the typing DID happen.
+        // Only be lenient if typed text is ACTUALLY VISIBLE on screen (not just logged).
+        // This prevents false positives when clipboard paste silently failed.
         const doneRejects = actionLog.filter(a => a.action === 'done_rejected').length;
-        const hasTypedText = actionLog.some(a => a.action === 'type');
-        const maxRejects = hasTypedText ? 1 : 2; // more lenient if text was already typed
+        const typeActions = actionLog.filter(a => a.action === 'type');
+        const hasTypedText = typeActions.length > 0;
+        const typedTextVisible = typeActions.some(a => {
+          const typed = (a.description || '').match(/type "(.+?)"/)?.[1]?.substring(0, 15)?.toLowerCase();
+          return typed && typed.length > 3 && screenText.includes(typed);
+        });
+        const maxRejects = typedTextVisible ? 1 : 2; // lenient only if typed text is CONFIRMED visible
         if (taskMatch < 0.3 && taskWords.length >= 1 && doneRejects < maxRejects) {
           const missing = taskWords.filter(w => !screenText.includes(w)).slice(0, 3);
           console.warn(`   [OCR] ⚠️ Done rejected (${(taskMatch * 100).toFixed(0)}% task match). Missing: ${missing.join(', ')}`);
           actionLog.push({ action: 'done_rejected', description: `${(taskMatch * 100).toFixed(0)}% match — missing: ${missing.join(', ')}` });
           messages.push({ role: 'user', content: `NOT DONE. The text "${missing.join('", "')}" is NOT visible on screen. You must actually complete the task — don't just say done. For Paint: after selecting the Text tool, you must CLICK ON THE WHITE CANVAS AREA (the large blank area in the center of the window) to create a text box, then type the text.` });
           continue;
+        }
+
+        // Hard reject: if we typed text but it's NOT visible on screen, the paste failed.
+        // Don't accept "done" — bail to vision layer which can actually see and fix the problem.
+        if (hasTypedText && !typedTextVisible && doneRejects >= 1) {
+          console.warn(`   [OCR] 🚨 Done rejected: typed text NOT visible on screen — paste likely failed. Bailing to vision.`);
+          return {
+            handled: false,
+            success: false,
+            description: 'Typed text not appearing on screen — clipboard paste may not be working. Falling back to vision.',
+            steps: stepCount,
+            fallbackReason: 'cannot_read',
+            actionLog,
+          };
         }
 
         console.log(`   [OCR] ✅ Done (task match: ${(taskMatch * 100).toFixed(0)}%, step ${stepCount})`);
@@ -602,6 +656,37 @@ export class OcrReasoner {
       } catch (err: any) {
         console.error(`   [OCR] Action failed: ${err.message}`);
         actionLog.push({ action: 'error', description: `Action failed: ${err.message}` });
+      }
+
+      // Post-action verification for type actions: if OCR doesn't show ANY of
+      // the typed text in the next scan, the paste likely failed. Bail to vision
+      // immediately instead of continuing blind with 5 more false steps.
+      if (action.action === 'type' && action.text.length > 5) {
+        await new Promise(r => setTimeout(r, 500));
+        this.ocr.invalidateCache();
+        const verifyOcr = await this.ocr.recognizeScreen();
+        const screenText = verifyOcr.elements.map(el => el.text).join(' ').toLowerCase();
+        // Check if at least the first few words of typed text appear on screen
+        const firstWords = action.text.substring(0, 20).toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        const anyWordVisible = firstWords.length === 0 || firstWords.some(w => screenText.includes(w));
+        if (!anyWordVisible) {
+          this.typeFailCount = (this.typeFailCount ?? 0) + 1;
+          console.warn(`   [OCR] ⚠️ Type verification FAILED (${this.typeFailCount}x): text "${action.text.substring(0, 30)}..." not visible on screen`);
+          if (this.typeFailCount >= 2) {
+            console.warn(`   [OCR] 🚨 2 consecutive type failures — paste not working. Bailing to vision.`);
+            return {
+              handled: false,
+              success: false,
+              description: 'Typed text not appearing on screen — clipboard paste may not be working',
+              steps: stepCount,
+              fallbackReason: 'cannot_read',
+              actionLog,
+            };
+          }
+          messages.push({ role: 'user', content: 'WARNING: The text you just typed is NOT visible on screen. The paste may have failed. Try clicking on the target field first, then retype.' });
+        } else {
+          this.typeFailCount = 0;
+        }
       }
 
       // Wait for UI to settle
@@ -922,15 +1007,17 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
    * physicalToMouse() bridges the gap.
    */
   private async executeAction(action: OcrAction): Promise<string | null> {
-    // Taskbar guard: block clicks in the bottom ~3% of screen (taskbar area).
-    // Proportional to screen height — works on 1080p, 1440p, 4K, any resolution.
-    // ~3% = 32px on 1080p, 43px on 1440p, 72px on 2400p — covers taskbar on all displays.
+    // Taskbar/Dock guard: block clicks in the bottom edge of screen.
+    // macOS Dock is thin (~50px physical, ~30px in OCR space). Windows taskbar is larger.
     if ('x' in action && 'y' in action && (action.action === 'click' || action.action === 'double_click')) {
       const screenH = this.desktop.getScreenSize().height;
-      const taskbarZone = Math.max(60, Math.round(screenH * 0.03));
-      if (screenH > 0 && action.y > screenH - taskbarZone) {
-        console.warn(`   [OCR] ⚠️ BLOCKED: ${action.action} at y=${action.y} is in taskbar zone (>${screenH - taskbarZone})`);
-        return `BLOCKED: Your ${action.action} at y=${action.y} is in the taskbar zone (bottom of screen). The taskbar is off-limits. Use keyboard shortcuts instead — for example, press the Windows key to open Start, or use Alt+Tab to switch apps. NEVER click the bottom edge of the screen.`;
+      const guardZone = IS_MAC
+        ? Math.max(20, Math.round(screenH * 0.015))  // ~1.5% — Dock is thin
+        : Math.max(60, Math.round(screenH * 0.03));   // ~3% — Windows taskbar is taller
+      if (screenH > 0 && action.y > screenH - guardZone) {
+        const zoneName = IS_MAC ? 'Dock' : 'taskbar';
+        console.warn(`   [OCR] ⚠️ BLOCKED: ${action.action} at y=${action.y} is in ${zoneName} zone (>${screenH - guardZone})`);
+        return `BLOCKED: Your ${action.action} at y=${action.y} is in the ${zoneName} zone (bottom of screen). Use keyboard shortcuts instead (${IS_MAC ? 'Cmd+Space for Spotlight, Cmd+Tab to switch apps' : 'Windows key for Start, Alt+Tab to switch apps'}). NEVER click the bottom edge of the screen.`;
       }
     }
 
@@ -1002,7 +1089,7 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
           }
 
           if (clipboardReady) {
-            await this.desktop.keyPress('ctrl+v');
+            await this.desktop.keyPress(IS_MAC ? 'cmd+v' : 'ctrl+v');
             await new Promise(r => setTimeout(r, 300)); // 300ms to allow autocomplete resolution in email fields
           } else {
             // Clipboard failed twice — fall back to key-by-key typing
@@ -1145,17 +1232,17 @@ What is the SINGLE NEXT ACTION to accomplish this task? Respond with JSON only.`
    */
   private describeAction(action: OcrAction): string {
     switch (action.action) {
-      case 'click': return `${action.description} at (${action.x},${action.y})`;
-      case 'double_click': return `${action.description} at (${action.x},${action.y})`;
-      case 'drag': return `${action.description} (${action.startX},${action.startY}) → (${action.endX},${action.endY})`;
-      case 'type': return `${action.description}: "${action.text.substring(0, 50)}"`;
-      case 'key': return `${action.description}: ${action.key}`;
-      case 'scroll': return `Scroll ${action.direction} ${action.amount} at (${action.x},${action.y})`;
-      case 'wait': return `Wait ${action.ms}ms: ${action.reason}`;
-      case 'done': return `Done: ${action.evidence}`;
-      case 'cannot_read': return `Cannot read: ${action.reason}`;
-      case 'a11y_click': return `a11y_click "${action.name}" (${action.controlType ?? 'unknown'}): ${action.description}`;
-      case 'a11y_set_value': return `a11y_set_value "${action.name}" = "${(action.value ?? '').substring(0, 30)}": ${action.description}`;
+      case 'click': return `🖱️ click (${action.x},${action.y}) — ${action.description}`;
+      case 'double_click': return `🖱️🖱️ double-click (${action.x},${action.y}) — ${action.description}`;
+      case 'drag': return `↔️ drag (${action.startX},${action.startY})→(${action.endX},${action.endY}) Δ${Math.abs((action.endX ?? 0) - (action.startX ?? 0))}×${Math.abs((action.endY ?? 0) - (action.startY ?? 0))}px — ${action.description}`;
+      case 'type': return `⌨️ type "${action.text.substring(0, 60)}${action.text.length > 60 ? '…' : ''}" (${action.text.length} chars) — ${action.description}`;
+      case 'key': return `⌨️ key [${action.key}] — ${action.description}`;
+      case 'scroll': return `📜 scroll ${action.direction} ${action.amount ?? 3} ticks at (${action.x},${action.y})`;
+      case 'wait': return `⏳ wait ${action.ms}ms — ${action.reason}`;
+      case 'done': return `✅ done — ${action.evidence}`;
+      case 'cannot_read': return `🚫 cannot_read — ${action.reason}`;
+      case 'a11y_click': return `♿ a11y_click "${action.name}" [${action.controlType ?? 'unknown'}] — ${action.description}`;
+      case 'a11y_set_value': return `♿ a11y_set "${action.name}" = "${(action.value ?? '').substring(0, 40)}" — ${action.description}`;
       default: return `${(action as any).action}: ${(action as any).description ?? 'unknown'}`;
     }
   }

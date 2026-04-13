@@ -106,7 +106,26 @@ struct UIElement: Codable {
 
 class ClawdCursorHelper {
     static let shared = ClawdCursorHelper()
-    
+
+    /// Map a character to its macOS virtual keycode (US ANSI layout).
+    /// Covers a-z, 0-9, and common symbols — enough for all keyboard shortcuts.
+    /// Returns nil if the character has no known keycode mapping.
+    static func keycodeForCharacter(_ scalar: Unicode.Scalar) -> CGKeyCode? {
+        let c = Character(scalar).lowercased()
+        let map: [String: CGKeyCode] = [
+            "a": 0x00, "s": 0x01, "d": 0x02, "f": 0x03, "h": 0x04, "g": 0x05,
+            "z": 0x06, "x": 0x07, "c": 0x08, "v": 0x09, "b": 0x0B, "q": 0x0C,
+            "w": 0x0D, "e": 0x0E, "r": 0x0F, "y": 0x10, "t": 0x11, "1": 0x12,
+            "2": 0x13, "3": 0x14, "4": 0x15, "6": 0x16, "5": 0x17, "=": 0x18,
+            "9": 0x19, "7": 0x1A, "-": 0x1B, "8": 0x1C, "0": 0x1D, "]": 0x1E,
+            "o": 0x1F, "u": 0x20, "[": 0x21, "i": 0x22, "p": 0x23, "l": 0x25,
+            "j": 0x26, "'": 0x27, "k": 0x28, ";": 0x29, "\\": 0x2A, ",": 0x2B,
+            "/": 0x2C, "n": 0x2D, "m": 0x2E, ".": 0x2F, "`": 0x32,
+            "+": 0x18, "*": 0x43,  // + maps to = key, * maps to numpad multiply
+        ]
+        return map[c]
+    }
+
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = [.sortedKeys]
@@ -178,10 +197,14 @@ class ClawdCursorHelper {
         let axOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: kCFBooleanFalse] as CFDictionary
         let axGranted = AXIsProcessTrustedWithOptions(axOptions)
         let screenGranted = CGPreflightScreenCaptureAccess()
-        
+        let processPath = ProcessInfo.processInfo.arguments.first ?? "unknown"
+        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+
         return JsonRpcResponse(id: id, result: AnyCodable([
             "accessibility": axGranted,
-            "screenRecording": screenGranted
+            "screenRecording": screenGranted,
+            "processPath": processPath,
+            "bundleId": bundleId
         ]), error: nil)
     }
     
@@ -280,9 +303,17 @@ class ClawdCursorHelper {
         }
     }
     
+    /// Safely extract a Double from AnyCodable that may contain Int or Double
+    private func asDouble(_ val: Any?) -> Double? {
+        if let d = val as? Double { return d }
+        if let i = val as? Int { return Double(i) }
+        if let s = val as? String { return Double(s) }
+        return nil
+    }
+
     func click(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let x = params?["x"]?.value as? Double,
-              let y = params?["y"]?.value as? Double else {
+        guard let x = asDouble(params?["x"]?.value),
+              let y = asDouble(params?["y"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing 'x' or 'y' parameter"))
         }
         
@@ -308,8 +339,8 @@ class ClawdCursorHelper {
     }
 
     func moveMouse(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let x = params?["x"]?.value as? Double,
-              let y = params?["y"]?.value as? Double else {
+        guard let x = asDouble(params?["x"]?.value),
+              let y = asDouble(params?["y"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing 'x' or 'y' parameter"))
         }
         let point = CGPoint(x: x, y: y)
@@ -320,10 +351,10 @@ class ClawdCursorHelper {
     }
 
     func dragMouse(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let startX = params?["startX"]?.value as? Double,
-              let startY = params?["startY"]?.value as? Double,
-              let endX = params?["endX"]?.value as? Double,
-              let endY = params?["endY"]?.value as? Double else {
+        guard let startX = asDouble(params?["startX"]?.value),
+              let startY = asDouble(params?["startY"]?.value),
+              let endX = asDouble(params?["endX"]?.value),
+              let endY = asDouble(params?["endY"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing drag coordinates"))
         }
 
@@ -410,13 +441,19 @@ class ClawdCursorHelper {
         case "f11": keyCode = 0x67
         case "f12": keyCode = 0x6F
         default:
-            // For single characters, use character-based approach
-            if key.count == 1 {
-                return typeText(id: id, params: ["text": AnyCodable(key)])
+            // For single characters: look up keycode from character, or use unicode event.
+            // CRITICAL: modifiers must NOT be discarded — cmd+v, cmd+n, shift+cmd+d all depend on this.
+            if key.count == 1, let scalar = key.unicodeScalars.first {
+                // Try common ASCII keycode mapping first (covers a-z, 0-9, symbols)
+                guard let kc = Self.keycodeForCharacter(scalar) else {
+                    return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Unsupported key character: \(key) (not in ANSI keycode map)"))
+                }
+                keyCode = kc
+            } else {
+                return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Unknown key: \(key)"))
             }
-            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Unknown key: \(key)"))
         }
-        
+
         var flags: CGEventFlags = []
         for mod in modifiers {
             switch mod.lowercased() {
@@ -427,7 +464,7 @@ class ClawdCursorHelper {
             default: break
             }
         }
-        
+
         let source = CGEventSource(stateID: .hidSystemState)
         if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true) {
             keyDown.flags = flags
@@ -438,7 +475,7 @@ class ClawdCursorHelper {
             keyUp.flags = flags
             keyUp.post(tap: .cghidEventTap)
         }
-        
+
         return JsonRpcResponse(id: id, result: AnyCodable(["success": true, "key": key, "modifiers": modifiers]), error: nil)
     }
 
@@ -447,25 +484,36 @@ class ClawdCursorHelper {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32001, message: "screen_recording_denied"))
         }
 
-        guard let image = CGWindowListCreateImage(
-            CGRect.infinite,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            [.nominalResolution]
-        ) else {
-            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "Failed to capture screen"))
+        let tempPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("clawdcursor-capture-\(UUID().uuidString).png")
+        let proc = Process()
+        proc.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/screenshot-helper")
+        proc.arguments = ["--fullscreen", tempPath]
+
+        let stderr = Pipe()
+        proc.standardError = stderr
+
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "Failed to launch screenshot-helper: \(error.localizedDescription)"))
         }
 
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "Failed to create image destination"))
-        }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "Failed to encode screenshot"))
+        guard proc.terminationStatus == 0 else {
+            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+            let errText = String(data: errData, encoding: .utf8) ?? "unknown screenshot-helper error"
+            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "screenshot-helper failed: \(errText.trimmingCharacters(in: .whitespacesAndNewlines))"))
         }
 
-        let base64 = (data as Data).base64EncodedString()
+        let url = URL(fileURLWithPath: tempPath)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        guard let data = try? Data(contentsOf: url),
+              let image = CGImageSourceCreateWithURL(url as CFURL, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) else {
+            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32000, message: "Failed to read screenshot-helper output"))
+        }
+
+        let base64 = data.base64EncodedString()
         return JsonRpcResponse(id: id, result: AnyCodable([
             "success": true,
             "width": image.width,

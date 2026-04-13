@@ -1,6 +1,8 @@
 # macOS Setup Guide
 
-Complete guide to running Clawd Cursor on macOS. The agent uses **JXA (JavaScript for Automation)** and **System Events** for native UI automation, and **CDP (Chrome DevTools Protocol)** for browser interactions.
+> **v0.7.14+**: Keyboard automation now routes through `osascript` + System Events natively. `clawdcursor grant` triggers system permission dialogs automatically. Run `clawdcursor doctor` to verify your setup.
+
+Complete guide to running Clawd Cursor on macOS. The agent uses **JXA (JavaScript for Automation)** and **System Events** for native UI automation (v0.7.14+: keyboard shortcuts are routed through System Events for TCC safety), and **CDP (Chrome DevTools Protocol)** for browser interactions.
 
 ---
 

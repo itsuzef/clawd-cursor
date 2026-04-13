@@ -125,7 +125,7 @@ RULES:
 11. When the context shows an inbox/list view, you MUST click "Compose"/"New"/"Reply" first before trying to fill email fields.
 12. Prefer clicking fields by selector (e.g. [aria-label="To recipients"]) then typing, over fillForm — it's more reliable.
 13. CRITICAL: Window titles (e.g. "Mail - John - Outlook", "Inbox - Gmail") are NOT clickable UI elements. Never use a window title as a click target. The window is already focused — proceed directly to interacting with its contents (buttons, fields, etc.).
-14. For Outlook: to compose a new email use pressKey "Control+n" (new message shortcut) rather than trying to click "New Email" button — it's more reliable.`;
+14. For email apps: to compose a new email use pressKey "${process.platform === 'darwin' ? 'Super+n' : 'Control+n'}" (new message shortcut) rather than trying to click buttons — it's more reliable.`;
 
 /** System prompt for the ReAct-style per-step native task handler */
 const REACT_STEP_SYSTEM_PROMPT = `You are a UI automation agent controlling a native desktop app via accessibility APIs. You operate ONE STEP AT A TIME in a reactive loop.
@@ -170,13 +170,13 @@ RULES:
 3. If the previous action failed, adapt — try an alternative approach (different element, keyboard shortcut, etc.).
 4. If you see an unexpected dialog/popup in the tree, handle it first (Escape or click its button) before continuing.
 5. Window titles like "Mail - John - Outlook" are NOT clickable. The window is already focused.
-6. For Outlook: use pressKey "Control+n" for new message rather than clicking buttons.
+6. For email apps: use pressKey "${process.platform === 'darwin' ? 'Super+n' : 'Control+n'}" for new message rather than clicking buttons.
 7. After typing in a recipient/to field, use pressKey "Tab" to confirm.
 8. If you've been going in circles or the same action keeps failing, give_up.
 9. When the task appears complete based on what you see, return done.
-10. Prefer keyboard shortcuts when they're reliable (Control+s for save, Control+n for new, etc.).
+10. Prefer keyboard shortcuts when they're reliable (${process.platform === 'darwin' ? 'Super' : 'Control'}+s for save, ${process.platform === 'darwin' ? 'Super' : 'Control'}+n for new, etc.).
 11. If an element is not found by name, try Tab key navigation or keyboard shortcuts instead. Do NOT give_up immediately — try at least 2 alternatives first.
-12. KEYBOARD-FIRST RULE: For email composition in any mail app (Outlook, Gmail, etc.), ALWAYS use this exact sequence: pressKey Control+n → pressKey Tab → typeAtFocus (recipient) → pressKey Tab → typeAtFocus (subject) → pressKey Tab → typeAtFocus (body) → pressKey Control+Enter (send). Never try to click field names — use Tab navigation + typeAtFocus instead.`;
+12. KEYBOARD-FIRST RULE: For email/forms, use ${process.platform === 'darwin' ? 'Super' : 'Control'}+n to compose, then Tab between fields. IMPORTANT: Tab order varies by app — after each Tab, verify which field has focus before typing. Some apps have Cc/Bcc between To and Subject. Send with ${process.platform === 'darwin' ? 'Super+Shift+d' : 'Control+Return'}.`;
 
 /**
  * SmartInteractionLayer — the orchestration layer between BrowserLayer and Computer Use.

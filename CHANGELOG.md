@@ -2,6 +2,54 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.7.14] - 2026-04-13 — Full macOS Keyboard Automation + Platform-Aware Pipeline
+
+### Fixed
+- **macOS keystrokes silently dropped** — root cause: `CGEvent.post()` from the Swift helper is blocked by macOS TCC when the helper is spawned as a child of Node.js. `keyPress()` and `typeText()` on macOS now route through `osascript` + System Events (the Apple-sanctioned method). All keyboard shortcuts (Cmd+V, Cmd+N, Shift+Cmd+D, etc.) now work correctly.
+- **Single-char keys losing modifiers** — `keycodeForCharacter()` lookup added to `ClawdCursorHelper`; modifiers are no longer discarded for Cmd+letter combos.
+- **`asDouble()` coercion** — click/drag coordinates sent as integers (common from some LLMs) no longer fail with a type mismatch in the Swift helper.
+- **`keycodeForCharacter` fallback** — now returns an error for unmapped characters instead of silently falling back to the 'v' keycode.
+- **Permission check inconsistency** — `doctor`, `status`, and `readiness.ts` all now query the same canonical path: Host `/status` → `permission-check` binary → direct fallback. No more false "granted" reports.
+- **Screenshot capture CPU spin** — replaced `CGWindowListCreateImage` (triggers ReplayKit CPU spin bug on macOS 14+) with a delegated `screenshot-helper` subprocess.
+- **A11y false positive** — `isShellAvailable()` now tests actual window access (`p.windows.length`) instead of `processes.length`, which worked without Accessibility permission.
+- **Node.js v25 crash** — `EINVAL`/`setTypeOfService` socket error from undici's internal QoS call is now caught and suppressed (non-fatal).
+- **Dock click zone** — reduced from 60px to 30px on macOS (Dock is thinner than the Windows taskbar).
+- **Browser URL bar shortcut** — `Cmd+L` used on macOS (was `Ctrl+L`, which does nothing in macOS browsers).
+
+### Added
+- **`macMailEmailFlow`** — deterministic email flow for macOS Mail.app (Cmd+N, Tab to subject/body, Cmd+Shift+D to send).
+- **`clawdcursor grant` command** — triggers macOS system permission dialogs directly from the CLI.
+- **115 Apple shortcuts** — Mail, Safari, Notes, Messages, Terminal added to the shortcut database.
+- **`scripts/test-macos-fixes.sh`** — one-shot E2E verification script: rebuild, binary check, permission consistency, screenshot capture, doctor cross-check.
+- **`--request-screen-recording` flag** on `permission-check` binary — optional TCC dialog trigger for Screen Recording.
+- **`processPath` + `bundleId`** in all permission check responses — aids TCC debugging.
+- **30s TTL cache** on A11y shell availability — permission grants mid-session are now detected without restart.
+- **macOS native binary verification** in `scripts/verify-install.js` — warns on missing binaries at `npm install` time.
+- **`setup` script auto-builds** native binaries on macOS (inside `npm run setup`).
+
+### Changed
+- **`build.sh`** — marked executable in git, fails fast on missing binaries (was silently warning), better error guidance.
+- **Installer** — verifies all 4 required binaries (not just `ClawdCursorHost`), uses `bash ./build.sh` for portability.
+- **`doctor.ts`** — permission check unified via `native-helper` module; triggers system permission dialogs if denied.
+- **Email flow keyboard shortcuts** — platform-aware: `Ctrl+Enter` → `Shift+Cmd+D` on macOS, `Ctrl+H` → `Cmd+Option+F` for Find & Replace.
+- **`sharp`** bumped `^0.33.0` → `^0.33.5`.
+
+### Platform Safety
+No Windows or Linux code paths affected. All macOS changes are gated behind `IS_MAC` / `process.platform === 'darwin'` / `isMacOS()`.
+
+## [0.7.13] - 2026-04-10 — Unified Permission Checks + Screenshot Helper
+
+### Fixed
+- **Permission check fragmentation** — doctor, status, and readiness each used different permission APIs, producing contradictory results. All now route through `ClawdCursorHost /status` → `permission-check` binary → direct `AXIsProcessTrusted` fallback.
+- **Screenshot CPU spin** — delegated `takeScreenshot()` to `screenshot-helper` subprocess, eliminating the ReplayKit CPU spike on macOS 14+.
+- **Installer binary verification** — now checks all 4 required binaries (`ClawdCursorHost`, `clawdcursor-helper`, `screenshot-helper`, `permission-check`) instead of just `ClawdCursorHost`.
+- **`build.sh` silent failures** — `swift build` errors now fail the build immediately with actionable guidance.
+
+### Added
+- **`clawdcursor grant` command** — triggers macOS system permission dialogs for Accessibility and Screen Recording.
+- **`processPath` + `bundleId`** in permission check responses for TCC debugging.
+- **`--request-screen-recording` flag** on `permission-check` binary.
+
 ## [0.7.12] - 2026-04-09 — Comprehensive macOS TCC Fix
 
 ### Fixed

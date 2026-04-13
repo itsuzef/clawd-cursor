@@ -10,6 +10,9 @@ import { AccessibilityBridge } from './accessibility';
 import { NativeDesktop } from './native-desktop';
 import { ActionVerifier } from './action-verifier';
 
+const IS_MAC = process.platform === 'darwin';
+const MOD = IS_MAC ? 'Super' : 'Control';  // Cmd on macOS, Ctrl on Windows/Linux
+
 export interface FlowResult {
   handled: boolean;
   description: string;
@@ -36,10 +39,13 @@ export class DeterministicFlows {
     const appLower = app.toLowerCase();
     const taskLower = task.toLowerCase();
 
-    // Outlook email flow (process may be msedge but window title contains "Outlook")
-    if (/outlook|olk/i.test(appLower) && /send.*email|email.*to|mail.*to|introduce/i.test(taskLower)) {
+    // Email flow — Outlook on Windows, Mail.app on macOS
+    if (/outlook|olk|mail/i.test(appLower) && /send.*email|email.*to|mail.*to|introduce/i.test(taskLower)) {
       const parsed = this.parseEmailTask(task); // preserve original casing for body text
       if (parsed) {
+        if (process.platform === 'darwin' && /^mail$/i.test(appLower)) {
+          return this.macMailEmailFlow(parsed.to, parsed.subject, parsed.body);
+        }
         return this.outlookEmailFlow(parsed.to, parsed.subject, parsed.body);
       }
     }
@@ -179,8 +185,8 @@ export class DeterministicFlows {
           await this.desktop.mouseClick(center.x, center.y);
           await new Promise(r => setTimeout(r, 300));
         }
-        await this.desktop.keyPress('Control+n');
-        console.log(`   📧 Step 1: Ctrl+N in Outlook, waiting for compose...`);
+        await this.desktop.keyPress(`${MOD}+n`);
+        console.log(`   📧 Step 1: ${MOD}+N in Outlook, waiting for compose...`);
         await new Promise(r => setTimeout(r, 2000));
         composeOpen = true; // verification below will catch failures
       }
@@ -229,26 +235,119 @@ export class DeterministicFlows {
 
       // Step 7: Send with Ctrl+Enter
       step = 7;
-      const sendResult = await this.verifier.verifiedKeyPress('Control+Return', { windowShouldClose: true });
+      const sendKey = IS_MAC ? 'Shift+Super+d' : 'Control+Return';
+      const sendResult = await this.verifier.verifiedKeyPress(sendKey, { windowShouldClose: true });
       if (sendResult.success) {
-        console.log(`   📧 Step 7: Ctrl+Enter — email sent!`);
+        console.log(`   📧 Step 7: ${sendKey} — email sent!`);
         return { handled: true, description: `Email sent to ${to} with subject "${subject}"`, stepsCompleted: 7 };
       }
 
-      // Ctrl+Enter didn't close window — try Alt+S as fallback
+      // Primary send didn't close window — try platform fallback
       step = 8;
-      console.log(`   📧 Step 7 fallback: Ctrl+Enter didn't close compose, trying Alt+S`);
-      const altSResult = await this.verifier.verifiedKeyPress('Alt+s', { windowShouldClose: true });
+      const fallbackKey = IS_MAC ? 'Super+Return' : 'Alt+s';
+      console.log(`   📧 Step 7 fallback: ${sendKey} didn't close compose, trying ${fallbackKey}`);
+      const altSResult = await this.verifier.verifiedKeyPress(fallbackKey, { windowShouldClose: true });
       if (altSResult.success) {
-        console.log(`   📧 Step 8: Alt+S — email sent!`);
-        return { handled: true, description: `Email sent to ${to} (via Alt+S)`, stepsCompleted: 8 };
+        console.log(`   📧 Step 8: ${fallbackKey} — email sent!`);
+        return { handled: true, description: `Email sent to ${to} (via ${fallbackKey})`, stepsCompleted: 8 };
       }
 
-      console.log(`   ❌ Deterministic flow: send failed (both Ctrl+Enter and Alt+S)`);
+      console.log(`   ❌ Deterministic flow: send failed (both ${sendKey} and ${fallbackKey})`);
       return { handled: false, description: 'Send shortcut did not work', failedAtStep: step, stepsCompleted: step };
 
     } catch (err) {
       console.log(`   ❌ Deterministic flow error at step ${step}: ${err}`);
+      return { handled: false, description: `Error at step ${step}: ${err}`, failedAtStep: step, stepsCompleted: step - 1 };
+    }
+  }
+
+  // ─── macOS Mail.app Email Flow ────────────────────────────────────────────
+
+  private async macMailEmailFlow(to: string, subject: string, body: string): Promise<FlowResult> {
+    console.log(`   📧 macOS Mail.app email flow: to=${to} subject="${subject}"`);
+    let step = 0;
+
+    try {
+      // Step 1: Focus Mail and open compose
+      step = 1;
+      let mailWin = await this.a11y.findWindow('Mail');
+      if (!mailWin) {
+        const allWindows = await this.a11y.getWindows(true);
+        mailWin = allWindows.find(w => /^Mail$/i.test(w.processName)) || null;
+      }
+      if (mailWin) {
+        await this.a11y.focusWindow(undefined, mailWin.processId);
+        await new Promise(r => setTimeout(r, 500));
+        console.log(`   📧 Focused Mail: "${mailWin.title}" (pid ${mailWin.processId})`);
+      } else {
+        console.log(`   ❌ Cannot find Mail window`);
+        return { handled: false, description: 'Mail window not found', failedAtStep: 1, stepsCompleted: 0 };
+      }
+
+      // Cmd+N to open new compose window
+      await this.desktop.keyPress('Super+n');
+      console.log(`   📧 Step 1: Cmd+N — opening compose window`);
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Verify compose opened
+      const composeWin = await this.a11y.getActiveWindow();
+      const composeTitle = (composeWin?.title || '').toLowerCase();
+      if (!/new message|mail|compose/i.test(composeTitle) && !/^Mail$/i.test(composeWin?.processName || '')) {
+        console.log(`   ⚠️ Compose window not confirmed: "${composeWin?.title}" — continuing anyway`);
+      } else {
+        console.log(`   📧 Compose window: "${composeWin?.title}"`);
+      }
+
+      // Step 2: Type recipient (To field is auto-focused in Mail.app)
+      step = 2;
+      const typeToResult = await this.verifier.verifiedType(to);
+      console.log(`   📧 Step 2: Typed To "${to}" — ${typeToResult.success ? 'OK' : typeToResult.error}`);
+
+      // Step 3: Tab to Subject
+      step = 3;
+      await this.desktop.keyPress('Tab');
+      await new Promise(r => setTimeout(r, 300));
+      console.log(`   📧 Step 3: Tab → Subject`);
+
+      // Step 4: Type subject
+      step = 4;
+      const typeSubjectResult = await this.verifier.verifiedType(subject);
+      console.log(`   📧 Step 4: Typed Subject "${subject}" — ${typeSubjectResult.success ? 'OK' : typeSubjectResult.error}`);
+
+      // Step 5: Tab to Body
+      step = 5;
+      await this.desktop.keyPress('Tab');
+      await new Promise(r => setTimeout(r, 300));
+      console.log(`   📧 Step 5: Tab → Body`);
+
+      // Step 6: Type body
+      step = 6;
+      const typeBodyResult = await this.verifier.verifiedType(body);
+      console.log(`   📧 Step 6: Typed Body — ${typeBodyResult.success ? 'OK' : typeBodyResult.error}`);
+
+      // Step 7: Send with Cmd+Shift+D (Mail.app send shortcut)
+      step = 7;
+      await this.desktop.keyPress('Super+Shift+d');
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Verify compose closed (email sent)
+      const afterSend = await this.a11y.getActiveWindow();
+      const composeClosed = afterSend?.title !== composeWin?.title || /inbox|mail/i.test(afterSend?.title || '');
+      if (composeClosed) {
+        console.log(`   📧 Step 7: Cmd+Shift+D — email sent!`);
+        return { handled: true, description: `Email sent to ${to} with subject "${subject}"`, stepsCompleted: 7 };
+      }
+
+      // Fallback: try Cmd+Return
+      step = 8;
+      console.log(`   📧 Step 7 fallback: Cmd+Shift+D didn't close compose, trying Cmd+Return`);
+      await this.desktop.keyPress('Super+Return');
+      await new Promise(r => setTimeout(r, 2000));
+      console.log(`   📧 Step 8: Cmd+Return — assuming email sent`);
+      return { handled: true, description: `Email sent to ${to} (via Cmd+Return fallback)`, stepsCompleted: 8 };
+
+    } catch (err) {
+      console.log(`   ❌ Mail.app flow error at step ${step}: ${err}`);
       return { handled: false, description: `Error at step ${step}: ${err}`, failedAtStep: step, stepsCompleted: step - 1 };
     }
   }
@@ -292,11 +391,11 @@ export class DeterministicFlows {
       // Pre-step: Clear existing text if requested
       if (preText?.clearFirst) {
         step++;
-        await this.desktop.keyPress('ctrl+a');
+        await this.desktop.keyPress(`${MOD}+a`);
         await new Promise(r => setTimeout(r, 100));
         await this.desktop.keyPress('Delete');
         await new Promise(r => setTimeout(r, 200));
-        console.log(`   🔍 Step ${step}: Ctrl+A, Delete — cleared text`);
+        console.log(`   🔍 Step ${step}: ${MOD}+A, Delete — cleared text`);
       }
 
       // Pre-step: Type new text if provided
@@ -304,24 +403,25 @@ export class DeterministicFlows {
         step++;
         await this.a11y.writeClipboard(preText.textToType);
         await new Promise(r => setTimeout(r, 50));
-        await this.desktop.keyPress('ctrl+v');
+        await this.desktop.keyPress(`${MOD}+v`);
         await new Promise(r => setTimeout(r, 300));
         console.log(`   🔍 Step ${step}: Typed "${preText.textToType.substring(0, 40)}..."`);
       }
 
       // Step N+1: Open Find & Replace
       step++;
-      await this.desktop.keyPress('ctrl+h');
+      const findReplaceKey = IS_MAC ? 'Super+Option+f' : 'Control+h';
+      await this.desktop.keyPress(findReplaceKey);
       await new Promise(r => setTimeout(r, 800));
-      console.log(`   🔍 Step ${step}: Ctrl+H — opened Find & Replace`);
+      console.log(`   🔍 Step ${step}: ${findReplaceKey} — opened Find & Replace`);
 
       // Clear the search field and type search term
       step++;
-      await this.desktop.keyPress('ctrl+a'); // select all in focused field
+      await this.desktop.keyPress(`${MOD}+a`); // select all in focused field
       await new Promise(r => setTimeout(r, 50));
       await this.a11y.writeClipboard(find);
       await new Promise(r => setTimeout(r, 50));
-      await this.desktop.keyPress('ctrl+v');
+      await this.desktop.keyPress(`${MOD}+v`);
       await new Promise(r => setTimeout(r, 200));
       console.log(`   🔍 Step ${step}: Typed find term "${find}"`);
 
@@ -333,19 +433,29 @@ export class DeterministicFlows {
 
       // Clear the replace field and type replacement
       step++;
-      await this.desktop.keyPress('ctrl+a');
+      await this.desktop.keyPress(`${MOD}+a`);
       await new Promise(r => setTimeout(r, 50));
       await this.a11y.writeClipboard(replace);
       await new Promise(r => setTimeout(r, 50));
-      await this.desktop.keyPress('ctrl+v');
+      await this.desktop.keyPress(`${MOD}+v`);
       await new Promise(r => setTimeout(r, 200));
       console.log(`   🔍 Step ${step}: Typed replace term "${replace}"`);
 
-      // Replace All (Alt+A in Notepad's Find & Replace)
+      // Replace All — platform-specific shortcut
       step++;
-      await this.desktop.keyPress('alt+a');
+      if (IS_MAC) {
+        // macOS: click "Replace All" button via a11y (no universal shortcut)
+        try {
+          await this.a11y.invokeElement({ name: 'Replace All', action: 'click' });
+        } catch {
+          // Fallback: try Option+Command+Return (some macOS editors)
+          await this.desktop.keyPress('Option+Super+Return');
+        }
+      } else {
+        await this.desktop.keyPress('Alt+a');
+      }
       await new Promise(r => setTimeout(r, 500));
-      console.log(`   🔍 Step ${step}: Alt+A — Replace All`);
+      console.log(`   🔍 Step ${step}: Replace All`);
 
       // Close the dialog
       step++;

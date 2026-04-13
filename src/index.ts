@@ -6,6 +6,19 @@
  * Your AI controls your desktop natively.
  */
 
+// Node.js v25+ on macOS: undici's fetch() can crash with EINVAL on setTypeOfService.
+// Catch this non-fatal socket error to prevent server crash.
+process.on('uncaughtException', (err: any) => {
+  if (err?.code === 'EINVAL' && err?.syscall === 'setTypeOfService') {
+    // Non-fatal: Node.js internal QoS socket option not supported on this macOS version.
+    // Safe to ignore — the HTTP request will still complete.
+    return;
+  }
+  // Re-throw any other uncaught exception
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
+
 import { Command } from 'commander';
 import { Agent } from './agent';
 import { createServer } from './server';
@@ -436,6 +449,32 @@ program
   .action(async () => {
     const { printStatusReport } = await import('./readiness');
     await printStatusReport();
+  });
+
+program
+  .command('grant')
+  .description('🔐 Request macOS permissions (triggers system permission dialogs)')
+  .action(async () => {
+    if (process.platform !== 'darwin') {
+      console.log('Permission grants are only needed on macOS.');
+      return;
+    }
+    const { requestPermissions } = await import('./native-helper');
+    console.log('🔐 Requesting macOS permissions...');
+    console.log('   System dialogs may appear — please allow access.\n');
+    try {
+      const perms = await requestPermissions();
+      console.log(`   Accessibility:    ${perms.accessibility ? '✅ Granted' : '❌ Denied'}`);
+      console.log(`   Screen Recording: ${perms.screenRecording ? '✅ Granted' : '❌ Denied'}`);
+      if (perms.accessibility && perms.screenRecording) {
+        console.log('\n🎉 All permissions granted — ready for desktop control!');
+      } else {
+        console.log('\n⚠️  Some permissions still missing. Grant them in System Settings, then run this again.');
+      }
+    } catch (err) {
+      console.error(`❌ Failed to request permissions: ${err}`);
+      console.error('   Ensure ClawdCursor.app is built: cd native && ./build.sh');
+    }
   });
 
 program
@@ -941,10 +980,13 @@ program
         zodParams[key] = schema;
       }
 
+      // MCP SDK 1.29 arg parsing breaks if schema is undefined (shifts callback position).
+      // Always pass a schema — use empty object for parameterless tools.
+      const hasParams = Object.keys(zodParams).length > 0;
       server.tool(
         tool.name,
         tool.description,
-        Object.keys(zodParams).length > 0 ? zodParams : undefined as any,
+        hasParams ? zodParams : {},
         async (params: any) => {
           const result = await tool.handler(params, ctx);
           const content: any[] = [];

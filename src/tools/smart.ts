@@ -448,7 +448,7 @@ export function getSmartTools(): ToolDefinition[] {
         // Type via clipboard paste
         await ctx.a11y.writeClipboard(text);
         await new Promise(r => setTimeout(r, 50));
-        await ctx.desktop.keyPress('ctrl+v');
+        await ctx.desktop.keyPress(process.platform === 'darwin' ? 'cmd+v' : 'ctrl+v');
         await new Promise(r => setTimeout(r, 100));
         ctx.a11y.invalidateCache();
 
