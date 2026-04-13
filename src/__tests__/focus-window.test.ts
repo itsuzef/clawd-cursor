@@ -139,17 +139,19 @@ describe('focus_window — Bug 4: off-screen recovery', () => {
 
     const ctx = createCtx();
     const result = await focusWindow.handler({ processName: 'notepad' }, ctx);
-    expect(mockKeyPress).toHaveBeenCalledWith('super+up');
+    const expectedSnapKey = process.platform === 'darwin' ? 'ctrl+cmd+f' : 'super+up';
+    expect(mockKeyPress).toHaveBeenCalledWith(expectedSnapKey);
     expect(result.isError).toBeUndefined();
   });
 
-  it('does NOT press super+up when window is already on-screen', async () => {
+  it('does NOT press snap key when window is already on-screen', async () => {
     mockGetWindows.mockResolvedValue([
       { processId: 10, processName: 'notepad', title: 'Notepad', bounds: { x: 200, y: 100, width: 800, height: 600 }, isMinimized: false },
     ]);
     const ctx = createCtx();
     await focusWindow.handler({ processName: 'notepad' }, ctx);
     expect(mockKeyPress).not.toHaveBeenCalledWith('super+up');
+    expect(mockKeyPress).not.toHaveBeenCalledWith('ctrl+cmd+f');
   });
 
   it('skips coordinate click when targetBounds has negative x/y', async () => {

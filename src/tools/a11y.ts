@@ -144,9 +144,10 @@ export function getA11yTools(): ToolDefinition[] {
           if (freshWin?.bounds) targetBounds = freshWin.bounds;
         }
 
-        // If window is still off-screen, snap-maximize (cross-platform: Win+Up / most Linux WMs)
+        // If window is still off-screen, snap-maximize (platform-aware)
         if (targetBounds && (targetBounds.x < 0 || targetBounds.y < 0)) {
-          await ctx.desktop.keyPress('super+up');
+          const snapKey = process.platform === 'darwin' ? 'ctrl+cmd+f' : 'super+up';
+          await ctx.desktop.keyPress(snapKey);
           await new Promise(r => setTimeout(r, 300));
           ctx.a11y.invalidateCache();
           // Re-read bounds after snap
