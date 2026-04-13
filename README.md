@@ -11,178 +11,103 @@
 
 <p align="center">
   <a href="https://discord.gg/UGBWKvmj"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://clawdcursor.com"><img src="https://img.shields.io/badge/Website-clawdcursor.com-22c55e?style=for-the-badge" alt="Website"></a>
 </p>
 
 <p align="center">
-  <a href="https://clawdcursor.com">Website</a> &middot; <a href="https://discord.gg/UGBWKvmj">Discord</a> &middot; <a href="#quick-start">Quick Start</a> &middot; <a href="#three-ways-to-connect">Connect</a> &middot; <a href="#how-it-works">How It Works</a> &middot; <a href="#api-endpoints">API</a> &middot; <a href="CHANGELOG.md">Changelog</a>
+  <a href="https://clawdcursor.com">Website</a> &middot;
+  <a href="https://discord.gg/UGBWKvmj">Discord</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#connect">Connect</a> &middot;
+  <a href="#api">API</a> &middot;
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
 
 ## What's New in v0.7.14
 
-**Full macOS keyboard automation. Platform-aware pipeline. Node.js v25 fix.**
+- **macOS keystrokes fixed** — `keyPress()` now routes through `osascript` + System Events. TCC was silently blocking `CGEvent.post()` from Node child processes. Cmd+V, Cmd+N, Shift+Cmd+D all work.
+- **Platform-aware shortcuts** — `Cmd` on macOS, `Ctrl` on Windows/Linux throughout the pipeline (URL bar, email compose, Find & Replace).
+- **macOS Mail.app flow** — deterministic compose: Cmd+N → To → Tab → Subject → Tab → Body → Cmd+Shift+D.
+- **Unified permission checking** — `doctor`, `status`, and `readiness` all use the same path. No more contradictory reports.
+- **Screenshot CPU fix** — delegates to `screenshot-helper` subprocess. Eliminates ReplayKit CPU spin on macOS 14+.
+- **`clawdcursor grant`** — triggers macOS system permission dialogs from the CLI.
+- **Node.js v25 crash fix** — `EINVAL`/`setTypeOfService` from undici caught and suppressed.
 
-- **macOS keystrokes now work** — root cause was TCC blocking `CGEvent.post()` from Node child processes. Fixed by routing `keyPress()` through `osascript` + System Events (the Apple-sanctioned approach). Cmd+V, Cmd+N, Shift+Cmd+D — all work now.
-- **Platform-aware shortcuts** — `Cmd` on macOS, `Ctrl` on Windows/Linux throughout the pipeline. Browser URL bar, email compose, Find & Replace all use the right key for each OS.
-- **macOS Mail.app flow** — deterministic email compose flow for Mail.app (Cmd+N → To → Tab → Subject → Tab → Body → Cmd+Shift+D).
-- **Unified permission checking** — `doctor`, `status`, and `readiness` all query the same path: Host `/status` → `permission-check` binary → fallback. No more contradictory reports.
-- **Screenshot CPU fix** — screenshot capture now delegates to `screenshot-helper` subprocess, eliminating the ReplayKit CPU spin bug on macOS 14+.
-- **`clawdcursor grant`** — new command triggers macOS system permission dialogs directly from the CLI.
-- **Node.js v25 crash fix** — `EINVAL`/`setTypeOfService` socket error from undici's QoS call is caught and suppressed.
-- **`sharp` 0.33.0 → 0.33.5** — stable minor bump.
-
-### v0.7.12 features (still present)
-
-**macOS Native Host App. Single permission grant. Localhost IPC.**
-
-- **macOS Host App (ClawdCursorHost)** — new native Swift app that owns all TCC permissions. Grant Accessibility and Screen Recording once to the app, not per-terminal session.
-- **Localhost IPC architecture** — CLI delegates desktop operations to the host app via HTTP on `127.0.0.1:3848`. Token-based auth with `~/.clawdcursor/host-token` (mode 0600).
-- **Auto-launch on start** — `clawdcursor start` automatically launches ClawdCursorHost if not running. `clawdcursor stop` gracefully quits it.
-- **New helper methods** — `moveMouse`, `dragMouse`, `captureScreen` added to native Swift helper for smoother macOS automation.
-- **Menu bar presence** — host app runs as a 🐾 menu bar icon for easy status visibility.
-- **Security hardening** — IPC server binds to localhost only (not 0.0.0.0), preventing network attacks.
-- **Windows/Linux unaffected** — all macOS-specific code is behind platform guards. Existing behavior unchanged.
-
-### v0.7.5 features (still present)
-
-**Provider-agnostic Computer Use. App guides. Cleaner architecture.**
-
-- **Provider-agnostic refactor** — eliminated all hardcoded model/provider checks. Uses declarative capability flags (`reasoningVisionModel`, `computerUse`, `openaiCompat`) instead of string matching. Works with ANY provider out of the box.
-- **App Guide system** — community-contributed JSON instruction manuals for 86+ apps. Install with `clawdcursor guides install excel`. Teaches the AI keyboard shortcuts, workflows, UI layout, and tips for each app. Loaded automatically at runtime.
-- **Google Gemini 2.5 Flash** — auto-detected from `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Budget-friendly at ~$0.15/1M tokens.
-- **3-stage pipeline** — Stage 1 (deterministic, free) → Stage 2 (text LLM, cheap) → Stage 3 (vision LLM, expensive). Most tasks complete at Stage 1-2.
-- **Fallback architecture** — designed as the last-mile fallback for any AI agent. When APIs, CLIs, and integrations don't exist, clawdcursor gives your agent eyes and hands on the desktop.
-- **Task classifier** — zero-cost regex classifier routes tasks to optimal pipeline stage (mechanical/navigation/reasoning/spatial).
-- **Guide registry CLI** — `clawdcursor guides available` lists 86 apps. `clawdcursor guides install spotify` downloads shortcuts. Community-driven knowledge base.
-- **Lazy guide loading** — guides inject into the LLM context only when the target app is detected, after the first screenshot.
-- **Adaptive learning** — successful tasks save their action sequences to app guide JSON. Next time the same app is used, Stage 2 reads the learned workflow and executes it natively — no vision fallback needed. The system gets smarter with every interaction.
-- **`returnPartial` mode** — external agents (OpenClaw, Claude Code) send `POST /task {"returnPartial": true}`. If Stage 2 fails, control returns to the calling agent instead of burning tokens on Stage 3 vision. The agent finishes with MCP tools (smarter than one-shot vision).
-- **`POST /learn` endpoint** — after completing a task with MCP tools, agents report what worked. Saves workflows, keyboard shortcuts, and tips to the app's guide JSON. Community-driven knowledge base that grows with every interaction.
-- **Per-layer API keys** — mixed-provider pipelines (e.g., Kimi text + Anthropic vision) use separate API keys per layer. No more auth failures from sending the wrong key to the wrong provider.
-- **CDP auto-init in serve mode** — browser DevTools Protocol connects automatically on startup. Web tasks get DOM access instead of falling back to pure vision.
-- **`minimize_window` tool** — new cross-platform tool. Minimize any window by name, PID, or title in 1 call. Windows (Super+Down), macOS (Cmd+M), Linux (wmctrl).
-- **`smart_click` timeout** — 10s default timeout prevents silent hangs on complex UIs. Returns diagnostic error instead of blocking.
-- **`focus_window` phantom cleanup** — automatically minimizes off-screen full-screen windows (-14,-14 bounds) that steal focus before focusing the target.
-- **Spatial layout analysis** — textual scaffolding: detects toolbar zones, content center, sidebars from OCR element positions. Any text LLM knows WHERE to click without vision.
-- **42 tools** (was 40) — added `minimize_window` and `smart_read`. Full tool reference in SKILL.md.
-- **172 tests pass** — provider matrix tests (27), focus window, action router, OCR, safety, coordinates, and more.
-- **Per-layer API keys** — mixed-provider pipelines (e.g., Kimi text + Anthropic vision) use separate API keys per layer.
-- **New config schema** — `textModel`/`visionModel` field names. Old names still accepted.
-- **Memory leak fixes** — buffer release in OCR engine, TERMINAL env var quoting for Linux.
-- **Cross-platform hardening** — Linux GPU detection, PID file locking, signal handlers.
-
-### v0.7.2 features (still present)
-
-- **Smart pipeline** — L0 (Browser) -> L1 (Action Router) -> L1.5 (Deterministic Flows) -> L2 (Skill Cache) -> L2.5 (OCR Reasoner) -> L2.5b (A11y Reasoner) -> L3 (Computer Use). Most tasks never reach L3.
-- **40 universal tools** — served via REST (`GET /tools`, `POST /execute/:name`) and MCP stdio from a single definition. Any model that can call functions can control your desktop.
-- **3 transport modes** — `start` (full agent + tools), `serve` (tools only, bring your own brain), `mcp` (MCP stdio for Claude Code, Cursor, Windsurf, Zed)
-- **CDP browser integration** — Chrome DevTools Protocol for DOM interaction, text extraction, click-by-selector. Auto-connects to Edge/Chrome.
-- **Action verifier** — ground-truth checking after every action. Blocks false success reports.
-- **A11y click resolver** — bounds-based coordinate resolution, zero LLM cost
-- **Deterministic flows** — hardcoded keyboard sequences for common tasks (email compose, app switch). Zero LLM calls, instant.
-- **No-progress loop detector** — blocks same action repeated 3+ times. Forces the LLM to try something different.
-- **Premature-done blocker** — evidence-based completion checking. Won't report success unless verified.
-- **Structured task logging** — JSONL per-task logs with `verified_success` vs `unverified_success` distinction
-- **First-run onboarding** — consent flow explains what desktop control means before tools activate
-- **Standalone data directory** — all data in `~/.clawdcursor/` (migrates from legacy paths automatically)
-- **Error reporting** (opt-in) — `clawdcursor report` lets users send redacted task logs to help improve the agent
-- **API key validation on startup** — clear checkmark/cross messages so you know immediately if your key works
-- **Graceful error handling** — 401/402/429 responses produce actionable messages instead of hanging
-- **Configurable browser** — custom exe path, process name, and CDP port via config
-- **DPI-safe coordinate conversion** — consistent across all 8 call sites
-- **13 providers auto-detected** — up from 6, plus any OpenAI-compatible endpoint
-- **OCR Reasoner** — screenshot + OS-level OCR + cheap text LLM, with stagnation detection and done-verification
-- **Universal OS support** — platform-aware system prompts, DPI detection (Retina via NSScreen, Linux via xrandr/GDK_SCALE), and browser CDP paths for Windows, macOS, and Linux
-- **Security hardening** — log sanitization (API keys/tokens redacted), token fingerprinting on startup, auth required on sensitive GET endpoints (/favorites, /task-logs, /logs)
-- **Task execution lock** — prevents race conditions from concurrent /task requests
-- **Clipboard fallback** — catches a11y bridge failure, falls back to typeText
-- **Install verification** — `scripts/verify-install.js` checks Node version + native deps with platform-specific fix guidance
-
-### v0.6.3 vs v0.7.14
-
-| | v0.6.3 | v0.7.14 |
-|---|---|---|
-| **Architecture** | 4-layer pipeline (L0-L3) | 3-stage pipeline: deterministic → text LLM → vision LLM |
-| **Transport** | REST API only | REST + MCP stdio + tools-only server |
-| **Tools** | Monolithic agent, no tool exposure | 40 discrete tools, OpenAI function-calling format |
-| **Browser** | Playwright-only, no DOM access | CDP integration — click by selector, read text, type by label |
-| **Verification** | LLM self-reports success (often wrong) | Ground-truth action verifier — reads actual content back |
-| **False positives** | Common — agent says "done" prematurely | Premature-done blocker + evidence-based completion |
-| **Loops** | Agent can repeat same failed action forever | No-progress detector blocks after 3 repeats in 8 steps |
-| **Click resolution** | Vision model guesses coordinates | A11y bounds-based resolver (zero LLM cost), vision as fallback |
-| **Common tasks** | Every task goes through LLM | Deterministic flows for email, app-switch — zero LLM calls |
-| **Task logging** | Console output only | Structured JSONL per-task, verified vs unverified success |
-| **Data directory** | `~/.openclaw/clawdcursor/` (coupled) | `~/.clawdcursor/` (standalone, auto-migrates) |
-| **Dependencies** | Tied to OpenClaw platform | Fully standalone — works with any AI, any client |
-| **Onboarding** | None — starts immediately | First-run consent flow for desktop control |
-| **MCP support** | None | Native MCP stdio for Claude Code, Cursor, Windsurf, Zed |
-| **Error reporting** | None | Opt-in redacted task log submission |
-| **Model coupling** | Anthropic-favored defaults | Truly model-agnostic — 14 providers auto-detected + any OpenAI-compatible endpoint |
-| **OS support** | Windows only | Windows, macOS, Linux — platform-aware prompts, DPI, browser paths |
-| **Security** | Token in logs, no endpoint auth | Log sanitization, token fingerprint, auth on sensitive endpoints |
+Full history in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## The Glove for Any AI Hand
+## What It Does
 
-Think of your AI as the **hand** and Clawd Cursor as the **glove**.
-
-The hand has the intelligence — it reasons, plans, and decides what to do. The glove gives it grip on the physical world. Clawd Cursor wraps your entire desktop — every window, every button, every text field, every pixel — and exposes it as simple tool calls that any AI model can use.
-
-**Your AI is the brain. Clawd Cursor is the body.**
-
-If it's visible on your screen, Clawd Cursor can interact with it. Native apps, web apps, legacy software, internal tools, desktop games — anything with a GUI. No app-specific integrations needed. No APIs to configure per-service. One universal interface that turns any AI into a desktop operator.
-
-This is what makes v0.7.5 different from every other automation tool: **it doesn't care which AI drives it.** Claude, GPT, Gemini, Llama running locally, a custom model you trained yourself, or a simple Python script making function calls. If it can call tools, it can control your computer.
+Clawd Cursor is a **tool server**. It wraps your desktop as 42 callable tools — mouse, keyboard, screen, windows, browser. Any AI that can call functions can use it.
 
 ```
-Your AI (any model)          Clawd Cursor (the glove)
-  "Click the Send button"  ->  find_element + mouse_click
-  "What's on screen?"      ->  desktop_screenshot + read_screen
-  "Type my email"          ->  type_text
-  "Open Chrome to gmail"   ->  open_app + navigate_browser
-  "Read that table"        ->  cdp_read_text
+Your AI → "Click the Send button"  →  find_element + mouse_click
+Your AI → "What's on screen?"      →  desktop_screenshot + read_screen
+Your AI → "Open Chrome to gmail"   →  open_app + navigate_browser
 ```
+
+No app-specific integrations. No per-service API keys. If it's on screen, clawdcursor can interact with it.
 
 ---
 
-## Three Ways to Connect
+## Quick Start
 
-Clawd Cursor is a **tool server**. It doesn't care which AI model drives it.
+**Windows**
+```powershell
+powershell -c "irm https://clawdcursor.com/install.ps1 | iex"
+clawdcursor start
+```
+
+**macOS**
+```bash
+curl -fsSL https://clawdcursor.com/install.sh | bash
+clawdcursor grant     # grant Accessibility + Screen Recording permissions
+clawdcursor start
+```
+
+**Linux**
+```bash
+curl -fsSL https://clawdcursor.com/install.sh | bash
+clawdcursor start
+```
+
+First run auto-detects your AI provider from environment variables. Or be explicit:
+```bash
+clawdcursor start --provider anthropic --api-key sk-ant-...
+clawdcursor start --provider gemini     # GEMINI_API_KEY in env
+clawdcursor start                       # free with Ollama
+```
+
+> See [docs/MACOS-SETUP.md](docs/MACOS-SETUP.md) for macOS permission setup.
+
+---
+
+## Connect
+
+Three modes. Same 42 tools.
 
 ### 1. Built-in Agent (`start`)
-
-Full autonomous agent with built-in LLM pipeline. Send a task, get a result.
-
+Full autonomous agent — send a task, get a result.
 ```bash
 clawdcursor start
-curl http://localhost:3847/task -H "Content-Type: application/json" \
-  -d '{"task": "Open Notepad and write a haiku about the ocean"}'
+curl http://localhost:3847/task -d '{"task": "Open Notepad and write Hello"}'
 ```
 
 ### 2. Tools-Only Server (`serve`)
-
-Exposes 40 desktop tools via REST API. **You** bring the brain — Claude, GPT, Gemini, Llama, a script, anything.
-
+Exposes tools over REST. You bring the AI.
 ```bash
 clawdcursor serve
-
-# Discover available tools (OpenAI function-calling format)
-curl http://localhost:3847/tools
-
-# Execute any tool
-curl http://localhost:3847/execute/desktop_screenshot
-curl http://localhost:3847/execute/mouse_click -d '{"x": 500, "y": 300}'
-curl http://localhost:3847/execute/type_text -d '{"text": "Hello world"}'
+curl http://localhost:3847/tools          # discover tools
+curl http://localhost:3847/execute/mouse_click -d '{"x":500,"y":300}'
 ```
 
 ### 3. MCP Mode (`mcp`)
-
-Runs as an MCP tool server over stdio. Works with Claude Code, Cursor, Windsurf, Zed, or any MCP-compatible client.
-
+MCP stdio server for Claude Code, Cursor, Windsurf, Zed.
 ```jsonc
-// Claude Code: ~/.claude/settings.json
+// ~/.claude/settings.json
 {
   "mcpServers": {
     "clawdcursor": {
@@ -193,279 +118,54 @@ Runs as an MCP tool server over stdio. Works with Claude Code, Cursor, Windsurf,
 }
 ```
 
-### Tool Categories (40 tools)
+---
 
-| Category | Tools | Examples |
+## Tools
+
+42 tools across 6 categories:
+
+| Category | Count | Examples |
 |----------|-------|---------|
-| Perception | 9 | `desktop_screenshot`, `read_screen`, `get_active_window`, `get_focused_element`, `smart_read`, `ocr_read_screen` |
+| Perception | 9 | `desktop_screenshot`, `read_screen`, `get_active_window`, `smart_read`, `ocr_read_screen` |
 | Mouse | 6 | `mouse_click`, `mouse_double_click`, `mouse_drag`, `mouse_scroll` |
 | Keyboard | 5 | `key_press`, `type_text`, `smart_type`, `shortcuts_list`, `shortcuts_execute` |
-| Window/App | 6 | `focus_window`, `open_app`, `get_windows`, `invoke_element` |
-| Browser CDP | 10 | `cdp_connect`, `cdp_click`, `cdp_type`, `cdp_read_text` |
-| Orchestration | 4 | `delegate_to_agent`, `smart_click`, `navigate_browser`, `wait` |
+| Window / App | 6 | `focus_window`, `open_app`, `get_windows`, `invoke_element` |
+| Browser (CDP) | 10 | `cdp_connect`, `cdp_click`, `cdp_type`, `cdp_read_text`, `cdp_evaluate` |
+| Orchestration | 6 | `smart_click`, `navigate_browser`, `delegate_to_agent`, `wait` |
 
 ---
 
-## Quick Start
+## Pipeline
 
-### Windows
+Tasks flow cheapest-first:
 
-```powershell
-git clone https://github.com/AmrDab/clawdcursor.git
-cd clawdcursor
-npm install
-npm run setup      # builds + registers 'clawdcursor' command globally
-
-# Start the full agent
-clawdcursor start
-
-# Or start tools-only (bring your own AI)
-clawdcursor serve
-
-# Or run as MCP server
-clawdcursor mcp
+```
+L1.5  Deterministic flows  →  hardcoded sequences for common tasks (email, app-switch). Zero LLM.
+L2    Skill Cache          →  learned action patterns. Zero LLM.
+L2.5  OCR Reasoner ★      →  OS OCR + cheap text LLM. Handles ~90% of tasks.
+L2.5b A11y Reasoner       →  fallback when OCR unavailable.
+L3    Computer Use         →  vision model. Last resort only.
 ```
 
-### macOS
-
-```bash
-git clone https://github.com/AmrDab/clawdcursor.git
-cd clawdcursor && npm install && npm run setup
-
-# Grant Accessibility permissions to your terminal first!
-# System Settings -> Privacy & Security -> Accessibility -> Add Terminal/iTerm
-
-chmod +x scripts/mac/*.sh scripts/mac/*.jxa
-clawdcursor start
-```
-
-### Linux
-
-```bash
-git clone https://github.com/AmrDab/clawdcursor.git
-cd clawdcursor && npm install && npm run setup
-
-# Linux: browser control via CDP only (no native desktop automation yet)
-clawdcursor start
-```
-
-> See [docs/MACOS-SETUP.md](docs/MACOS-SETUP.md) for the full macOS onboarding guide.
-
-First run will:
-1. Show a desktop control consent warning (one-time)
-2. Scan for AI providers from environment variables and CLI flags
-3. Auto-configure the optimal pipeline
-4. Start the server on `http://localhost:3847`
-
-### Provider Setup
-
-**Free (no API key needed):**
-```bash
-ollama pull qwen2.5:7b   # or any model
-clawdcursor start
-```
-
-**Budget cloud (Gemini 2.5 Flash — recommended):**
-```bash
-echo "GEMINI_API_KEY=AIza..." > .env    # get free key at aistudio.google.com
-clawdcursor start
-```
-
-**Any cloud provider:**
-```bash
-echo "AI_API_KEY=your-key-here" > .env
-clawdcursor doctor    # optional — auto-detects from key format
-clawdcursor start
-```
-
-**Explicit provider:**
-```bash
-clawdcursor start --provider anthropic --api-key sk-ant-...
-clawdcursor start --base-url https://api.example.com/v1 --api-key KEY
-```
-
-| Provider | Key prefix | Vision | Computer Use | Budget |
-|----------|-----------|--------|-------------|--------|
-| Google (Gemini) | `AIza...` | Yes | No | ★ Best value |
-| Anthropic | `sk-ant-` | Yes | Yes | Premium |
-| OpenAI | `sk-` | Yes | No | Standard |
-| Groq | `gsk_` | Yes | No | Fast |
-| Together AI | - | Yes | No | Open models |
-| DeepSeek | `sk-` | Yes | No | Cheapest |
-| Kimi/Moonshot | `sk-` (long) | No | No | |
-| Mistral | - | Yes | No | |
-| xAI (Grok) | `xai-` | Yes | No | |
-| Alibaba/Qwen (DashScope) | `sk-` | Yes | No | |
-| Fireworks | `fw_...` | Yes | No | |
-| Cohere | - | Yes | No | |
-| Perplexity | `pplx-` | Yes | No | |
-| Ollama (local) | - | Auto-detected | No | Free |
-| Any OpenAI-compatible | - | Varies | No | |
+Every action is ground-truth verified after execution. False success is blocked.
 
 ---
 
-## How It Works
-
-### OCR-First Adaptive Pipeline
-
-Every task flows cheapest-first. Learned patterns skip LLM entirely.
-
-```
-                        +-------------+
-                        |  User Task  |
-                        +------+------+
-                               |
-                               v
-                    +--------------------+
-                    | Screenshot Capture  |
-                    | + A11y Tree Scan    |
-                    | (parallel)          |
-                    +--------------------+
-                               |
-                               v
-                  +--------------------------+
-                  |  Adaptive Pattern Lookup  |
-                  |  JSON guides + Skill Cache|
-                  |  — known workflow?        |
-                  +-----+---------------+----+
-                        |               |
-                  Match found      No match
-                        |               |
-                        v               v
-              +-----------------+  +------------------+
-              | Direct Execute  |  |  Tesseract OCR   |
-              | Skip OCR + LLM  |  |  Text + bounding |
-              | (instant, free) |  |  boxes + spatial  |
-              +--------+--------+  |  layout analysis  |
-                       |           +--------+---------+
-                       |                    |
-                       |                    v
-                       |           +------------------+
-                       |           | Text LLM Reason  |
-                       |           | Plan + execute   |
-                       |           | actions per step |
-                       |           +--------+---------+
-                       |                    |
-                       |            +-------+-------+
-                       |            |               |
-                       |         Success      OCR can't read
-                       |            |               |
-                       |            |               v
-                       |            |      +----------------+
-                       |            |      |  Vision LLM    |
-                       |            |      |  Screenshot    |
-                       |            |      |  loop (last    |
-                       |            |      |  resort)       |
-                       |            |      +--------+-------+
-                       |            |               |
-                       |            +-------+-------+
-                       |                    |
-                       v                    v
-              +----------------------------------+
-              |       Learn Pattern              |
-              |  Save to JSON guide + Skill Cache|
-              |  Next time: direct execute (free)|
-              +----------------------------------+
-```
-
-**Adaptive loop:** First run takes 9 steps with LLM. Second run replays the learned pattern in 1 step (free).
-
-**returnPartial:** External agents (OpenClaw, Claude Code) can send `{"returnPartial": true}` — if text LLM fails, control returns to the agent instead of burning tokens on vision. The agent finishes with MCP tools and calls `POST /learn` to teach clawdcursor.
-
-### Model Recommendations (2026)
-
-| Provider | Text model (Stage 2) | Vision model (Stage 3) | Notes |
-|----------|---------------------|----------------------|-------|
-| **Google (Gemini)** | `gemini-2.5-flash` | `gemini-2.5-flash` | **Budget pick** — one model for both, 1M ctx |
-| Anthropic | `claude-haiku-4-5` | `claude-sonnet-4-20250514` | Best accuracy, Computer Use support |
-| OpenAI | `gpt-4o-mini` | `gpt-4o` | Reliable, widely supported |
-| Groq | `llama-3.3-70b-versatile` | `llama-3.2-90b-vision-preview` | Fastest inference |
-| DeepSeek | `deepseek-chat` | `deepseek-chat` | Cheapest reasoning |
-| Ollama | *(auto-detected)* | *(auto-detected)* | Free, runs locally |
-
-### Cost Comparison (approximate, per 1K tasks)
-
-| Provider | Stage 2 cost | Stage 3 cost | Best for |
-|----------|-------------|-------------|---------|
-| Ollama (local) | $0 | $0 | Privacy, offline |
-| Google Gemini 2.5 Flash | ~$0.15 | ~$0.60 | Budget cloud |
-| DeepSeek Chat | ~$0.14 | ~$0.14 | Cheapest cloud |
-| Groq Llama | ~$0.59 | ~$2.70 | Speed |
-| OpenAI GPT-4o | ~$0.15 | ~$2.50 | Reliability |
-| Anthropic Claude | ~$0.80 | ~$15 | Accuracy, Computer Use |
-
-> **Tip:** Configure Gemini 2.5 Flash for both text and vision roles — it's the best single-model budget option. One API key, one model, handles everything.
-
-### Action Verification
-
-Every action is verified after execution:
-- **Type actions**: Reads back the focused element's text content
-- **Click actions**: Checks if window/focus changed as expected
-- **Key presses**: Verifies the expected state change occurred
-- **CDP actions**: Re-reads DOM to confirm changes
-- **Task completion**: Ground-truth check reads actual content (Notepad text, email window state, etc.)
-
-If verification fails, the agent retries with a different approach instead of reporting false success.
-
-### No-Progress Detection
-
-If the LLM repeats the same action 3+ times in an 8-step window, it's blocked and forced to try something different. Combined with the premature-done blocker (requires evidence of completion for write tasks), this prevents the two most common failure modes: infinite loops and premature success.
-
----
-
-## API Endpoints
+## API
 
 `http://localhost:3847`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Web dashboard UI |
-| `/tools` | GET | List all 40 tools (OpenAI function-calling format) |
-| `/execute/:name` | POST | Execute a tool by name |
-| `/task` | POST | Submit a task: `{"task": "Open Chrome"}` |
-| `/status` | GET | Agent state and current task |
-| `/task-logs` | GET | Recent task summaries (structured JSONL) |
-| `/task-logs/current` | GET | Current task's step-by-step log |
-| `/report` | POST | Submit an error report (opt-in) |
-| `/logs` | GET | Last 200 console log entries |
+| `/tools` | GET | All tools in OpenAI function-calling format |
+| `/execute/:name` | POST | Execute a tool |
+| `/task` | POST | Submit a plain-English task |
+| `/status` | GET | Agent state |
 | `/screenshot` | GET | Current screen as PNG |
-| `/action` | POST | Direct action execution (LLM-space coords) |
-| `/confirm` | POST | Approve/reject pending safety action |
-| `/abort` | POST | Stop the current task |
-| `/favorites` | GET/POST/DELETE | Saved command favorites |
-| `/stop` | POST | Graceful server shutdown |
-| `/health` | GET | Server health + version |
-
----
-
-## Architecture
-
-```
-                     Any AI Model
-                    (Claude, GPT, Gemini, Llama, scripts, etc.)
-                          |
-            +-------------+-------------+
-            |             |             |
-        REST API      MCP stdio    Built-in Agent
-        (serve)        (mcp)        (start)
-            |             |             |
-            +-------------+-------------+
-                          |
-               Clawd Cursor Tool Server
-               40 tools, single definition
-                          |
-        +---------+-------+-------+---------+
-        |         |       |       |         |
-    Perception  Mouse  Keyboard  Window  Browser
-    screenshot  click  key_press focus   cdp_click
-    read_screen drag   type_text open    cdp_type
-    a11y_tree   scroll           switch  cdp_read
-                          |
-               Native Desktop Layer
-          nut-js + PowerShell/JXA/AT-SPI + Playwright
-                          |
-                    Your Desktop
-```
+| `/task-logs` | GET | Recent task logs (JSONL) |
+| `/confirm` | POST | Approve/reject a safety-gated action |
+| `/abort` | POST | Stop current task |
+| `/health` | GET | Version + health check |
 
 ---
 
@@ -474,54 +174,54 @@ If the LLM repeats the same action 3+ times in an 8-step window, it's blocked an
 | Tier | Actions | Behavior |
 |------|---------|----------|
 | Auto | Navigation, reading, opening apps | Runs immediately |
-| Preview | Typing, form filling | Logs before executing |
+| Preview | Typing, form filling | Logged before executing |
 | Confirm | Sending messages, deleting, purchases | Pauses for approval |
 
-First run shows a desktop control consent warning. Dangerous key combos (Alt+F4, Ctrl+Alt+Del) are blocked. Server binds to localhost only.
+Server binds to `localhost` only. Dangerous key combos blocked. Consent required on first run.
 
-## CLI Commands
+---
+
+## CLI
 
 ```
-clawdcursor start        Start the full agent (built-in LLM pipeline)
-clawdcursor serve        Start tools-only server (no built-in LLM)
-clawdcursor mcp          Run as MCP tool server over stdio
-clawdcursor doctor       Diagnose and auto-configure
-clawdcursor task <t>     Send a task to running agent
-clawdcursor report       Send an error report (opt-in, redacted)
-clawdcursor dashboard    Open the web dashboard
-clawdcursor install      Set up API key and configure pipeline
-clawdcursor uninstall    Remove all config and data
-clawdcursor stop         Stop the running server
-clawdcursor kill         Force stop
+clawdcursor start        Full agent (built-in LLM pipeline)
+clawdcursor serve        Tools-only REST server
+clawdcursor mcp          MCP stdio server
+clawdcursor doctor       Diagnose and configure
+clawdcursor grant        Grant macOS permissions (interactive)
+clawdcursor task <t>     Send task to running agent
+clawdcursor stop         Stop server
+clawdcursor dashboard    Open web dashboard
 
 Options:
-  --port <port>          API port (default: 3847)
-  --provider <provider>  anthropic|openai|ollama|groq|together|deepseek|kimi|gemini|mistral|xai|qwen|fireworks|cohere|perplexity|...
-  --model <model>        Override vision model
-  --api-key <key>        AI provider API key
-  --base-url <url>       Custom API endpoint
-  --debug                Save screenshots to debug/ folder
+  --port <port>          Default: 3847
+  --provider <name>      anthropic | openai | gemini | groq | ollama | deepseek | ...
+  --model <model>        Override model
+  --api-key <key>        Provider API key
+  --base-url <url>       OpenAI-compatible endpoint
+  --accept               Skip consent prompt (non-interactive)
 ```
+
+---
 
 ## Platform Support
 
-| Platform | UI Automation | OCR | Browser (CDP) | Status |
-|----------|---------------|-----|---------------|--------|
-| **Windows** (x64/ARM64) | PowerShell + .NET UI Automation | Windows.Media.Ocr | Chrome/Edge | Full support |
-| **macOS** (Intel/Apple Silicon) | JXA + System Events | Apple Vision framework | Chrome/Edge | Full support |
-| **Linux** (x64/ARM64) | AT-SPI (planned) | Tesseract OCR | Chrome/Edge | Browser + OCR |
+| Platform | UI Automation | OCR | Browser |
+|----------|---------------|-----|---------|
+| **Windows** x64/ARM64 | PowerShell + UI Automation | Windows.Media.Ocr | Chrome / Edge |
+| **macOS** Intel/Apple Silicon | JXA + System Events | Apple Vision | Chrome / Edge |
+| **Linux** x64/ARM64 | AT-SPI (planned) | Tesseract | Chrome / Edge |
 
 ## Prerequisites
 
-- **Node.js 20+** (x64 or ARM64)
-- **Windows**: PowerShell (included)
-- **macOS 10.15+**: Accessibility permissions granted, Xcode CLI tools (`xcode-select --install`)
-- **Linux**: `tesseract-ocr` and `python3` for OCR (`sudo apt install tesseract-ocr`)
-- **AI API Key** — optional. Works offline with Ollama or tools-only mode.
+- **Node.js 20+**
+- **macOS**: Xcode CLI tools — `xcode-select --install`
+- **Linux**: `sudo apt install tesseract-ocr`
+- **AI key**: optional — works offline with Ollama
 
 ## Tech Stack
 
-TypeScript - Node.js - @nut-tree-fork/nut-js - Playwright - sharp - Express - MCP SDK - Zod - Any OpenAI-compatible API - Anthropic Computer Use - Windows UI Automation - macOS Accessibility (JXA) - Chrome DevTools Protocol
+TypeScript · Node.js · nut-js · Playwright · sharp · Express · MCP SDK · Zod
 
 ## License
 
