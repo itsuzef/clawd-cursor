@@ -62,6 +62,7 @@ PATTERNS:
 - Codex / AI chat apps: click the input box → type your message → key "Return" to send. All three in one batched response.
 - Switch apps: key "super+tab" to cycle, or click the Dock icon.
 - Recovery: dialog → key "Escape", wrong window → click correct window, app frozen → key "super+q" + reopen.
+- Email: Cmd+N new message → To auto-focused → type address → Tab → CHECK which field you landed in (Cc? Bcc? Subject?) → Tab past any intermediate fields → type subject → Tab → type body → Shift+Cmd+D to send. Tab order varies by app — ALWAYS verify field labels after each Tab.
 
 SCROLLING: NEVER use mouse scroll with small amounts. For scrolling web pages use keyboard: PageDown (or fn+Down on Mac keyboards) for full page, Space for half page, or arrow keys. Mouse scroll is unreliable on modern infinite-scroll sites.
 SITE SHORTCUTS (use these instead of clicking — much faster and more reliable):
@@ -1227,11 +1228,13 @@ Fix the specific missed step. Do NOT repeat steps that already succeeded.`,
       switch (action) {
         case 'left_click': {
           const [x, y] = this.scale(coordinate!);
-          // Block clicks in the taskbar zone (bottom 60px)
+          // Block clicks in the taskbar/Dock zone (bottom edge)
+          // macOS Dock is ~50px; Windows taskbar is ~48-60px. Use smaller zone on macOS.
           const screenSize = this.desktop.getScreenSize();
-          if (y > screenSize.height - 60) {
-            console.warn(`   [CU] ⚠️ BLOCKED: click at y=${y} is in taskbar zone`);
-            return { description: `BLOCKED: click in taskbar zone at (${x},${y}). Use keyboard shortcuts to switch apps.` };
+          const dockZone = IS_MAC ? 30 : 60;
+          if (y > screenSize.height - dockZone) {
+            console.warn(`   [CU] ⚠️ BLOCKED: click at y=${y} is in ${IS_MAC ? 'Dock' : 'taskbar'} zone`);
+            return { description: `BLOCKED: click in ${IS_MAC ? 'Dock' : 'taskbar'} zone at (${x},${y}). Use keyboard shortcuts to switch apps.` };
           }
           await this.desktop.mouseClick(x, y);
           this.lastMouseX = x; this.lastMouseY = y;

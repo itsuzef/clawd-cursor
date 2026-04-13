@@ -173,7 +173,7 @@ export class SkillCache {
             if (step.text) {
               await a11y.writeClipboard(step.text);
               await new Promise(r => setTimeout(r, 50));
-              await desktop.keyPress('ctrl+v');
+              await desktop.keyPress(process.platform === 'darwin' ? 'cmd+v' : 'ctrl+v');
               await new Promise(r => setTimeout(r, 100));
               a11y.invalidateCache();
             }

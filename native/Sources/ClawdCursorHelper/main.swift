@@ -106,7 +106,25 @@ struct UIElement: Codable {
 
 class ClawdCursorHelper {
     static let shared = ClawdCursorHelper()
-    
+
+    /// Map a character to its macOS virtual keycode (US ANSI layout).
+    /// Covers a-z, 0-9, and common symbols — enough for all keyboard shortcuts.
+    static func keycodeForCharacter(_ scalar: Unicode.Scalar) -> CGKeyCode {
+        let c = Character(scalar).lowercased()
+        let map: [String: CGKeyCode] = [
+            "a": 0x00, "s": 0x01, "d": 0x02, "f": 0x03, "h": 0x04, "g": 0x05,
+            "z": 0x06, "x": 0x07, "c": 0x08, "v": 0x09, "b": 0x0B, "q": 0x0C,
+            "w": 0x0D, "e": 0x0E, "r": 0x0F, "y": 0x10, "t": 0x11, "1": 0x12,
+            "2": 0x13, "3": 0x14, "4": 0x15, "6": 0x16, "5": 0x17, "=": 0x18,
+            "9": 0x19, "7": 0x1A, "-": 0x1B, "8": 0x1C, "0": 0x1D, "]": 0x1E,
+            "o": 0x1F, "u": 0x20, "[": 0x21, "i": 0x22, "p": 0x23, "l": 0x25,
+            "j": 0x26, "'": 0x27, "k": 0x28, ";": 0x29, "\\": 0x2A, ",": 0x2B,
+            "/": 0x2C, "n": 0x2D, "m": 0x2E, ".": 0x2F, "`": 0x32,
+            "+": 0x18, "*": 0x43,  // + maps to = key, * maps to numpad multiply
+        ]
+        return map[c] ?? 0x09 // fallback to 'v' keycode as safe default
+    }
+
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = [.sortedKeys]
@@ -284,9 +302,17 @@ class ClawdCursorHelper {
         }
     }
     
+    /// Safely extract a Double from AnyCodable that may contain Int or Double
+    private func asDouble(_ val: Any?) -> Double? {
+        if let d = val as? Double { return d }
+        if let i = val as? Int { return Double(i) }
+        if let s = val as? String { return Double(s) }
+        return nil
+    }
+
     func click(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let x = params?["x"]?.value as? Double,
-              let y = params?["y"]?.value as? Double else {
+        guard let x = asDouble(params?["x"]?.value),
+              let y = asDouble(params?["y"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing 'x' or 'y' parameter"))
         }
         
@@ -312,8 +338,8 @@ class ClawdCursorHelper {
     }
 
     func moveMouse(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let x = params?["x"]?.value as? Double,
-              let y = params?["y"]?.value as? Double else {
+        guard let x = asDouble(params?["x"]?.value),
+              let y = asDouble(params?["y"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing 'x' or 'y' parameter"))
         }
         let point = CGPoint(x: x, y: y)
@@ -324,10 +350,10 @@ class ClawdCursorHelper {
     }
 
     func dragMouse(id: Int, params: [String: AnyCodable]?) -> JsonRpcResponse {
-        guard let startX = params?["startX"]?.value as? Double,
-              let startY = params?["startY"]?.value as? Double,
-              let endX = params?["endX"]?.value as? Double,
-              let endY = params?["endY"]?.value as? Double else {
+        guard let startX = asDouble(params?["startX"]?.value),
+              let startY = asDouble(params?["startY"]?.value),
+              let endX = asDouble(params?["endX"]?.value),
+              let endY = asDouble(params?["endY"]?.value) else {
             return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Missing drag coordinates"))
         }
 
@@ -414,13 +440,16 @@ class ClawdCursorHelper {
         case "f11": keyCode = 0x67
         case "f12": keyCode = 0x6F
         default:
-            // For single characters, use character-based approach
-            if key.count == 1 {
-                return typeText(id: id, params: ["text": AnyCodable(key)])
+            // For single characters: look up keycode from character, or use unicode event.
+            // CRITICAL: modifiers must NOT be discarded — cmd+v, cmd+n, shift+cmd+d all depend on this.
+            if key.count == 1, let scalar = key.unicodeScalars.first {
+                // Try common ASCII keycode mapping first (covers a-z, 0-9, symbols)
+                keyCode = Self.keycodeForCharacter(scalar)
+            } else {
+                return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Unknown key: \(key)"))
             }
-            return JsonRpcResponse(id: id, result: nil, error: JsonRpcError(code: -32602, message: "Unknown key: \(key)"))
         }
-        
+
         var flags: CGEventFlags = []
         for mod in modifiers {
             switch mod.lowercased() {
@@ -431,7 +460,7 @@ class ClawdCursorHelper {
             default: break
             }
         }
-        
+
         let source = CGEventSource(stateID: .hidSystemState)
         if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true) {
             keyDown.flags = flags
@@ -442,7 +471,7 @@ class ClawdCursorHelper {
             keyUp.flags = flags
             keyUp.post(tap: .cghidEventTap)
         }
-        
+
         return JsonRpcResponse(id: id, result: AnyCodable(["success": true, "key": key, "modifiers": modifiers]), error: nil)
     }
 

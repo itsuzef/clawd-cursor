@@ -623,8 +623,24 @@ export class NativeDesktop extends EventEmitter {
 
   async typeText(text: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.type(text);
+    if (IS_MAC) {
+      // Use System Events for typing — same reason as keyPress:
+      // CGEvent from helper subprocess is silently blocked by TCC.
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      try {
+        await execFileAsync('osascript', ['-e',
+          `tell application "System Events" to keystroke "${escaped}"`
+        ], { timeout: 10000 });
+      } catch (err: any) {
+        console.warn(`   ⌨️  macOS type failed: ${err.message?.substring(0, 100)}`);
+        // Fallback: try helper anyway
+        if (this.helper) {
+          await this.helper.type(text);
+        }
+      }
       return;
     }
     await keyboard.type(text);
@@ -633,20 +649,13 @@ export class NativeDesktop extends EventEmitter {
 
   async keyPress(keyCombo: string): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      if (keyCombo === '+') {
-        await this.helper.type('+');
-        return;
-      }
-      const parts = keyCombo.split('+').map(k => k.trim()).filter(Boolean);
-      const key = parts[parts.length - 1] || keyCombo;
-      const modifiers = parts.slice(0, -1).map(k => {
-        const lower = k.toLowerCase();
-        if (lower === 'super') return 'cmd';
-        if (lower === 'control') return 'ctrl';
-        return lower;
-      });
-      await this.helper.pressKey(key, modifiers);
+    if (IS_MAC) {
+      // macOS: use System Events via osascript for reliable keystroke delivery.
+      // CGEvent.post() from a spawned helper is silently blocked by TCC on macOS 15+
+      // because the helper inherits the parent's TCC context but CGEvent posting
+      // requires the calling process itself to be trusted for input.
+      // System Events is the proven, reliable method for keyboard automation on macOS.
+      await this.macKeyPress(keyCombo);
       return;
     }
 
@@ -688,6 +697,82 @@ export class NativeDesktop extends EventEmitter {
       }
     }
     console.log(`   ⌨️  Key press: ${keyCombo}`);
+  }
+
+  /**
+   * macOS keyboard input via System Events (osascript).
+   * Reliable because System Events has its own TCC grant for input,
+   * unlike CGEvent.post() from a spawned child process.
+   */
+  private async macKeyPress(keyCombo: string): Promise<void> {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    if (keyCombo === '+') {
+      await execFileAsync('osascript', ['-e', 'tell application "System Events" to keystroke "+"']);
+      return;
+    }
+
+    const parts = keyCombo.split('+').map(k => k.trim()).filter(Boolean);
+    const key = parts[parts.length - 1] || keyCombo;
+    const mods = parts.slice(0, -1).map(k => k.toLowerCase());
+
+    // Map modifier names to System Events syntax
+    const modUsing: string[] = [];
+    for (const m of mods) {
+      if (m === 'cmd' || m === 'command' || m === 'super') modUsing.push('command down');
+      else if (m === 'shift') modUsing.push('shift down');
+      else if (m === 'alt' || m === 'option') modUsing.push('option down');
+      else if (m === 'ctrl' || m === 'control') modUsing.push('control down');
+    }
+
+    // Map special key names to System Events key code actions
+    const specialKeys: Record<string, string> = {
+      'return': 'key code 36', 'enter': 'key code 36',
+      'tab': 'key code 48',
+      'escape': 'key code 53', 'esc': 'key code 53',
+      'delete': 'key code 51', 'backspace': 'key code 51',
+      'space': 'key code 49',
+      'left': 'key code 123', 'right': 'key code 124',
+      'down': 'key code 125', 'up': 'key code 126',
+      'f1': 'key code 122', 'f2': 'key code 120', 'f3': 'key code 99',
+      'f4': 'key code 118', 'f5': 'key code 96', 'f6': 'key code 97',
+      'f7': 'key code 98', 'f8': 'key code 100', 'f9': 'key code 101',
+      'f10': 'key code 109', 'f11': 'key code 103', 'f12': 'key code 111',
+      'pageup': 'key code 116', 'pagedown': 'key code 121',
+      'home': 'key code 115', 'end': 'key code 119',
+      'forwarddelete': 'key code 117',
+    };
+
+    let script: string;
+    const special = specialKeys[key.toLowerCase()];
+    if (special) {
+      // Special key — use key code
+      if (modUsing.length > 0) {
+        script = `tell application "System Events" to ${special} using {${modUsing.join(', ')}}`;
+      } else {
+        script = `tell application "System Events" to ${special}`;
+      }
+    } else if (key.length === 1) {
+      // Single character — use keystroke
+      const escaped = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      if (modUsing.length > 0) {
+        script = `tell application "System Events" to keystroke "${escaped}" using {${modUsing.join(', ')}}`;
+      } else {
+        script = `tell application "System Events" to keystroke "${escaped}"`;
+      }
+    } else {
+      // Unknown key — try keystroke as-is
+      const escaped = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      script = `tell application "System Events" to keystroke "${escaped}"`;
+    }
+
+    try {
+      await execFileAsync('osascript', ['-e', script], { timeout: 5000 });
+    } catch (err: any) {
+      console.warn(`   ⌨️  macOS key press failed: ${err.message?.substring(0, 100)}`);
+    }
   }
 
   async executeMouseAction(action: MouseAction): Promise<void> {

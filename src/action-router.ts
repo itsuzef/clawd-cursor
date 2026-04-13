@@ -789,7 +789,7 @@ export class ActionRouter {
       }
 
       // Ctrl+L to focus address bar, then type URL
-      await this.desktop.keyPress('ctrl+l');
+      await this.desktop.keyPress(process.platform === 'darwin' ? 'cmd+l' : 'ctrl+l');
       await this.delay(300);
       await this.desktop.typeText(fullUrl);
       await this.delay(100);

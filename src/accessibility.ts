@@ -30,6 +30,8 @@ const MAX_DEPTH = 8; // raised to 8 — Electron/WebView2 apps (Outlook olk) nes
 
 /** Cached shell availability (macOS only — Windows uses psRunner) */
 let macShellAvailable: boolean | null = null;
+let macShellCheckedAt = 0;
+const MAC_SHELL_TTL = 30000; // Re-check every 30s if previously denied (permission may be granted mid-session)
 
 // ── Linux AT-SPI backend ────────────────────────────────────────────────────
 // Linux AT-SPI backend is planned. Currently returns safe empty results for
@@ -108,27 +110,39 @@ export class AccessibilityBridge {
     if (IS_WIN) return true; // PSRunner handles availability
     if (IS_LINUX) return false; // AT-SPI bridge not yet implemented
 
-    if (macShellAvailable !== null) return macShellAvailable;
+    // If previously granted, trust it. If denied, re-check periodically (user may grant mid-session).
+    if (macShellAvailable === true) return true;
+    if (macShellAvailable === false && (Date.now() - macShellCheckedAt) < MAC_SHELL_TTL) return false;
 
     try {
+      // Must test actual window access — processes.length works WITHOUT assistive access,
+      // but accessing windows/UI elements requires it. This catches the false-positive
+      // where osascript runs fine but all A11y queries return empty.
       await execFileAsync(
         'osascript',
-        ['-l', 'JavaScript', '-e', 'Application("System Events").processes.length; true'],
+        ['-l', 'JavaScript', '-e',
+          'var se = Application("System Events"); ' +
+          'var p = se.processes.whose({frontmost: true})[0]; ' +
+          'p.windows.length; true'],
         { timeout: 5000 },
       );
       macShellAvailable = true;
+      macShellCheckedAt = Date.now();
       console.log('✅ Accessibility bridge ready (osascript)');
     } catch (err: any) {
       macShellAvailable = false;
-      const isAuthError = err.stderr?.includes('not authorized') || err.message?.includes('not authorized');
+      macShellCheckedAt = Date.now();
+      const msg = (err.stderr || '') + (err.message || '');
+      const isAuthError = msg.includes('not authorized') || msg.includes('not allowed assistive access') || msg.includes('assistive');
       if (isAuthError) {
         console.error(
-          '❌ Accessibility: not authorized to control System Events.\n' +
+          '❌ Accessibility: osascript is not allowed assistive access.\n' +
           '   → System Settings → Privacy & Security → Accessibility\n' +
-          '   → Add your terminal app and try again.',
+          '   → Enable your terminal app (Terminal.app / iTerm / etc.)\n' +
+          '   A11y tree will be unavailable — falling back to OCR-only mode.',
         );
       } else {
-        console.error('❌ osascript not available. Accessibility bridge disabled.');
+        console.error(`❌ osascript not available: ${msg.slice(0, 200)}\n   Accessibility bridge disabled.`);
       }
     }
     return macShellAvailable!;
