@@ -561,23 +561,16 @@ export class NativeDesktop extends EventEmitter {
 
   async mouseClick(x: number, y: number, button: number = 1): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.click(x, y, { button: button === 4 ? 'right' : 'left' });
-      return;
-    }
+    // On macOS: skip the Swift helper (CGEvent blocked by TCC), use nut-js directly.
+    // nut-js mouse events ARE delivered on macOS (unlike CGEvent from child processes).
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     const btn = this.mapButton(button);
     await mouse.click(btn);
-    console.log(`   🖱️  Click at (${x}, ${y})`);
   }
 
   async mouseDoubleClick(x: number, y: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.click(x, y, { button: 'left', clickCount: 2 });
-      return;
-    }
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     await mouse.doubleClick(Button.LEFT);
@@ -586,22 +579,13 @@ export class NativeDesktop extends EventEmitter {
 
   async mouseRightClick(x: number, y: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.click(x, y, { button: 'right' });
-      return;
-    }
     await mouse.setPosition(new Point(x, y));
     await this.delay(50);
     await mouse.rightClick();
-    console.log(`   🖱️  Right-click at (${x}, ${y})`);
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.moveMouse(x, y);
-      return;
-    }
     await mouse.setPosition(new Point(x, y));
   }
 
@@ -865,10 +849,7 @@ export class NativeDesktop extends EventEmitter {
 
   async mouseDrag(sx: number, sy: number, ex: number, ey: number): Promise<void> {
     if (!this.connected) throw new Error('Not connected');
-    if (IS_MAC && this.helper) {
-      await this.helper.dragMouse(sx, sy, ex, ey);
-      return;
-    }
+    // nut-js drag works on all platforms including macOS
     console.log(`   🖱️  Drag (${sx},${sy}) → (${ex},${ey})`);
 
     await mouse.setPosition(new Point(sx, sy));
