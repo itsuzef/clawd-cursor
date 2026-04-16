@@ -10,8 +10,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/AmrDab/clawdcursor/stargazers"><img src="https://img.shields.io/github/stars/AmrDab/clawdcursor?style=for-the-badge&logo=github&color=eab308&logoColor=white" alt="GitHub stars"></a>
+  <a href="https://github.com/AmrDab/clawdcursor/releases/latest"><img src="https://img.shields.io/github/v/release/AmrDab/clawdcursor?style=for-the-badge&color=22c55e&label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/AmrDab/clawdcursor?style=for-the-badge&color=a855f7" alt="MIT license"></a>
   <a href="https://discord.gg/UGBWKvmj"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://clawdcursor.com"><img src="https://img.shields.io/badge/Website-clawdcursor.com-22c55e?style=for-the-badge" alt="Website"></a>
+  <a href="https://clawdcursor.com"><img src="https://img.shields.io/badge/Website-clawdcursor.com-0ea5e9?style=for-the-badge" alt="Website"></a>
 </p>
 
 <p align="center">
@@ -27,23 +30,16 @@
 
 ## What's New in v0.8.0 — V2 Architecture
 
-The 7-layer legacy pipeline has been replaced with a clean 3-layer vision-first design. Opt in with `--v2`:
+A vision-first alternative to the legacy cascade, opt in with `--v2`:
 
 ```bash
 clawdcursor start --v2
 ```
 
-- **Ground-truth verifier**: 6 independent signals (pixel diff, window state, focus change, OCR delta, task-type assertions, error-pattern detection). Independent of the agent — can't be fooled by "done" self-reports. Caught false positives in testing where the legacy pipeline reported UNVERIFIED_SUCCESS.
-- **Single vision-first agent loop**: screenshot → tool call → new screenshot → repeat. 6-rule system prompt (down from 36). Model-agnostic: Anthropic, OpenAI, OpenRouter, anything with vision + tool calls.
-- **PlatformAdapter abstraction**: all platform-specific code moved into `src/v2/platform/{macos,windows,linux}.ts`. Replaces 142+ scattered `if (IS_MAC)` branches across 34 files. Adding a new OS is now a single file.
-- **Legacy pipeline unchanged**: `clawdcursor start` (no `--v2`) still works exactly as before. Zero breaking changes.
-
-### Prior in v0.7.14 (still shipped)
-
-- macOS keystrokes fixed: `keyPress()` routes through `osascript` + System Events (TCC-compatible). Cmd+V, Cmd+N, Shift+Cmd+D all work.
-- Platform-aware shortcuts: `Cmd` on macOS, `Ctrl` on Windows/Linux throughout.
-- Unified permission checking across `doctor`, `status`, `readiness`.
-- Node.js v25 `EINVAL`/`setTypeOfService` crash caught.
+- **Ground-truth verifier** — six independent signals (pixel diff, window state, focus change, OCR delta, task-type assertions, error-pattern detection). Independent of the agent, so it can't be fooled by "done" self-reports. Caught false positives in testing where the legacy pipeline reported `UNVERIFIED_SUCCESS`.
+- **Single vision-first agent loop** — screenshot → tool call → new screenshot → repeat. 6-rule system prompt (down from 36). Works with Anthropic, OpenAI, OpenRouter, or anything with vision + tool calls.
+- **PlatformAdapter abstraction** — platform-specific code now lives in `src/v2/platform/{macos,windows,linux}.ts` behind one interface. Replaces 142+ scattered `if (IS_MAC)` branches across 34 files. Adding a new OS is a single file.
+- **Legacy pipeline untouched** — `clawdcursor start` (no flag) behaves exactly as before. Zero breaking changes.
 
 Full history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -147,34 +143,36 @@ MCP stdio server for Claude Code, Cursor, Windsurf, Zed.
 
 ## Pipeline
 
-Two pipelines ship in parallel. Pick one with `--v2` (opt-in) or use the legacy default.
+Two pipelines ship side by side. Same 42 tools, same MCP interface — only the decision-maker differs.
 
-### V2 (recommended, `--v2`)
+### V2 — vision-first (`--v2`)
 
-Three layers. Each has one job.
-
-```
-Router       →  regex shortcuts for trivial tasks ("open Safari"). Zero LLM.
-VisionAgent  →  one loop: screenshot → tool call → new screenshot. Vision-first.
-                16 tools, 6-rule prompt, model-agnostic.
-Verifier     →  6 independent signals check ground truth after the agent claims "done".
-                Pixel diff, window state, focus, OCR delta, task assertions, anti-patterns.
-                Cannot be fooled by LLM self-reports.
-```
-
-### Legacy (default, no flag)
-
-Cheapest-first cascade. Kept for compatibility.
+Three stages, each does one thing:
 
 ```
-L1.5  Deterministic flows  →  hardcoded sequences (email, app-switch). Zero LLM.
-L2    Skill Cache          →  learned action patterns. Zero LLM.
-L2.5  OCR Reasoner         →  OS OCR + cheap text LLM. Handles ~90% of tasks.
-L2.5b A11y Reasoner        →  fallback when OCR unavailable.
-L3    Computer Use         →  vision model. Last resort only.
+┌──────────┐     ┌────────────────┐     ┌──────────────────────┐
+│  Router  │  →  │  VisionAgent   │  →  │  GroundTruthVerifier │
+│          │     │                │     │                      │
+│  regex   │     │  screenshot    │     │  pixel diff · window │
+│  shortcut│     │  → tool call   │     │  focus · OCR delta   │
+│  zero    │     │  → screenshot  │     │  task assertions     │
+│  LLM     │     │  → repeat      │     │  anti-patterns       │
+└──────────┘     └────────────────┘     └──────────────────────┘
 ```
 
-Both pipelines share the same 42 tools and the same MCP interface.
+Router handles trivial tasks ("open Safari") without a model. Everything else hits the VisionAgent (16 tools, 6-rule prompt, model-agnostic). The Verifier runs six independent checks against the screen *after* the agent claims done — so "done" has to be true, not just asserted.
+
+### Legacy — text-first cascade (default, no flag)
+
+Cheapest-first. Kept for backwards compatibility.
+
+```
+L1.5   Deterministic flows  →  hardcoded sequences. Zero LLM.
+L2     Skill Cache          →  learned action patterns. Zero LLM.
+L2.5   OCR Reasoner         →  OS OCR + cheap text LLM. ~90% of tasks.
+L2.5b  A11y Reasoner        →  fallback when OCR is unavailable.
+L3     Computer Use         →  vision model. Last resort.
+```
 
 ---
 
@@ -234,18 +232,20 @@ Options:
 
 ## Platform Support
 
+Platform-specific code lives in `src/v2/platform/{macos,windows,linux}.ts` behind one `PlatformAdapter` interface — business logic never reads `process.platform`.
+
 | Platform | UI Automation | OCR | Browser |
 |----------|---------------|-----|---------|
-| **Windows** x64/ARM64 | PowerShell + UI Automation | Windows.Media.Ocr | Chrome / Edge |
-| **macOS** Intel/Apple Silicon | JXA + System Events | Apple Vision | Chrome / Edge |
-| **Linux** x64/ARM64 | AT-SPI (planned) | Tesseract | Chrome / Edge |
+| **Windows** x64 / ARM64 | PowerShell + UI Automation | Windows.Media.Ocr | Chrome / Edge |
+| **macOS** Intel / Apple Silicon | JXA + System Events | Apple Vision | Chrome / Edge |
+| **Linux** x64 / ARM64 | AT-SPI | Tesseract | Chrome / Edge |
 
 ## Prerequisites
 
-- **Node.js 20+**
-- **macOS**: Xcode CLI tools: `xcode-select --install`
-- **Linux**: `sudo apt install tesseract-ocr`
-- **AI key**: optional, works offline with Ollama
+- Node.js 20+
+- **macOS** — Xcode CLI tools: `xcode-select --install`, then `clawdcursor grant` for Accessibility + Screen Recording
+- **Linux** — `sudo apt install tesseract-ocr`
+- **AI key** — optional; works fully offline with Ollama
 
 ## Tech Stack
 
@@ -253,7 +253,7 @@ TypeScript · Node.js · nut-js · Playwright · sharp · Express · MCP SDK · 
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
 
 ---
 
