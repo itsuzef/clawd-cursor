@@ -3,23 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Clawd Cursor v0.7.14</title>
-  <meta name="description" content="Clawd Cursor v0.7.14: 42 desktop tools, 3 transport modes, MCP support. Works with any AI.">
-  <meta property="og:title" content="Clawd Cursor v0.7.14">
-  <meta property="og:description" content="42 desktop tools. REST, MCP, or CLI agent. Any AI model.">
+  <title>Clawd Cursor v0.8.0</title>
+  <meta name="description" content="Clawd Cursor v0.8.0: vision-first agent, ground-truth verifier, 42 desktop tools, OS-agnostic via PlatformAdapter. Any AI, any desktop.">
+  <meta property="og:title" content="Clawd Cursor v0.8.0">
+  <meta property="og:description" content="V2 architecture: vision-first agent + ground-truth verifier. OS-agnostic. 42 tools. REST, MCP, or CLI. Any AI model.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://clawdcursor.com/v0.7.14">
+  <meta property="og:url" content="https://clawdcursor.com/">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <meta name="theme-color" content="#09090b">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
   <!--
     AGENT-READABLE SUMMARY
-    clawdcursor v0.7.14: desktop automation tool server
+    clawdcursor v0.8.0: OS-agnostic desktop automation tool server
 
     Install: powershell -c "irm https://clawdcursor.com/install.ps1 | iex" (Windows)
              curl -fsSL https://clawdcursor.com/install.sh | bash (macOS/Linux)
-    Commands: consent, doctor, start, mcp, task "..."
+    Commands: consent, doctor, grant, start, start --v2, serve, mcp, task "..."
 
     Transport: start (REST :3847), mcp (stdio), /execute/{tool} (HTTP)
 
@@ -27,9 +27,13 @@
       type_text, key_press, read_screen, get_windows, focus_window, find_element,
       clipboard, cdp_*, smart_read/click/type, shortcuts_*, open_app, wait
 
-    Pipeline: SnapshotBuilder (free OCR+A11y) → TextNavigator (cheap LLM) → VisionFiller (last resort)
-    Providers (13): Anthropic, OpenAI, Groq, Together, DeepSeek, Kimi, Gemini, etc.
-    macOS: System Events keyboard, ClawdCursorHost for TCC, clawdcursor grant
+    V2 pipeline (--v2): Router (regex) → VisionAgent (screenshot loop) → GroundTruthVerifier (6 signals)
+    Legacy pipeline (default): SnapshotBuilder (free OCR+A11y) → TextNavigator (cheap LLM) → VisionFiller (last resort)
+
+    OS-agnostic: src/v2/platform/{macos,windows,linux}.ts — one PlatformAdapter interface,
+      one file per OS. No `if (IS_MAC)` branches in business logic.
+    Providers (13+): Anthropic, OpenAI, Groq, Together, DeepSeek, Kimi, Gemini, Ollama, etc.
+    macOS: System Events keyboard (TCC-safe), nut-js mouse, clawdcursor grant for permissions.
   -->
 
   <style>
@@ -250,9 +254,9 @@
 
   <!-- Hero -->
   <div class="hero">
-    <div class="hero-badge"><div class="pulse"></div> v0.7.14: Full macOS Keyboard Automation</div>
+    <div class="hero-badge"><div class="pulse"></div> v0.8.0: V2 vision-first agent + ground-truth verifier</div>
     <h1>Give your AI<br><span class="gr">eyes and hands</span></h1>
-    <p>Connect any AI to your desktop. It sees your screen, moves the mouse, types, clicks. Works with any model.</p>
+    <p>Connect any AI to any desktop. Vision-first agent with a ground-truth verifier that can't be fooled by "done" self-reports. OS-agnostic. Model-agnostic.</p>
     <div class="hero-btns">
       <a href="https://github.com/AmrDab/clawdcursor" class="btn-p">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -265,8 +269,8 @@
   <!-- Stats -->
   <div class="stats">
     <div class="stat"><div class="stat-val">42</div><div class="stat-lbl">Tools</div></div>
-    <div class="stat"><div class="stat-val">8</div><div class="stat-lbl">Pipeline Layers</div></div>
-    <div class="stat"><div class="stat-val">3</div><div class="stat-lbl">Transport Modes</div></div>
+    <div class="stat"><div class="stat-val">6</div><div class="stat-lbl">Verifier Signals</div></div>
+    <div class="stat"><div class="stat-val">3</div><div class="stat-lbl">Operating Systems</div></div>
     <div class="stat"><div class="stat-val">any</div><div class="stat-lbl">AI Model</div></div>
   </div>
 
@@ -342,82 +346,84 @@
     </div>
   </section>
 
-  <!-- Pipeline -->
+  <!-- V2 Pipeline -->
   <section class="sect" id="pipeline">
-    <div class="sect-label">3-Stage Pipeline</div>
-    <h2>Text first. Vision last.</h2>
-    <p class="sub">Tasks flow through the cheapest path. Works with any OpenAI-compatible model.</p>
+    <div class="sect-label">V2 Architecture · opt in with <code style="color:var(--accent2);font-size:0.72rem;">--v2</code></div>
+    <h2>Vision-first. Verified by ground truth.</h2>
+    <p class="sub">Three layers, each does one thing. Screenshot → tool call → new screenshot → repeat, then six independent signals decide whether the task actually succeeded.</p>
 
     <div class="feat-grid" style="grid-template-columns: repeat(3, 1fr);">
       <div class="feat-card" style="border-left: 3px solid #22c55e;">
         <div class="feat-icon">⚡</div>
-        <h4>Stage 1: SnapshotBuilder</h4>
-        <p style="color: #22c55e; font-size: 0.75rem; margin-bottom: 6px;">FREE</p>
-        <p>Parallel OCR + accessibility capture. Produces text elements, buttons, inputs with coordinates. Spatial layout analysis detects zones. No vision needed.</p>
+        <h4>Router</h4>
+        <p style="color: #22c55e; font-size: 0.75rem; margin-bottom: 6px;">FREE · zero LLM</p>
+        <p>Regex shortcuts for trivial tasks. "Open Safari" resolves in under a second without calling a model. Everything else falls through to the agent.</p>
       </div>
       <div class="feat-card" style="border-left: 3px solid #3b82f6;">
         <div class="feat-icon">🧠</div>
-        <h4>Stage 2: TextNavigator</h4>
-        <p style="color: #3b82f6; font-size: 0.75rem; margin-bottom: 6px;">CHEAP ($0.25/1M with Haiku)</p>
-        <p>Primary stage. Text LLM reads OCR snapshot and app guide, decides action. One action per call, verified by re-scan. Handles 90% of tasks.</p>
+        <h4>VisionAgent</h4>
+        <p style="color: #3b82f6; font-size: 0.75rem; margin-bottom: 6px;">ONE LOOP · 6-rule prompt</p>
+        <p>Single loop: screenshot, tool call, new screenshot, repeat. 16 tools, 6-rule system prompt (down from 36). Anthropic, OpenAI, OpenRouter — anything with vision + tool calls.</p>
       </div>
-      <div class="feat-card" style="border-left: 3px solid #ef4444;">
-        <div class="feat-icon">🎯</div>
-        <h4>Stage 3: VisionFiller</h4>
-        <p style="color: #ef4444; font-size: 0.75rem; margin-bottom: 6px;">EXPENSIVE, last resort</p>
-        <p>Fires for CAPTCHAs, complex spatial tasks. Supports Anthropic Computer Use and any vision model.</p>
+      <div class="feat-card" style="border-left: 3px solid #a855f7;">
+        <div class="feat-icon">✅</div>
+        <h4>GroundTruthVerifier</h4>
+        <p style="color: #a855f7; font-size: 0.75rem; margin-bottom: 6px;">6 INDEPENDENT SIGNALS</p>
+        <p>Pixel diff, window change, focus change, OCR delta, task-specific assertions, and anti-pattern detection (error dialogs, send-failed, auth-failed). Cannot be fooled by "done" self-reports.</p>
       </div>
     </div>
 
     <div class="feat-grid" style="grid-template-columns: repeat(2, 1fr); margin-top: 16px;">
       <div class="feat-card">
-        <div class="feat-icon">🔍</div>
-        <h4>Pre-processor</h4>
-        <p>Regex decomposes compound tasks. Zero-cost classifier routes: mechanical (free), navigation (Ctrl+L), reasoning (Stage 2), spatial (vision).</p>
+        <div class="feat-icon">🧩</div>
+        <h4>PlatformAdapter</h4>
+        <p>One interface, one file per OS: <code style="font-size:0.78em">macos.ts</code>, <code style="font-size:0.78em">windows.ts</code>, <code style="font-size:0.78em">linux.ts</code>. Replaces 142+ scattered <code style="font-size:0.78em">if (IS_MAC)</code> branches. Adding an OS is a single file.</p>
       </div>
       <div class="feat-card">
-        <div class="feat-icon">🗺️</div>
-        <h4>Spatial Layout Analysis</h4>
-        <p>Builds text-based spatial map from element clustering. Any text model knows where to click, no screenshots needed.</p>
+        <div class="feat-icon">🛡️</div>
+        <h4>False-positive resistant</h4>
+        <p>End-to-end tested on macOS with Haiku + Sonnet. Verifier correctly rejected an email "send" that legacy reported as success — caught "Cannot send" dialog, confirmed missing sent-folder entry.</p>
       </div>
     </div>
+
+    <p class="sub" style="margin-top: 20px; margin-bottom: 0; font-size: 0.82rem;">Legacy 7-layer cascade (SnapshotBuilder → TextNavigator → VisionFiller) still ships as the default. No breaking changes — <code style="color:var(--accent2);font-size:0.78em">clawdcursor start</code> without <code style="color:var(--accent2);font-size:0.78em">--v2</code> runs the legacy pipeline exactly as before.</p>
   </section>
 
   <!-- Features -->
   <section class="sect">
     <div class="sect-label">Features</div>
-    <h2>Provider-agnostic. Universal.</h2>
-    <p class="sub">13 providers, any resolution, crowdsourced app knowledge.</p>
+    <h2>OS-agnostic. Model-agnostic.</h2>
+    <p class="sub">Business logic never sees <code style="font-size:0.85em">process.platform</code>. Any tool-calling LLM, any desktop.</p>
     <div class="feat-grid">
       <div class="feat-card">
         <div class="feat-icon">🍎</div>
-        <h4>macOS Support</h4>
-        <p>Keyboard via System Events, TCC-safe. <code style="font-size:0.82em">clawdcursor grant</code> triggers permission dialogs.</p>
+        <h4>macOS — TCC-safe</h4>
+        <p>System Events keyboard, nut-js mouse. <code style="font-size:0.82em">clawdcursor grant</code> walks you through Accessibility + Screen Recording.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">🪟</div>
+        <h4>Windows — UIA native</h4>
+        <p>PowerShell + .NET UI Automation, Windows.Media.Ocr. x64 and ARM64.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">🐧</div>
+        <h4>Linux — AT-SPI + Tesseract</h4>
+        <p>Same 42 tools, same MCP interface. <code style="font-size:0.82em">sudo apt install tesseract-ocr</code> and you're in.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">🖱️</div>
+        <h4>Smart Tools</h4>
+        <p>Click by name, type by label, read text. Accessibility + OCR fallback — no screenshots needed.</p>
+      </div>
+      <div class="feat-card">
+        <div class="feat-icon">⌨️</div>
+        <h4>Shortcuts Engine</h4>
+        <p><code style="font-size:0.82em">shortcuts_list</code> and <code style="font-size:0.82em">shortcuts_execute</code>. Platform-aware: Cmd on macOS, Ctrl elsewhere. Zero LLM cost.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">📖</div>
         <h4>App Guides (86+ apps)</h4>
         <p>Community JSON guides with shortcuts and tips. <code style="font-size:0.82em">clawdcursor guides install excel</code></p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">🖱️</div>
-        <h4>Smart Tools</h4>
-        <p>Click by name, type by label, read text. No screenshots. Accessibility + OCR fallback.</p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">⌨️</div>
-        <h4>Shortcuts Engine</h4>
-        <p><code style="font-size:0.82em">shortcuts_list</code> and <code style="font-size:0.82em">shortcuts_execute</code>. Zero LLM cost.</p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">✅</div>
-        <h4>Verifier</h4>
-        <p>Re-scans after every action. Can't hallucinate success.</p>
-      </div>
-      <div class="feat-card">
-        <div class="feat-icon">🌍</div>
-        <h4>Universal</h4>
-        <p>13 providers. 720p to 5K. Windows, macOS, Linux.</p>
       </div>
     </div>
   </section>
@@ -437,23 +443,23 @@
     <div class="code-box" id="os-windows" style="display:block;">
       <div class="code-hd"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div><span>PowerShell</span></div>
       <pre><code><span class="c-cmd">powershell -c</span> <span class="c-string">"irm https://clawdcursor.com/install.ps1 | iex"</span>
-<span class="c-cmd">clawdcursor start</span></code></pre>
+<span class="c-cmd">clawdcursor start</span> <span class="c-flag">--v2</span>  <span class="c-comment"># opt into vision-first v2 pipeline</span></code></pre>
     </div>
 
     <div class="code-box" id="os-macos" style="display:none;">
       <div class="code-hd"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div><span>Terminal</span></div>
       <pre><code><span class="c-cmd">curl -fsSL</span> <span class="c-string">https://clawdcursor.com/install.sh</span> <span class="c-cmd">| bash</span>
-<span class="c-cmd">clawdcursor grant</span>  <span class="c-comment"># triggers permission dialogs</span>
-<span class="c-cmd">clawdcursor start</span></code></pre>
+<span class="c-cmd">clawdcursor grant</span>  <span class="c-comment"># Accessibility + Screen Recording</span>
+<span class="c-cmd">clawdcursor start</span> <span class="c-flag">--v2</span></code></pre>
     </div>
 
     <div class="code-box" id="os-linux" style="display:none;">
       <div class="code-hd"><div class="dot r"></div><div class="dot y"></div><div class="dot g"></div><span>Terminal</span></div>
       <pre><code><span class="c-cmd">curl -fsSL</span> <span class="c-string">https://clawdcursor.com/install.sh</span> <span class="c-cmd">| bash</span>
-<span class="c-cmd">clawdcursor start</span></code></pre>
+<span class="c-cmd">clawdcursor start</span> <span class="c-flag">--v2</span></code></pre>
     </div>
 
-    <p style="color:var(--text3);font-size:0.78rem;margin-top:10px;">Node.js 20+. Localhost only.</p>
+    <p style="color:var(--text3);font-size:0.78rem;margin-top:10px;">Node.js 20+. Localhost only. Drop <code style="font-size:0.95em">--v2</code> to run the legacy pipeline.</p>
   </section>
 
 </div>
@@ -471,7 +477,7 @@
 </div>
 
 <footer>
-  <p>clawd<strong>cursor</strong> v0.7.14 · localhost only · MIT · <a href="https://clawdcursor.com">Home</a> · <a href="https://github.com/AmrDab/clawdcursor">GitHub</a> · <a href="https://discord.gg/UGBWKvmj">Discord</a></p>
+  <p>clawd<strong>cursor</strong> v0.8.0 · localhost only · MIT · <a href="https://clawdcursor.com">Home</a> · <a href="https://github.com/AmrDab/clawdcursor">GitHub</a> · <a href="https://discord.gg/UGBWKvmj">Discord</a></p>
 </footer>
 
 <script>
