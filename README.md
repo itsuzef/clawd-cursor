@@ -25,15 +25,25 @@
 
 ---
 
-## What's New in v0.7.14
+## What's New in v0.8.0 — V2 Architecture
 
-- **macOS keystrokes fixed**: `keyPress()` now routes through `osascript` + System Events. TCC was silently blocking `CGEvent.post()` from Node child processes. Cmd+V, Cmd+N, Shift+Cmd+D all work.
-- **Platform-aware shortcuts**: `Cmd` on macOS, `Ctrl` on Windows/Linux throughout the pipeline (URL bar, email compose, Find & Replace).
-- **macOS Mail.app flow**: deterministic compose: Cmd+N, To, Tab, Subject, Tab, Body, Cmd+Shift+D.
-- **Unified permission checking**: `doctor`, `status`, and `readiness` all use the same path. No more contradictory reports.
-- **Screenshot CPU fix**: delegates to `screenshot-helper` subprocess. Eliminates ReplayKit CPU spin on macOS 14+.
-- **`clawdcursor grant`**: triggers macOS system permission dialogs from the CLI.
-- **Node.js v25 crash fix**: `EINVAL`/`setTypeOfService` from undici caught and suppressed.
+The 7-layer legacy pipeline has been replaced with a clean 3-layer vision-first design. Opt in with `--v2`:
+
+```bash
+clawdcursor start --v2
+```
+
+- **Ground-truth verifier**: 6 independent signals (pixel diff, window state, focus change, OCR delta, task-type assertions, error-pattern detection). Independent of the agent — can't be fooled by "done" self-reports. Caught false positives in testing where the legacy pipeline reported UNVERIFIED_SUCCESS.
+- **Single vision-first agent loop**: screenshot → tool call → new screenshot → repeat. 6-rule system prompt (down from 36). Model-agnostic: Anthropic, OpenAI, OpenRouter, anything with vision + tool calls.
+- **PlatformAdapter abstraction**: all platform-specific code moved into `src/v2/platform/{macos,windows,linux}.ts`. Replaces 142+ scattered `if (IS_MAC)` branches across 34 files. Adding a new OS is now a single file.
+- **Legacy pipeline unchanged**: `clawdcursor start` (no `--v2`) still works exactly as before. Zero breaking changes.
+
+### Prior in v0.7.14 (still shipped)
+
+- macOS keystrokes fixed: `keyPress()` routes through `osascript` + System Events (TCC-compatible). Cmd+V, Cmd+N, Shift+Cmd+D all work.
+- Platform-aware shortcuts: `Cmd` on macOS, `Ctrl` on Windows/Linux throughout.
+- Unified permission checking across `doctor`, `status`, `readiness`.
+- Node.js v25 `EINVAL`/`setTypeOfService` crash caught.
 
 Full history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -137,17 +147,34 @@ MCP stdio server for Claude Code, Cursor, Windsurf, Zed.
 
 ## Pipeline
 
-Tasks flow cheapest-first:
+Two pipelines ship in parallel. Pick one with `--v2` (opt-in) or use the legacy default.
+
+### V2 (recommended, `--v2`)
+
+Three layers. Each has one job.
 
 ```
-L1.5  Deterministic flows  →  hardcoded sequences for common tasks (email, app-switch). Zero LLM.
+Router       →  regex shortcuts for trivial tasks ("open Safari"). Zero LLM.
+VisionAgent  →  one loop: screenshot → tool call → new screenshot. Vision-first.
+                16 tools, 6-rule prompt, model-agnostic.
+Verifier     →  6 independent signals check ground truth after the agent claims "done".
+                Pixel diff, window state, focus, OCR delta, task assertions, anti-patterns.
+                Cannot be fooled by LLM self-reports.
+```
+
+### Legacy (default, no flag)
+
+Cheapest-first cascade. Kept for compatibility.
+
+```
+L1.5  Deterministic flows  →  hardcoded sequences (email, app-switch). Zero LLM.
 L2    Skill Cache          →  learned action patterns. Zero LLM.
-L2.5  OCR Reasoner ★      →  OS OCR + cheap text LLM. Handles ~90% of tasks.
-L2.5b A11y Reasoner       →  fallback when OCR unavailable.
+L2.5  OCR Reasoner         →  OS OCR + cheap text LLM. Handles ~90% of tasks.
+L2.5b A11y Reasoner        →  fallback when OCR unavailable.
 L3    Computer Use         →  vision model. Last resort only.
 ```
 
-Every action is ground-truth verified after execution. False success is blocked.
+Both pipelines share the same 42 tools and the same MCP interface.
 
 ---
 
@@ -200,6 +227,7 @@ Options:
   --api-key <key>        Provider API key
   --base-url <url>       OpenAI-compatible endpoint
   --accept               Skip consent prompt (non-interactive)
+  --v2                   Use v2 architecture (vision-first agent + ground truth verifier)
 ```
 
 ---

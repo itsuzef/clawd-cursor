@@ -2,6 +2,39 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.8.0] - 2026-04-16 — V2 Architecture (opt-in)
+
+A ground-up reimagining of the internal pipeline. Opt in with `clawdcursor start --v2`. The legacy pipeline is unchanged and remains the default.
+
+### Added
+
+- **`--v2` flag on `clawdcursor start`** — activates the new 3-layer architecture: Router → VisionAgent → Verifier. No effect on MCP, `serve`, or legacy `start`.
+- **`src/v2/platform/`** — platform abstraction. Single `PlatformAdapter` interface with `macos.ts`, `windows.ts`, `linux.ts` implementations. Replaces 142+ scattered `if (process.platform === 'darwin')` branches across 34 files. Business logic no longer sees `process.platform`. Adding a new OS = one file.
+- **`src/v2/verifier/`** — `GroundTruthVerifier`. Six independent signals decide whether a task actually completed: pixel diff, window change, focus change, OCR delta, task-specific assertions (`send_email`, `navigate_url`, `open_app`, `type_text`, `search`, `compose_message`, `create_file`), and anti-patterns (error dialogs, "cannot send", "draft saved", invalid recipient, auth failed). Weighted voting with hard-fail rules on anti-patterns. Cannot be fooled by LLM self-reported "done".
+- **`src/v2/agent/`** — `VisionAgent`: a single vision-first tool-use loop. 16 tools (`screenshot`, `read_screen`, `list_windows`, `click`, `drag`, `scroll`, `type`, `key`, `invoke_element`, `set_field_value`, `open_app`, `focus_window`, `read_clipboard`, `write_clipboard`, `wait`, `done`). 6-rule system prompt (down from 36). Model-agnostic via existing `callVisionLLM`.
+- **`src/v2/orchestrator.ts`** — `PipelineV2` wires Router → VisionAgent → Verifier with before/after state capture.
+- **Hardened JSON parser** — tolerates trailing braces, markdown code fences, and other common LLM malformations. Balanced-brace extraction as fallback.
+
+### Fixed
+
+- **False positives** — legacy pipeline reports `UNVERIFIED_SUCCESS` when the agent claims "done" but the screen didn't change. V2 verifier catches this class: in a live email-send test the agent said "Email sent" but a "Cannot send" dialog was on screen. V2 correctly rejected the claim. (Legacy still does what it does; this fix only applies when `--v2` is set.)
+
+### Testing
+
+Smoke-tested on macOS with Anthropic Claude Haiku (text) + Sonnet (vision):
+
+| Task | Time | Verdict |
+|------|------|---------|
+| Open TextEdit and type | 30s | ✅ (4/6 signals) |
+| Calculator: 47+53=100 | 65s | ✅ (5/6 signals, zero parse errors) |
+| Safari → github.com | 45s | ✅ (6/6 signals) |
+| Notes: create note | 182s | ✅ (6/6 signals) |
+| Email send (failing server) | 86s | ❌ **Correctly rejected** — legacy would have reported success |
+
+### Platform Safety
+
+No legacy code modified. Windows, Linux, and MCP paths untouched. v2 code is entirely under `src/v2/`.
+
 ## [0.7.14] - 2026-04-13 — Full macOS Keyboard Automation + Platform-Aware Pipeline
 
 ### Fixed
