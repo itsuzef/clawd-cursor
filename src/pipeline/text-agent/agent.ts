@@ -4,18 +4,9 @@
  * Runs a blind-first loop: structured perception → text LLM (no screenshots)
  * → structured action → execute → re-perceive → repeat.
  *
- * v0.8.1 scaffold status:
- *  - Harness, action parsing, loop control, abort, max-iterations — complete.
- *  - Secrets redaction before prompt — complete.
- *  - Prompt-injection delimiters — complete.
- *  - System prompt — scaffold (see prompt.ts; Opus pass owed).
- *  - Sub-action dispatch (click, type, press, playbook) — complete via
- *    injected `dispatch` callback. The adapter + router + playbook wiring
- *    lives in the outer pipeline, not inside this module.
- *
- * Intentionally decoupled from the LLM client and from the adapter — both
- * are dependency-injected so the canonical test corpus can stub them with
- * a deterministic fake adapter (plan §5.7).
+ * Decoupled from the LLM client and the adapter — both arrive as injected
+ * callbacks (`callTextLlm`, `capture`, `dispatch`) so the canonical regression
+ * corpus can stub them with a deterministic pattern-match fake.
  */
 
 import type { PipelineAction, Snapshot, ActionResult, AppGuide } from '../types';

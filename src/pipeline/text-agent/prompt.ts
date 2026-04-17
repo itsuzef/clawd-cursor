@@ -1,26 +1,17 @@
 /**
- * Text-agent system prompt (v0.8.1 scaffold).
+ * Text-agent system prompt.
  *
- * ⚠ DELIBERATE TODO: this prompt is a scaffold. The plan (§13 + §5.3 step 12)
- * calls for a dedicated Opus pass to merge the legacy `ocr-reasoner` and
- * `a11y-reasoner` prompts (400+ lines each) into ≤80 lines WITHOUT losing
- * product rules. That pass happens before the unified pipeline's text-agent
- * goes default; this scaffold exists so the harness (agent.ts) can be built
- * and tested in isolation meanwhile.
+ * Keeps the contract tight:
+ *  - Blind-first: never ask for screenshots.
+ *  - Prompt-injection defense via explicit `<untrusted-screen-content>` delimiters.
+ *  - Closed action vocabulary matching `PipelineAction` in `../types.ts`.
+ *  - `cannot_read` is the escape hatch that hands control to the vision agent.
+ *  - App-knowledge fragment (from `knowledge.getWorkflowForTask`) injects here.
  *
- * What the scaffold captures correctly:
- *  - Blind-first stance (no screenshots in scope).
- *  - Prompt-injection defense via <untrusted-screen-content> delimiters.
- *  - Compact action vocabulary matching pipeline/types.ts::PipelineAction.
- *  - `cannot_read` escape hatch to escalate to vision-agent.
- *  - App-guide injection slot (knowledge.forTask).
- *
- * What a real Opus pass must add:
- *  - Specific app-behavior rules from legacy prompts (Gmail compose-then-wait,
- *    Outlook tab order, window-titles-are-not-clickable, canvas-app detection,
- *    send-button-requires-scroll, etc.).
- *  - Concrete one-action-per-turn examples from real bug regressions.
- *  - Refusal-over-dangerous-actions guardrails.
+ * The prompt is intentionally short. Product rules that live in app guides
+ * (Gmail compose timing, Outlook tab order, WebView2 settle) belong in
+ * `pipeline/knowledge/guides/*.json` and ride in on the `guide` fragment —
+ * adding them to the system prompt makes it brittle and model-specific.
  */
 
 export const TEXT_AGENT_SYSTEM_PROMPT = `You are ClawdCursor's text-agent. You operate a computer using the accessibility tree (a11y) and OCR output — NO screenshots.

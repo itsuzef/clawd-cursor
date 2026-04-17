@@ -21,9 +21,9 @@
  * names hardcoded here.
  */
 
-import type { PipelineConfig } from '../../providers';
-import { callVisionLLM, type VisionContentBlock } from '../../llm-client';
+import { type VisionContentBlock } from '../../llm-client';
 import { getPlatform } from '../../v2/platform';
+import type { PlatformAdapter } from '../../v2/platform/types';
 import type {
   AgentContext,
   AgentRunOptions,
@@ -34,6 +34,17 @@ import type {
   VisionAgent,
 } from './types';
 import { buildTools } from './tools';
+
+/**
+ * Vision LLM callback — the single injection point. Pipeline owns the
+ * provider/model selection; this module just hands prompts in and gets
+ * completions back. Model-agnostic by construction.
+ */
+export type VisionLlmFn = (args: {
+  system: string;
+  messages: Array<{ role: string; content: string | VisionContentBlock[] }>;
+  maxTokens?: number;
+}) => Promise<string>;
 
 /** Tools that plausibly change the screen. After these, attach a fresh
  *  screenshot to the next user message so the model sees the result.
@@ -67,13 +78,22 @@ const MAX_HISTORY_SCREENSHOTS = 3; // keep only the N most recent screenshots in
 export class VisionAgentImpl implements VisionAgent {
   private tools: Map<string, AgentTool>;
 
-  constructor(private config: PipelineConfig) {
+  /**
+   * @param callVision  Injected vision-LLM function. The pipeline owns
+   *                    provider/model selection — this module stays pure.
+   * @param platform    Optional PlatformAdapter. If omitted, `getPlatform()`
+   *                    resolves it at run() time (convenient for tests).
+   */
+  constructor(
+    private readonly callVision: VisionLlmFn,
+    private readonly platformOverride?: PlatformAdapter,
+  ) {
     this.tools = buildTools();
   }
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     const startedAt = Date.now();
-    const platform = await getPlatform();
+    const platform = this.platformOverride ?? await getPlatform();
     const isAborted = opts.isAborted ?? (() => false);
     const maxIter = opts.maxIterations ?? MAX_ITERATIONS;
 
@@ -112,17 +132,15 @@ export class VisionAgentImpl implements VisionAgent {
       // Trim screenshots from old turns to save tokens.
       const trimmedHistory = this.trimScreenshots(history, MAX_HISTORY_SCREENSHOTS);
 
-      // Call the vision LLM.
+      // Call the vision LLM via the injected callback — no PipelineConfig
+      // coupling; the pipeline picks the provider/model.
       let llmResponse: string;
       const llmStart = Date.now();
       try {
-        llmResponse = await callVisionLLM(this.config, {
+        llmResponse = await this.callVision({
           system: SYSTEM_PROMPT,
           messages: trimmedHistory.map(t => ({ role: t.role, content: t.content })),
           maxTokens: 1024,
-          forceJson: true,
-          timeoutMs: 30_000,
-          retries: 1,
         });
       } catch (err: any) {
         steps.push({

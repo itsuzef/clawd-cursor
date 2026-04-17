@@ -509,8 +509,12 @@ public class WinAPI {
   /**
    * v0.8.1 unified blind-first pipeline.
    *
-   * Routes through: classify → router → skill-cache → knowledge → sense →
-   * text-agent (no screenshots) → vision-fallback → verifier.
+   * Routes through: classify → router → knowledge → sense (a11y) →
+   * text-agent (no screenshots) → vision-agent (fallback).
+   *
+   * Model-agnostic: LLM clients are injected from the live provider
+   * config. No premium retry tier, no per-model escape hatch. If vision
+   * also fails, the MCP client is free to retry with a different strategy.
    *
    * Lazy-loaded so legacy/V2 users don't pay the import cost.
    */
@@ -518,15 +522,17 @@ public class WinAPI {
     if (!this.pipelineUnified) {
       const { Pipeline } = await import('./pipeline');
       const { getPlatform } = await import('./v2/platform');
+      const { callVisionLLM } = await import('./llm-client');
       const adapter = await getPlatform();
       const pipelineConfig = loadPipelineConfig();
 
       const hasTextModel   = !!(pipelineConfig?.layer2.model && pipelineConfig.layer2.baseUrl);
-      const hasVisionModel = !!(pipelineConfig?.layer3?.model && pipelineConfig.layer3?.baseUrl);
+      const hasVisionModel = !!(pipelineConfig?.layer3?.model && pipelineConfig?.layer3?.baseUrl);
 
-      // Haiku-unavailable graceful degradation: pipeline runs without LLM
-      // slots if none configured. Router + playbooks + skill-cache still
-      // work; reasoning tasks return a structured "run doctor" error.
+      // Graceful degradation: any missing slot is just... missing. Router and
+      // playbook tasks still run. Reasoning tasks hit text-agent when text
+      // is configured, vision fallback when vision is configured, and a
+      // clean structured "no model configured" result when neither is.
       this.pipelineUnified = new Pipeline({
         adapter,
         llm: {
@@ -537,7 +543,6 @@ public class WinAPI {
                   user,
                   maxTokens: maxTokens ?? 256,
                   timeoutMs: 30_000,
-                  retries: 0,
                 })
             : undefined,
           decomposer: hasTextModel && pipelineConfig
@@ -547,27 +552,30 @@ public class WinAPI {
                   user,
                   maxTokens: maxTokens ?? 400,
                   timeoutMs: 20_000,
-                  retries: 0,
                 })
             : undefined,
-          // vision + retry slots wired in follow-up commit; Pipeline
-          // returns structured "no vision model" error when hit without them.
-          vision: undefined,
-          retry: undefined,
-        },
-        retry: {
-          useFallback: process.env.OPENCLAW_RETRY_USE_FALLBACK === '1',
-          maxPerSession: 5,
+          vision: hasVisionModel && pipelineConfig
+            ? async ({ system, messages, maxTokens }) =>
+                callVisionLLM(pipelineConfig, {
+                  system,
+                  messages,
+                  maxTokens: maxTokens ?? 1024,
+                  forceJson: true,
+                  timeoutMs: 30_000,
+                  retries: 1,
+                })
+            : undefined,
         },
         disableVision: process.env.OPENCLAW_DISABLE_VISION === '1',
       });
 
-      if (!hasTextModel) {
-        console.log('⚡ No text model configured — blind-first pipeline will only handle router/playbook tasks.');
+      if (!hasTextModel && !hasVisionModel) {
+        console.log('⚡ No AI model configured — blind-first pipeline will only handle router/playbook tasks.');
         console.log('   Run `clawdcursor doctor` to configure an AI provider (any OpenAI-compatible endpoint).');
       } else {
-        const visionStatus = hasVisionModel ? `(vision: ${pipelineConfig.layer3!.model})` : '(no vision fallback)';
-        console.log(`🧠 Blind-first pipeline: text=${pipelineConfig.layer2.model} ${visionStatus}`);
+        const textTag   = hasTextModel   ? `text=${pipelineConfig.layer2.model}`       : 'text=off';
+        const visionTag = hasVisionModel ? `vision=${pipelineConfig.layer3!.model}`    : 'vision=off';
+        console.log(`🧠 Blind-first pipeline: ${textTag} ${visionTag}`);
       }
     }
 

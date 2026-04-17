@@ -81,7 +81,7 @@ export function priceFor(model: string): ModelPrice {
 
 export interface CostEvent {
   model: string;
-  stage: 'classify' | 'decompose' | 'text-agent' | 'vision-agent' | 'retry' | 'decomposer-fallback';
+  stage: 'classify' | 'decompose' | 'text-agent' | 'vision-agent' | 'decomposer-fallback';
   inputTokens: number;
   outputTokens: number;
 }

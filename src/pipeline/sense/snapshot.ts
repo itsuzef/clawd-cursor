@@ -1,11 +1,14 @@
 /**
  * Snapshot builder — assembles a structured Snapshot from the PlatformAdapter.
  *
- * v0.8.1 scope: a11y-tree only (the blind-first cheapest perception). OCR
- * merge lives in the legacy SnapshotBuilder and can be ported in a follow-up.
- * For now: if a11y returns elements, we have enough for the text-agent.
+ * Blind-first scope: accessibility tree only. When a11y can describe the
+ * screen, the text-agent reads this and picks an action. When a11y can't
+ * (empty tree, canvas app, custom rendering), the text-agent emits
+ * `cannot_read` and the vision-agent takes over with real pixels.
  *
- * Matches the shape in pipeline/types.ts::Snapshot so text-agent can render it.
+ * OCR fusion on top of a11y (merging OCR hits with a11y bounds into a single
+ * element list) is a cost-saving enhancement we can layer in later without
+ * changing the `Snapshot` contract.
  */
 
 import type { PlatformAdapter } from '../../v2/platform/types';
