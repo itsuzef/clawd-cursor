@@ -17,6 +17,9 @@
     "doctor": "node dist/index.js doctor",
     "lint": "eslint src/",
     "test": "vitest",
+    "test:ci": "vitest run",
+    "test:mcp-schema-snapshot": "tsx scripts/build-mcp-schema.ts",
+    "test:mcp-schema-snapshot:update": "tsx scripts/build-mcp-schema.ts --write",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json"
   },

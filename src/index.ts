@@ -19,6 +19,31 @@ process.on('uncaughtException', (err: any) => {
   process.exit(1);
 });
 
+// v0.8.1: unhandledRejection handler.
+// Prior behavior: rejected promises inside the agent loop killed the Node
+// process with only Node's default warning — HTTP clients would see connection
+// drops with no trace. Log through the new leveled logger so correlation IDs
+// come along, and keep the server running (server stability > loud death).
+// In CLI mode (no active server) we still exit 1 to surface the bug.
+process.on('unhandledRejection', (reason: any) => {
+  try {
+    // Lazy-require to avoid pulling the pipeline module at cold CLI startup.
+    const { logger } = require('./pipeline/observability/logger');
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    logger.error('unhandledRejection', { msg, stack });
+  } catch {
+    // Logger itself failed — fall back to stderr.
+    // eslint-disable-next-line no-console
+    console.error('unhandledRejection (logger unavailable):', reason);
+  }
+  // In server mode, (process.env.CLAWD_SERVER_MODE === '1') keep running.
+  // In CLI / one-shot mode, exit to surface the bug.
+  if (process.env.CLAWD_SERVER_MODE !== '1') {
+    process.exit(1);
+  }
+});
+
 import { Command } from 'commander';
 import { Agent } from './agent';
 import { createServer } from './server';

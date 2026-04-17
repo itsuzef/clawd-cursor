@@ -32,8 +32,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Typecheck tests
+        run: npm run typecheck:tests
+
+      - name: MCP schema snapshot
+        run: npm run test:mcp-schema-snapshot
+
       - name: Build
         run: npm run build
 
       - name: Run test suite
-        run: npm test
+        run: npm run test:ci
