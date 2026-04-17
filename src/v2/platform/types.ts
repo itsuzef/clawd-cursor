@@ -144,6 +144,13 @@ export interface PlatformAdapter {
     alwaysNewInstance?: boolean;
     url?: string;
     cwd?: string;
+    /**
+     * Windows UWP AppsFolder ID (e.g. `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`).
+     * When provided, the Windows adapter launches via `explorer.exe shell:AppsFolder\<id>`,
+     * which works reliably for UWP / Store apps where `Start-Process -FilePath <exe>`
+     * silently fails. Ignored on macOS and Linux.
+     */
+    uwpAppId?: string;
   }): Promise<{ pid?: number; title?: string; handle?: number | string }>;
 }
 

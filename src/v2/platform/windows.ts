@@ -478,18 +478,50 @@ export class WindowsAdapter implements PlatformAdapter {
 
   async launchApp(
     name: string,
-    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string },
+    opts?: {
+      alwaysNewInstance?: boolean;
+      url?: string;
+      cwd?: string;
+      /**
+       * UWP AppsFolder ID, e.g. `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`.
+       * Launches via `explorer.exe shell:AppsFolder\<id>` which works for
+       * Store / UWP apps where `Start-Process -FilePath <exe>` silently fails.
+       * Takes precedence over `name` when provided.
+       */
+      uwpAppId?: string;
+    },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
-    // SECURITY (v0.8.1): pass arguments via execFile args array instead of
-    // string-interpolating into a PowerShell -Command string. Closes the
-    // command-injection sink flagged at this call-site in the v0.8.0 audit.
-    const args = ['-NoProfile', '-Command'];
-    const cmdParts: string[] = ['Start-Process'];
     // Reject control chars / backticks / $() that can escape PowerShell quoting
     // regardless of how we serialize.
     if (/[\r\n\t\x00-\x1f]/.test(name) || /[`$]/.test(name)) {
       throw new Error('launchApp: illegal characters in app name');
     }
+
+    // Route 1: UWP apps via explorer shell:AppsFolder\<id>. This is the Windows-
+    // sanctioned way to launch UWP / Store apps and is rock-solid — Calculator,
+    // Notepad-Win11, Photos, etc. all work.
+    if (opts?.uwpAppId) {
+      const id = opts.uwpAppId;
+      // App ID format is `<PackageFamily>_<Hash>!<AppId>`. Valid characters are
+      // alphanumerics, dots, underscores, hyphens, and a single `!`. Reject anything
+      // else to keep the shell: path from interpreting metacharacters.
+      if (!/^[A-Za-z0-9_.\-]+![A-Za-z0-9_.\-]+$/.test(id)) {
+        throw new Error(`launchApp: illegal uwpAppId "${id}"`);
+      }
+      try {
+        const child = spawn('explorer.exe', [`shell:AppsFolder\\${id}`], {
+          stdio: 'ignore', detached: true, windowsHide: true,
+        });
+        child.unref();
+      } catch {
+        // Non-fatal — continue and look for the window anyway.
+      }
+      return this.findLaunchedWindow(name, opts.alwaysNewInstance ? 1200 : 800);
+    }
+
+    // Route 2: classic Start-Process via PowerShell with safely quoted args.
+    const args = ['-NoProfile', '-Command'];
+    const cmdParts: string[] = ['Start-Process'];
     cmdParts.push('-FilePath', this.psQuote(name));
     if (opts?.url && !/[\r\n\t\x00-\x1f"'`$]/.test(opts.url)) {
       cmdParts.push('-ArgumentList', this.psQuote(opts.url));
@@ -501,16 +533,26 @@ export class WindowsAdapter implements PlatformAdapter {
 
     try {
       const child = spawn('powershell.exe', args, {
-        stdio: 'ignore',
-        detached: true,
-        windowsHide: true,
+        stdio: 'ignore', detached: true, windowsHide: true,
       });
       child.unref();
     } catch {
       // Fall through to the lookup — the app may already be running.
     }
 
-    await this.delay(opts?.alwaysNewInstance ? 1200 : 800);
+    return this.findLaunchedWindow(name, opts?.alwaysNewInstance ? 1200 : 800);
+  }
+
+  /**
+   * After a launch, look for the window that appeared. Small settle + single
+   * listWindows scan. Returns `{}` when nothing matched — the caller is
+   * responsible for polling longer if it cares about the result.
+   */
+  private async findLaunchedWindow(
+    name: string,
+    settleMs: number,
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    await this.delay(settleMs);
     try {
       const windows = await this.listWindows();
       const target = name.toLowerCase();

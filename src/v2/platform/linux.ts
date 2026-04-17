@@ -493,8 +493,10 @@ export class LinuxAdapter implements PlatformAdapter {
 
   async launchApp(
     name: string,
-    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string },
+    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string; uwpAppId?: string },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // uwpAppId is Windows-only — ignore on Linux.
+    void opts?.uwpAppId;
     if (/[\r\n\t\x00-\x1f]/.test(name)) {
       throw new Error('launchApp: illegal characters in app name');
     }

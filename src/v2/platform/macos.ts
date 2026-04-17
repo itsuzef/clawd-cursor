@@ -412,8 +412,10 @@ export class MacOSAdapter implements PlatformAdapter {
 
   async launchApp(
     name: string,
-    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string },
+    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string; uwpAppId?: string },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // uwpAppId is Windows-only — ignore on macOS.
+    void opts?.uwpAppId;
     // Reject shell-metachar input even though we use execFile (no shell expansion).
     // Keeps parity with Windows' stricter validator and avoids surprising `open`.
     if (/[\r\n\t\x00-\x1f]/.test(name)) {

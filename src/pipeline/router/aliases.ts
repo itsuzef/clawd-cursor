@@ -19,6 +19,14 @@ export interface AppAlias {
   /** Windows fallback exe, used when Start-Process can't find by name. */
   executable?: string;
   /**
+   * Windows UWP AppsFolder ID (e.g. `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`).
+   * When present, the launcher uses `explorer.exe shell:AppsFolder\<id>` which
+   * works reliably for Store / UWP apps where `Start-Process -FilePath <exe>`
+   * silently fails. If omitted, the launcher falls back to Start Menu search,
+   * which is slower but universal.
+   */
+  uwpAppId?: string;
+  /**
    * If true, the user typically wants a FRESH instance (mspaint: new
    * canvas, notepad: new document). Launch with -n on macOS, or by
    * executable path on Windows.
@@ -30,20 +38,25 @@ export const APP_ALIASES: Record<string, AppAlias> = {
   // Drawing / editors
   'paint':              { processNames: ['mspaint'],                          searchTerm: 'Paint',              executable: 'mspaint.exe', alwaysNewInstance: true },
   'mspaint':            { processNames: ['mspaint'],                          searchTerm: 'Paint',              executable: 'mspaint.exe', alwaysNewInstance: true },
-  'notepad':            { processNames: ['notepad', 'Notepad'],               searchTerm: 'Notepad',            executable: 'notepad.exe', alwaysNewInstance: true, macOSAppName: 'TextEdit' },
+  // Notepad is UWP on Win11 (Microsoft.WindowsNotepad). The classic
+  // `notepad.exe` redirector still exists but spawns the UWP app via
+  // ApplicationFrameHost, so the polled window has processName "Notepad"
+  // not "notepad.exe". uwpAppId is the reliable Win11 launch route.
+  'notepad':            { processNames: ['Notepad', 'notepad', 'ApplicationFrameHost'], searchTerm: 'Notepad',  executable: 'notepad.exe', uwpAppId: 'Microsoft.WindowsNotepad_8wekyb3d8bbwe!App', alwaysNewInstance: true, macOSAppName: 'TextEdit' },
   'textedit':           { processNames: ['TextEdit'],                         searchTerm: 'TextEdit',           macOSAppName: 'TextEdit' },
 
-  // Utility
-  'calculator':         { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator',      macOSAppName: 'Calculator' },
-  'calc':               { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator',      macOSAppName: 'Calculator' },
+  // Utility (Windows Calculator is UWP on Win10+; direct `Start-Process calc` fails)
+  'calculator':         { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator',      macOSAppName: 'Calculator', uwpAppId: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+  'calc':               { processNames: ['CalculatorApp', 'Calculator', 'calc'], searchTerm: 'Calculator',      macOSAppName: 'Calculator', uwpAppId: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
 
-  // Browsers
-  'chrome':             { processNames: ['chrome', 'Google Chrome'],          searchTerm: 'Chrome',             macOSAppName: 'Google Chrome' },
-  'google chrome':      { processNames: ['chrome', 'Google Chrome'],          searchTerm: 'Chrome',             macOSAppName: 'Google Chrome' },
-  'firefox':            { processNames: ['firefox'],                          searchTerm: 'Firefox',            macOSAppName: 'Firefox' },
+  // Browsers — executables let the direct-launch strategy fire first on Win32.
+  // If the exe isn't on PATH, the router's Start Menu search fallback picks up.
+  'chrome':             { processNames: ['chrome', 'Google Chrome'],          searchTerm: 'Chrome',             executable: 'chrome.exe',  macOSAppName: 'Google Chrome' },
+  'google chrome':      { processNames: ['chrome', 'Google Chrome'],          searchTerm: 'Chrome',             executable: 'chrome.exe',  macOSAppName: 'Google Chrome' },
+  'firefox':            { processNames: ['firefox'],                          searchTerm: 'Firefox',            executable: 'firefox.exe', macOSAppName: 'Firefox' },
   'safari':             { processNames: ['Safari'],                           searchTerm: 'Safari',             macOSAppName: 'Safari' },
-  'edge':               { processNames: ['msedge'],                           searchTerm: 'Edge',               macOSAppName: 'Microsoft Edge' },
-  'microsoft edge':     { processNames: ['msedge'],                           searchTerm: 'Edge',               macOSAppName: 'Microsoft Edge' },
+  'edge':               { processNames: ['msedge'],                           searchTerm: 'Edge',               executable: 'msedge.exe',  macOSAppName: 'Microsoft Edge' },
+  'microsoft edge':     { processNames: ['msedge'],                           searchTerm: 'Edge',               executable: 'msedge.exe',  macOSAppName: 'Microsoft Edge' },
 
   // Office
   'outlook':            { processNames: ['OUTLOOK', 'olk'],                   searchTerm: 'Outlook',            macOSAppName: 'Microsoft Outlook' },
