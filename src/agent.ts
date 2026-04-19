@@ -151,15 +151,11 @@ export class Agent {
     this.skillCache.load();
 
     if (pipelineConfig && pipelineConfig.layer2.enabled) {
+      // Legacy reasoners are still constructed so --legacy keeps working,
+      // but we no longer print the old stage-named banners — the unified
+      // pipeline's per-task header prints the active model lineup instead.
       this.snapshotBuilder = new SnapshotBuilder(this.ocrEngine, this.a11y, this.desktop, pipelineConfig);
       this.ocrReasoner = new OcrReasoner(this.ocrEngine, this.desktop, this.a11y, pipelineConfig);
-      const ocrStatus = this.ocrEngine.isAvailable() ? 'OCR+A11y' : 'A11y-only';
-      console.log(`👁️ Stage 1 (SnapshotBuilder): ${ocrStatus} parallel capture`);
-      console.log(`🧠 Stage 2 (TextNavigator): ${pipelineConfig.layer2.model}`);
-    }
-    const skillStats = this.skillCache.getStats();
-    if (skillStats.total > 0) {
-      console.log(`📚 Layer 2 (Skill Cache): ${skillStats.total} cached skills`);
     }
 
     // hasApiKey gates LLM decomposition — true if cloud key OR local LLM (Ollama) is available
@@ -581,14 +577,11 @@ public class WinAPI {
       if (!hasTextModel && !hasVisionModel) {
         console.log('⚡ No AI model configured — only router/playbook tasks will run.');
         console.log('   Run `clawdcursor doctor` to configure an AI provider (any OpenAI-compatible endpoint).');
-      } else {
-        const textTag   = hasTextModel   ? `text=${pipelineConfig.layer2.model}`       : 'text=off';
-        const visionTag = hasVisionModel ? `vision=${pipelineConfig.layer3!.model}`    : 'vision=off';
-        console.log(`🧠 Pipeline ready: ${textTag} ${visionTag}`);
       }
+      // Otherwise the new logger's header block prints the full task banner
+      // (task + correlationId + models) when pipeline.start fires.
     }
 
-    console.log(`\n🐾 Task: ${task}`);
     this.state = { ...this.state, status: 'thinking', currentTask: task, stepsCompleted: 0, stepsTotal: 0 };
 
     const result = await this.pipelineUnified.run({
@@ -614,8 +607,12 @@ public class WinAPI {
           layer: result.path === 'router' ? 'router' as const : 'unified' as const,
         }];
 
-    console.log(`\n🏁 ${result.success ? '✅' : '❌'} path=${result.path} cost=$${result.costUsd.toFixed(4)} (${result.durationMs}ms)`);
-    console.log(`   ${result.text}`);
+    // The new logger emits a `pipeline.done` footer block (path + cost +
+    // duration, framed in a divider) so we skip the legacy double banner.
+    // Final free-text evidence still goes to stdout for the MCP / REST client.
+    if (result.text) {
+      console.log(`   ${result.text}`);
+    }
 
     this.state.status = 'idle';
     return {

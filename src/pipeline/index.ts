@@ -109,7 +109,11 @@ export class Pipeline {
     const isAborted = input.isAborted ?? (() => false);
 
     return runWithCorrelation({ correlationId, taskText: input.task }, async () => {
-      log.info(EVENTS.PIPELINE_START, { task: input.task });
+      const modelSummary = [
+        this.deps.llm.text ? `text=${this.deps.llm.text.model}` : 'text=off',
+        this.disableVision ? 'vision=disabled' : (this.deps.llm.vision ? `vision=${this.deps.llm.vision.model}` : 'vision=off'),
+      ].join(' ');
+      log.info(EVENTS.PIPELINE_START, { task: input.task, models: modelSummary });
 
       // ── PREPROCESS ONCE to decide whether this is a compound task.
       const outerActive = await this.safeActiveWindow();
