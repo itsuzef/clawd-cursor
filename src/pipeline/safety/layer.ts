@@ -155,6 +155,15 @@ const TOOL_TIER: Record<string, Tier> = {
   'get_system_time': 'read',
   'switch_tab_os': 'input',
   'undo_last': 'input',
+  // Tranche 2 — a11y depth tools
+  'a11y_expand': 'input',
+  'a11y_collapse': 'input',
+  'a11y_toggle': 'input',
+  'a11y_select': 'input',
+  'a11y_get_element': 'read',
+  'a11y_get_value': 'read',
+  'get_element_state': 'read',
+  'a11y_list_children': 'read',
 };
 
 /**

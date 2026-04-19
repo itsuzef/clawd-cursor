@@ -2,6 +2,186 @@
   "version": 1,
   "tools": [
     {
+      "name": "a11y_collapse",
+      "description": "Collapse a tree node, combo box, or disclosure element by accessibility name. Counterpart of a11y_expand.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "a11y_expand",
+      "description": "Expand a tree node, combo box, or disclosure element by accessibility name. Uses UIA ExpandCollapsePattern on Windows and AXExpanded attribute on macOS. More reliable than click-to-toggle when the element is already in a mixed state.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name to match"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "a11y_get_element",
+      "description": "Fetch a single element by accessibility name — returns name, role, bounds, value, state flags (focused/enabled/disabled/selected/busy/offscreen/expandable/expanded). Convenience singular form of find_element (which returns an array).",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "a11y_get_value",
+      "description": "Read the current value of a named text field, slider, or editable element (UIA ValuePattern / AX AXValue). Use this to verify what a form field contains before deciding whether to type into it.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "a11y_list_children",
+      "description": "List a11y elements geometrically contained within a named parent element. Useful for enumerating menu items, tree children, dialog buttons, list rows. Matches by bounds containment — an element is a child if its rect is fully inside the parent's rect. NOT a true a11y-tree child relationship; good enough for most UI patterns.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "parentName": {
+            "type": "string",
+            "description": "Accessibility name of the parent element"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter on the PARENT match"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          },
+          "maxChildren": {
+            "type": "number",
+            "description": "Cap on children returned",
+            "default": 50
+          }
+        },
+        "required": [
+          "parentName"
+        ]
+      }
+    },
+    {
+      "name": "a11y_select",
+      "description": "Select a list item, tab, or radio button by accessibility name. Uses UIA SelectionItemPattern on Windows; sets AXSelected on macOS. More reliable than clicking when an item is scrolled out of view.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "a11y_toggle",
+      "description": "Toggle a checkbox, switch, or toggle-button by accessibility name. Uses UIA TogglePattern on Windows and AXValue flip on macOS. Returns the NEW toggle state (On/Off/Indeterminate) in the result.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
       "name": "cdp_click",
       "description": "Click a DOM element by CSS selector or by visible text content.",
       "category": "browser",
@@ -355,6 +535,31 @@
       "parameters": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "get_element_state",
+      "description": "Return only the state flags of a named element (focused, enabled/disabled, selected, busy, offscreen, expandable, expanded). Use for quick state checks without pulling the entire element record.",
+      "category": "perception",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Accessibility name"
+          },
+          "controlType": {
+            "type": "string",
+            "description": "Optional role filter"
+          },
+          "processId": {
+            "type": "number",
+            "description": "Scope to a process"
+          }
+        },
+        "required": [
+          "name"
+        ]
       }
     },
     {

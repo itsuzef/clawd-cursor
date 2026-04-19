@@ -1,0 +1,356 @@
+/**
+ * Tranche 2 — accessibility-depth MCP tools.
+ *
+ * These wrap the widened InvokeAction set (`expand`/`collapse`/`toggle`/
+ * `select`) and the richer UiElement state fields added in Tranche 1A.
+ * The adapter-level support is already in place for all three OSes:
+ *   - Windows: ps-bridge.ps1 + invoke-element.ps1 (UIA ExpandCollapse,
+ *     Selection, Toggle patterns)
+ *   - macOS: invoke-element.jxa (AXExpanded / AXValue / AXSelected
+ *     attributes + AXPress / AXShowMenu action fallbacks)
+ *   - Linux: stubbed — returns not_supported_on_platform until the
+ *     AT-SPI bridge lands (Tranche 4b). Non-fatal for other OSes.
+ *
+ * Every tool here treats Linux as graceful-degradation rather than a
+ * hard failure, so agents running on Linux still get a structured
+ * error they can act on (emit cannot_read / give_up), not a crash.
+ */
+
+import type { ToolDefinition, ToolResult, ToolContext } from './types';
+
+function notSupportedOnLinux(tool: string): ToolResult {
+  return {
+    text: `${tool}: not supported on Linux yet (AT-SPI bridge pending — Tranche 4b)`,
+    isError: true,
+  };
+}
+
+function needPlatform(tool: string): ToolResult {
+  return {
+    text: `${tool}: platform adapter not initialized`,
+    isError: true,
+  };
+}
+
+/**
+ * Default `processId` to the active window's pid when the caller didn't
+ * supply one. Without this, UIA / AX searches walk the entire system
+ * tree and take 10-20+ seconds (or hang altogether). Pre-scoping to the
+ * focused app's process is virtually always what a caller wants.
+ */
+async function resolveProcessId(
+  ctx: ToolContext,
+  supplied: number | undefined,
+): Promise<number | undefined> {
+  if (typeof supplied === 'number') return supplied;
+  if (!ctx.platform) return undefined;
+  try {
+    const active = await ctx.platform.getActiveWindow();
+    return active?.processId;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getA11yDepthTools(): ToolDefinition[] {
+  return [
+    // ── ExpandCollapse pattern (tree views, combo boxes, disclosures) ──
+
+    {
+      name: 'a11y_expand',
+      description:
+        'Expand a tree node, combo box, or disclosure element by accessibility name. ' +
+        'Uses UIA ExpandCollapsePattern on Windows and AXExpanded attribute on macOS. ' +
+        'More reliable than click-to-toggle when the element is already in a mixed state.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name to match', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', description: 'Scope to a process', required: false },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_expand');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_expand');
+        const pid = await resolveProcessId(ctx, processId);
+        const res = await ctx.platform.invokeElement({
+          name: String(name), controlType, processId: pid, action: 'expand',
+        });
+        return {
+          text: res.success ? `Expanded "${name}".` : `a11y_expand failed for "${name}".`,
+          isError: !res.success,
+        };
+      },
+    },
+
+    {
+      name: 'a11y_collapse',
+      description:
+        'Collapse a tree node, combo box, or disclosure element by accessibility name. ' +
+        'Counterpart of a11y_expand.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_collapse');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_collapse');
+        const pid = await resolveProcessId(ctx, processId);
+        const res = await ctx.platform.invokeElement({
+          name: String(name), controlType, processId: pid, action: 'collapse',
+        });
+        return {
+          text: res.success ? `Collapsed "${name}".` : `a11y_collapse failed for "${name}".`,
+          isError: !res.success,
+        };
+      },
+    },
+
+    // ── Toggle pattern (checkboxes, switches, toggle buttons) ──
+
+    {
+      name: 'a11y_toggle',
+      description:
+        'Toggle a checkbox, switch, or toggle-button by accessibility name. ' +
+        'Uses UIA TogglePattern on Windows and AXValue flip on macOS. ' +
+        'Returns the NEW toggle state (On/Off/Indeterminate) in the result.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_toggle');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_toggle');
+        const pid = await resolveProcessId(ctx, processId);
+        const res = await ctx.platform.invokeElement({
+          name: String(name), controlType, processId: pid, action: 'toggle',
+        });
+        if (!res.success) return { text: `a11y_toggle failed for "${name}".`, isError: true };
+        const state = res.data?.toggleState ?? 'unknown';
+        return { text: `Toggled "${name}" → ${state}.` };
+      },
+    },
+
+    // ── SelectionItem pattern (list items, tabs, radios) ──
+
+    {
+      name: 'a11y_select',
+      description:
+        'Select a list item, tab, or radio button by accessibility name. ' +
+        'Uses UIA SelectionItemPattern on Windows; sets AXSelected on macOS. ' +
+        'More reliable than clicking when an item is scrolled out of view.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_select');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_select');
+        const pid = await resolveProcessId(ctx, processId);
+        const res = await ctx.platform.invokeElement({
+          name: String(name), controlType, processId: pid, action: 'select',
+        });
+        return {
+          text: res.success ? `Selected "${name}".` : `a11y_select failed for "${name}".`,
+          isError: !res.success,
+        };
+      },
+    },
+
+    // ── Read-only queries ──
+
+    {
+      name: 'a11y_get_element',
+      description:
+        'Fetch a single element by accessibility name — returns name, role, ' +
+        'bounds, value, state flags (focused/enabled/disabled/selected/busy/' +
+        'offscreen/expandable/expanded). Convenience singular form of ' +
+        'find_element (which returns an array).',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_get_element');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_get_element');
+        const pid = await resolveProcessId(ctx, processId);
+        const hits = await ctx.platform.findElements({
+          name: String(name), controlType, processId: pid,
+        });
+        if (hits.length === 0) {
+          return { text: `a11y_get_element: no element named "${name}" found.`, isError: true };
+        }
+        return { text: JSON.stringify(hits[0], null, 2) };
+      },
+    },
+
+    {
+      name: 'a11y_get_value',
+      description:
+        'Read the current value of a named text field, slider, or editable element ' +
+        '(UIA ValuePattern / AX AXValue). Use this to verify what a form field contains ' +
+        'before deciding whether to type into it.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_get_value');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_get_value');
+        const pid = await resolveProcessId(ctx, processId);
+        const res = await ctx.platform.invokeElement({
+          name: String(name), controlType, processId: pid, action: 'get-value',
+        });
+        if (!res.success) {
+          return { text: `a11y_get_value: "${name}" exposes no ValuePattern or AXValue.`, isError: true };
+        }
+        const value = res.data?.value ?? '';
+        return { text: JSON.stringify({ name, value }) };
+      },
+    },
+
+    {
+      name: 'get_element_state',
+      description:
+        'Return only the state flags of a named element (focused, enabled/disabled, ' +
+        'selected, busy, offscreen, expandable, expanded). Use for quick state checks ' +
+        'without pulling the entire element record.',
+      parameters: {
+        name:        { type: 'string', description: 'Accessibility name', required: true },
+        controlType: { type: 'string', description: 'Optional role filter', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+      },
+      category: 'perception',
+      handler: async ({ name, controlType, processId }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('get_element_state');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('get_element_state');
+        const pid = await resolveProcessId(ctx, processId);
+        const hits = await ctx.platform.findElements({
+          name: String(name), controlType, processId: pid,
+        });
+        if (hits.length === 0) {
+          return { text: `get_element_state: no element named "${name}".`, isError: true };
+        }
+        const el = hits[0];
+        const state = {
+          name: el.name,
+          controlType: el.controlType,
+          focused: el.focused ?? false,
+          enabled: el.enabled ?? true,
+          disabled: el.disabled ?? false,
+          selected: el.selected ?? false,
+          busy: el.busy ?? false,
+          offscreen: el.offscreen ?? false,
+          expandable: el.expandable ?? false,
+          expanded: el.expanded ?? false,
+        };
+        return { text: JSON.stringify(state) };
+      },
+    },
+
+    // ── Structural: list children by geometric containment ──
+    //
+    // The PlatformAdapter's getUiTree returns a FLAT list without parent
+    // pointers on Windows (UIA) and macOS (AX flattens similarly). To
+    // approximate "children of X" we filter the flat tree by geometric
+    // containment inside the parent's bounds. Pragmatic — works for most
+    // container→child cases (dialog children, menu items, list items) —
+    // without requiring adapter-script changes.
+    //
+    // When the parent element has zero bounds or is not found, returns
+    // an empty list. The agent can always fall back to find_element for
+    // free-form searching.
+
+    {
+      name: 'a11y_list_children',
+      description:
+        'List a11y elements geometrically contained within a named parent element. ' +
+        'Useful for enumerating menu items, tree children, dialog buttons, list rows. ' +
+        'Matches by bounds containment — an element is a child if its rect is fully ' +
+        'inside the parent\'s rect. NOT a true a11y-tree child relationship; good enough ' +
+        'for most UI patterns.',
+      parameters: {
+        parentName:  { type: 'string', description: 'Accessibility name of the parent element', required: true },
+        controlType: { type: 'string', description: 'Optional role filter on the PARENT match', required: false },
+        processId:   { type: 'number', required: false, description: 'Scope to a process' },
+        maxChildren: { type: 'number', required: false, default: 50, description: 'Cap on children returned' },
+      },
+      category: 'perception',
+      handler: async ({ parentName, controlType, processId, maxChildren }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('a11y_list_children');
+        if (ctx.platform.platform === 'linux') return notSupportedOnLinux('a11y_list_children');
+        const pid = await resolveProcessId(ctx, processId);
+
+        const parents = await ctx.platform.findElements({
+          name: String(parentName), controlType, processId: pid,
+        });
+        if (parents.length === 0) {
+          return { text: `a11y_list_children: parent "${parentName}" not found.`, isError: true };
+        }
+        const parent = parents[0];
+        if (parent.bounds.width <= 0 || parent.bounds.height <= 0) {
+          return { text: `a11y_list_children: parent "${parentName}" has zero bounds.`, isError: true };
+        }
+
+        // For the tree walk, prefer the parent element's own processId so
+        // we only enumerate within the parent's owning app (when known).
+        const treePid = parent.processId ?? pid;
+        const tree = await ctx.platform.getUiTree(treePid);
+
+        const px = parent.bounds.x;
+        const py = parent.bounds.y;
+        const pr = px + parent.bounds.width;
+        const pb = py + parent.bounds.height;
+        const parentArea = parent.bounds.width * parent.bounds.height;
+
+        const children = tree.filter(el => {
+          // Skip the parent itself.
+          if (el.name === parent.name && el.bounds.x === px && el.bounds.y === py) return false;
+          if (el.bounds.width <= 0 || el.bounds.height <= 0) return false;
+          // Geometric containment.
+          const ex = el.bounds.x;
+          const ey = el.bounds.y;
+          const er = ex + el.bounds.width;
+          const eb = ey + el.bounds.height;
+          if (ex < px || ey < py || er > pr || eb > pb) return false;
+          // Skip obvious ancestors (element larger than parent).
+          if (el.bounds.width * el.bounds.height >= parentArea) return false;
+          return true;
+        });
+
+        const cap = typeof maxChildren === 'number' ? maxChildren : 50;
+        const trimmed = children.slice(0, cap);
+        return {
+          text: JSON.stringify({
+            parent: { name: parent.name, controlType: parent.controlType, bounds: parent.bounds },
+            children: trimmed.map(c => ({
+              name: c.name,
+              controlType: c.controlType,
+              bounds: c.bounds,
+              value: c.value,
+            })),
+            totalCount: children.length,
+            truncated: children.length > cap,
+          }),
+        };
+      },
+    },
+  ];
+}

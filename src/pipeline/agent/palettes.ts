@@ -75,6 +75,12 @@ export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
     'wait_for_element',
     'focus_element',
     'read_screen',
+    // Tranche 2 a11y depth — forms commonly need toggle/select/expand/read-value
+    'a11y_toggle',
+    'a11y_select',
+    'a11y_expand',
+    'a11y_get_value',
+    'get_element_state',
     'done',
     'give_up',
     'cannot_read',

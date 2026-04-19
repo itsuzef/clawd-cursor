@@ -148,6 +148,194 @@ export function buildUnifiedTools(
       },
     },
 
+    // ─── A11Y DEPTH (Tranche 2) ────────────────────────────────
+    {
+      name: 'a11y_expand',
+      description: 'Expand a tree node / combo / disclosure by a11y name (UIA ExpandCollapsePattern, AX AXExpanded).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const res = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+          action: 'expand',
+        });
+        return {
+          success: res.success,
+          text: res.success ? `Expanded "${name}".` : `Could not expand "${name}".`,
+          targetLabel: name,
+        };
+      },
+    },
+
+    {
+      name: 'a11y_collapse',
+      description: 'Collapse a tree node / combo / disclosure by a11y name.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const res = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+          action: 'collapse',
+        });
+        return {
+          success: res.success,
+          text: res.success ? `Collapsed "${name}".` : `Could not collapse "${name}".`,
+          targetLabel: name,
+        };
+      },
+    },
+
+    {
+      name: 'a11y_toggle',
+      description: 'Toggle a checkbox / switch / toggle-button by a11y name. Returns new state (On/Off/Indeterminate).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const res = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+          action: 'toggle',
+        });
+        if (!res.success) return { success: false, text: `Could not toggle "${name}".`, targetLabel: name };
+        const state = (res.data as any)?.toggleState ?? 'unknown';
+        return { success: true, text: `Toggled "${name}" → ${state}.`, targetLabel: name };
+      },
+    },
+
+    {
+      name: 'a11y_select',
+      description: 'Select a list item / tab / radio by a11y name (UIA SelectionItemPattern, AX AXSelected).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const res = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+          action: 'select',
+        });
+        return {
+          success: res.success,
+          text: res.success ? `Selected "${name}".` : `Could not select "${name}".`,
+          targetLabel: name,
+        };
+      },
+    },
+
+    {
+      name: 'a11y_get_value',
+      description: 'Read the current value of a named field (UIA ValuePattern / AX AXValue). Useful to verify before typing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const res = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+          action: 'get-value',
+        });
+        if (!res.success) return { success: false, text: `"${name}" has no readable value.` };
+        const value = (res.data as any)?.value ?? '';
+        return { success: true, text: `"${name}" = "${truncate(String(value), 120)}"` };
+      },
+    },
+
+    {
+      name: 'get_element_state',
+      description: 'Get state flags of a named element (focused/enabled/disabled/selected/busy/offscreen/expandable/expanded).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const hits = await ctx.platform.findElements({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: await resolveAgentPid(args, ctx),
+        });
+        if (hits.length === 0) return { success: false, text: `No element named "${name}".` };
+        const el = hits[0];
+        return {
+          success: true,
+          text: JSON.stringify({
+            name: el.name,
+            controlType: el.controlType,
+            focused: el.focused ?? false,
+            enabled: el.enabled ?? true,
+            disabled: el.disabled ?? false,
+            selected: el.selected ?? false,
+            busy: el.busy ?? false,
+            offscreen: el.offscreen ?? false,
+            expandable: el.expandable ?? false,
+            expanded: el.expanded ?? false,
+          }),
+        };
+      },
+    },
+
     // ─── INPUT (mouse) ──────────────────────────────────────────
     {
       name: 'click',
@@ -834,6 +1022,28 @@ export function buildUnifiedTools(
   }
   // Hybrid: full catalog minus cannot_read (hybrid already has vision access).
   return tools.filter(t => t.name !== 'cannot_read');
+}
+
+/**
+ * Resolve `processId` to the active-window pid when the LLM omits it.
+ * Without this, UIA / AX searches walk the entire system tree and
+ * either take 10-20 seconds or hang outright. Pre-scoping to the
+ * focused app's pid is almost always what the agent actually wants.
+ *
+ * Used by every agent-internal tool that calls `findElements` or
+ * `invokeElement` with an optional `processId` arg.
+ */
+async function resolveAgentPid(
+  args: Record<string, unknown>,
+  ctx: AgentToolContext,
+): Promise<number | undefined> {
+  if (typeof args.processId === 'number') return args.processId;
+  try {
+    const active = await ctx.platform.getActiveWindow();
+    return active?.processId;
+  } catch {
+    return undefined;
+  }
 }
 
 function buildWinQuery(args: Record<string, unknown>): { processName?: string; processId?: number; title?: string } | undefined {

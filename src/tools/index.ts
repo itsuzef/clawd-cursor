@@ -13,6 +13,7 @@ import { getShortcutTools } from './shortcuts';
 import { getOcrTools } from './ocr';
 import { getSmartTools } from './smart';
 import { getExtraTools } from './extras';
+import { getA11yDepthTools } from './a11y_depth';
 import type { ToolDefinition, ToolContext, ToolResult } from './types';
 import { toOpenAiFunctions, toJsonSchema } from './types';
 
@@ -30,6 +31,7 @@ export function getAllTools(): ToolDefinition[] {
     ...getOcrTools(),
     ...getSmartTools(),
     ...getExtraTools(),
+    ...getA11yDepthTools(),
   ];
 }
 
