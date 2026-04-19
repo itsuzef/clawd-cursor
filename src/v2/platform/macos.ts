@@ -23,6 +23,12 @@ import type {
   UiElement,
   PermissionStatus,
   PortableKeyCombo,
+  Display,
+  InvokeAction,
+  MouseButton,
+  ScrollDirection,
+  WaitForElementQuery,
+  WindowState,
 } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -142,11 +148,59 @@ export class MacOSAdapter implements PlatformAdapter {
     return this.screenSize;
   }
 
-  async screenshot(opts?: { maxWidth?: number }): Promise<ScreenshotResult> {
+  async listDisplays(): Promise<Display[]> {
+    try {
+      const out = await execFileAsync('osascript', ['-e',
+        `use framework "AppKit"\n` +
+        `set output to ""\n` +
+        `set idx to 0\n` +
+        `set primaryScreen to current application's NSScreen's mainScreen()\n` +
+        `repeat with s in (current application's NSScreen's screens())\n` +
+        `  set frame to frame of s\n` +
+        `  set isPrimary to (s as any) = primaryScreen\n` +
+        `  set output to output & (idx as text) & "|" & (item 1 of item 1 of frame) & "," & (item 2 of item 1 of frame) & "," & (item 1 of item 2 of frame) & "," & (item 2 of item 2 of frame) & "|" & (isPrimary as text) & linefeed\n` +
+        `  set idx to idx + 1\n` +
+        `end repeat\n` +
+        `return output`,
+      ], { timeout: 5_000 });
+
+      const lines = out.stdout.trim().split('\n').filter(Boolean);
+      const primary = await this.getScreenSize();
+      return lines.map((line, i) => {
+        const [idx, bounds, primaryFlag] = line.split('|');
+        const [x, y, w, h] = bounds.split(',').map(v => parseInt(v, 10) || 0);
+        return {
+          index: parseInt(idx, 10) || i,
+          label: parseInt(idx, 10) === 0 ? 'Built-in Display' : `Display ${i + 1}`,
+          primary: primaryFlag.trim() === 'true',
+          bounds: { x, y, width: w, height: h },
+          physicalSize: {
+            width: Math.round(w * primary.dpiRatio),
+            height: Math.round(h * primary.dpiRatio),
+          },
+          dpiRatio: primary.dpiRatio,
+        };
+      });
+    } catch {
+      const size = await this.getScreenSize();
+      return [{
+        index: 0,
+        label: 'Built-in Display',
+        primary: true,
+        bounds: { x: 0, y: 0, width: size.logicalWidth, height: size.logicalHeight },
+        physicalSize: { width: size.physicalWidth, height: size.physicalHeight },
+        dpiRatio: size.dpiRatio,
+      }];
+    }
+  }
+
+  async screenshot(opts?: { maxWidth?: number; displayIndex?: number }): Promise<ScreenshotResult> {
     if (!this.screenshotHelperPath) throw new Error('screenshot-helper not found');
 
     const tmp = `/tmp/.clawdcursor-shot-${process.pid}-${Date.now()}.png`;
     try {
+      // The Swift helper always captures the full screen. For non-primary
+      // display selection we crop post-hoc from listDisplays bounds.
       await execFileAsync(this.screenshotHelperPath, ['--fullscreen', tmp], {
         timeout: SCREENSHOT_TIMEOUT_MS,
       });
@@ -157,6 +211,21 @@ export class MacOSAdapter implements PlatformAdapter {
       let width = meta.width || 0;
       let height = meta.height || 0;
       let scaleFactor = 1;
+
+      if (opts?.displayIndex !== undefined && opts.displayIndex > 0) {
+        const displays = await this.listDisplays();
+        const target = displays[opts.displayIndex];
+        if (target) {
+          const r = target.dpiRatio || 1;
+          const left = Math.max(0, Math.round(target.bounds.x * r));
+          const top = Math.max(0, Math.round(target.bounds.y * r));
+          const w = Math.max(1, Math.min(Math.round(target.bounds.width * r), width - left));
+          const h = Math.max(1, Math.min(Math.round(target.bounds.height * r), height - top));
+          buffer = await sharp(buffer).extract({ left, top, width: w, height: h }).png().toBuffer();
+          width = w;
+          height = h;
+        }
+      }
 
       if (opts?.maxWidth && width > opts.maxWidth) {
         scaleFactor = width / opts.maxWidth;
@@ -230,6 +299,91 @@ export class MacOSAdapter implements PlatformAdapter {
     await this.keyPress('ctrl+mod+f').catch(() => { /* non-fatal */ });
   }
 
+  async setWindowState(
+    state: WindowState,
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    // Resolve target window. When query is omitted, we target the frontmost
+    // app's frontmost window via System Events.
+    const targetClause = this.buildMacWindowTargetClause(query);
+    try {
+      let script: string;
+      if (state === 'close') {
+        // AX close action on the target window — matches UIA WindowPattern.Close semantics.
+        script = `tell application "System Events" to tell ${targetClause} to click (first button whose subrole is "AXCloseButton")`;
+      } else if (state === 'minimize') {
+        script = `tell application "System Events" to tell ${targetClause} to set value of attribute "AXMinimized" to true`;
+      } else if (state === 'maximize') {
+        // macOS's closest equivalent is the zoom button (green traffic light).
+        script = `tell application "System Events" to tell ${targetClause} to click (first button whose subrole is "AXZoomButton")`;
+      } else {
+        // normal: restore from minimized (maximize toggle is an app-level choice on mac).
+        script = `tell application "System Events" to tell ${targetClause} to set value of attribute "AXMinimized" to false`;
+      }
+      await execFileAsync('osascript', ['-e', script], { timeout: OSASCRIPT_TIMEOUT_MS });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async setWindowBounds(
+    bounds: { x?: number; y?: number; width?: number; height?: number },
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    const targetClause = this.buildMacWindowTargetClause(query);
+    try {
+      // Read current bounds for fields not supplied, then assign AXPosition + AXSize.
+      const readScript =
+        `tell application "System Events" to tell ${targetClause}\n` +
+        `  set p to position\n` +
+        `  set s to size\n` +
+        `  return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)\n` +
+        `end tell`;
+      const { stdout: cur } = await execFileAsync('osascript', ['-e', readScript], {
+        timeout: OSASCRIPT_TIMEOUT_MS,
+      });
+      const [cx, cy, cw, ch] = cur.trim().split(',').map(s => parseInt(s, 10) || 0);
+      const x = bounds.x ?? cx;
+      const y = bounds.y ?? cy;
+      const w = bounds.width ?? cw;
+      const h = bounds.height ?? ch;
+      const setScript =
+        `tell application "System Events" to tell ${targetClause}\n` +
+        `  set position to {${x}, ${y}}\n` +
+        `  set size to {${w}, ${h}}\n` +
+        `end tell`;
+      await execFileAsync('osascript', ['-e', setScript], { timeout: OSASCRIPT_TIMEOUT_MS });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private buildMacWindowTargetClause(query?: { processName?: string; processId?: number; title?: string }): string {
+    if (!query) return 'window 1 of (first application process whose frontmost is true)';
+    if (query.processName) {
+      const safe = query.processName.replace(/"/g, '\\"');
+      if (query.title) {
+        const t = query.title.replace(/"/g, '\\"');
+        return `window "${t}" of application process "${safe}"`;
+      }
+      return `window 1 of application process "${safe}"`;
+    }
+    if (query.processId !== undefined) {
+      if (query.title) {
+        const t = query.title.replace(/"/g, '\\"');
+        return `window "${t}" of (first application process whose unix id is ${query.processId})`;
+      }
+      return `window 1 of (first application process whose unix id is ${query.processId})`;
+    }
+    if (query.title) {
+      const t = query.title.replace(/"/g, '\\"');
+      return `first window whose title contains "${t}" of (first application process whose frontmost is true)`;
+    }
+    return 'window 1 of (first application process whose frontmost is true)';
+  }
+
   // ─── ACCESSIBILITY ────────────────────────────────────────────────
 
   async getUiTree(processId?: number): Promise<UiElement[]> {
@@ -273,8 +427,12 @@ export class MacOSAdapter implements PlatformAdapter {
 
   async invokeElement(query: {
     name?: string; controlType?: string; processId?: number;
-    action?: 'click' | 'focus' | 'set-value'; value?: string;
-  }): Promise<{ success: boolean; bounds?: { x: number; y: number; width: number; height: number } }> {
+    action?: InvokeAction; value?: string;
+  }): Promise<{
+    success: boolean;
+    bounds?: { x: number; y: number; width: number; height: number };
+    data?: Record<string, unknown>;
+  }> {
     try {
       const args = ['-l', 'JavaScript', path.join(SCRIPTS_DIR, 'invoke-element.jxa')];
       if (query.processId !== undefined) args.push('--', '-FocusedProcessId', String(query.processId));
@@ -284,48 +442,131 @@ export class MacOSAdapter implements PlatformAdapter {
       if (query.value !== undefined) args.push('-Value', query.value);
       const { stdout } = await execFileAsync('osascript', args, { timeout: OSASCRIPT_TIMEOUT_MS });
       const result = JSON.parse(stdout);
-      return { success: result?.success === true, bounds: result?.bounds };
+      return {
+        success: result?.success === true,
+        bounds: result?.bounds,
+        data: result?.data,
+      };
     } catch {
       return { success: false };
     }
   }
 
+  async waitForElement(query: WaitForElementQuery, timeoutMs: number): Promise<UiElement | null> {
+    const interval = query.intervalMs ?? 250;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const hits = await this.findElements({
+        name: query.name,
+        controlType: query.controlType,
+        processId: query.processId,
+      });
+      if (hits.length > 0) return hits[0];
+      await this.delay(interval);
+    }
+    return null;
+  }
+
   // ─── INPUT (mouse) ────────────────────────────────────────────────
 
-  async mouseClick(x: number, y: number, opts?: { button?: 'left' | 'right'; count?: number }): Promise<void> {
+  private lastCursor: { x: number; y: number } | null = null;
+
+  private toNutButton(button?: MouseButton): Button {
+    if (button === 'right') return Button.RIGHT;
+    if (button === 'middle') return Button.MIDDLE;
+    return Button.LEFT;
+  }
+
+  async mouseClick(x: number, y: number, opts?: { button?: MouseButton; count?: number }): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
     await this.delay(40);
     const count = opts?.count ?? 1;
+    const btn = this.toNutButton(opts?.button);
     for (let i = 0; i < count; i++) {
-      if (opts?.button === 'right') await mouse.rightClick();
-      else await mouse.click(Button.LEFT);
+      if (btn === Button.RIGHT) await mouse.rightClick();
+      else if (btn === Button.MIDDLE) {
+        await mouse.pressButton(Button.MIDDLE);
+        await this.delay(30);
+        await mouse.releaseButton(Button.MIDDLE);
+      } else {
+        await mouse.click(Button.LEFT);
+      }
       if (i < count - 1) await this.delay(60);
     }
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
+  }
+
+  async mouseMoveRelative(dx: number, dy: number): Promise<void> {
+    // nut-js getPosition() works reliably on macOS.
+    try {
+      const pos = await mouse.getPosition();
+      const nx = Math.round(pos.x + dx);
+      const ny = Math.round(pos.y + dy);
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
+    } catch {
+      if (this.lastCursor) {
+        const nx = this.lastCursor.x + dx;
+        const ny = this.lastCursor.y + dy;
+        await mouse.setPosition(new Point(nx, ny));
+        this.lastCursor = { x: nx, y: ny };
+      }
+    }
   }
 
   async mouseDrag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
     await mouse.setPosition(new Point(x1, y1));
+    this.lastCursor = { x: x1, y: y1 };
     await this.delay(50);
     await mouse.pressButton(Button.LEFT);
     await this.delay(80);
     const steps = Math.max(8, Math.floor(Math.hypot(x2 - x1, y2 - y1) / 18));
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      await mouse.setPosition(new Point(Math.round(x1 + (x2 - x1) * t), Math.round(y1 + (y2 - y1) * t)));
+      const nx = Math.round(x1 + (x2 - x1) * t);
+      const ny = Math.round(y1 + (y2 - y1) * t);
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
       await this.delay(10);
     }
     await mouse.releaseButton(Button.LEFT);
   }
 
-  async mouseScroll(x: number, y: number, direction: 'up' | 'down', amount: number = 3): Promise<void> {
+  async mouseScroll(x: number, y: number, direction: ScrollDirection, amount: number = 3): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
     await this.delay(30);
     if (direction === 'down') await mouse.scrollDown(amount);
-    else await mouse.scrollUp(amount);
+    else if (direction === 'up') await mouse.scrollUp(amount);
+    else {
+      // macOS horizontal scroll — hold Shift and scroll vertically. Most
+      // apps interpret Shift+wheel as horizontal.
+      const shiftScript = direction === 'left'
+        ? 'tell application "System Events" to key down shift'
+        : 'tell application "System Events" to key down shift';
+      await execFileAsync('osascript', ['-e', shiftScript], { timeout: 2_000 }).catch(() => {});
+      try {
+        if (direction === 'left') await mouse.scrollUp(amount);
+        else await mouse.scrollDown(amount);
+      } finally {
+        await execFileAsync('osascript', ['-e',
+          'tell application "System Events" to key up shift',
+        ], { timeout: 2_000 }).catch(() => {});
+      }
+    }
+  }
+
+  async mouseDown(button?: MouseButton): Promise<void> {
+    await mouse.pressButton(this.toNutButton(button));
+  }
+
+  async mouseUp(button?: MouseButton): Promise<void> {
+    await mouse.releaseButton(this.toNutButton(button));
   }
 
   // ─── INPUT (keyboard) ─────────────────────────────────────────────
@@ -377,6 +618,55 @@ export class MacOSAdapter implements PlatformAdapter {
     if (m === 'alt' || m === 'option' || m === 'opt') return 'option';
     if (m === 'ctrl' || m === 'control') return 'control';
     return m;
+  }
+
+  async keyDown(key: PortableKeyCombo): Promise<void> {
+    // macOS key down/up via System Events. Supports named modifiers
+    // (shift/option/control/command) and arbitrary key codes. Non-modifier
+    // single chars fall back to a brief keystroke.
+    const lower = key.trim().toLowerCase();
+    const asMod = this.modToAppleScript(lower);
+    if (asMod) {
+      const script = `tell application "System Events" to key down ${asMod}`;
+      await execFileAsync('osascript', ['-e', script], { timeout: 3_000 }).catch(() => {});
+      return;
+    }
+    const code = MAC_KEY_CODES[lower];
+    if (code !== undefined) {
+      const script = `tell application "System Events" to key down (key code ${code})`;
+      await execFileAsync('osascript', ['-e', script], { timeout: 3_000 }).catch(() => {});
+      return;
+    }
+    // Printable single char — no true "hold" semantics via keystroke; emit a tap.
+    if (key.length === 1) {
+      const escaped = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `tell application "System Events" to keystroke "${escaped}"`;
+      await execFileAsync('osascript', ['-e', script], { timeout: 3_000 }).catch(() => {});
+    }
+  }
+
+  async keyUp(key: PortableKeyCombo): Promise<void> {
+    const lower = key.trim().toLowerCase();
+    const asMod = this.modToAppleScript(lower);
+    if (asMod) {
+      const script = `tell application "System Events" to key up ${asMod}`;
+      await execFileAsync('osascript', ['-e', script], { timeout: 3_000 }).catch(() => {});
+      return;
+    }
+    const code = MAC_KEY_CODES[lower];
+    if (code !== undefined) {
+      const script = `tell application "System Events" to key up (key code ${code})`;
+      await execFileAsync('osascript', ['-e', script], { timeout: 3_000 }).catch(() => {});
+    }
+    // Printable single char: no-op — keystroke doesn't hold.
+  }
+
+  private modToAppleScript(name: string): string | null {
+    if (name === 'mod' || name === 'cmd' || name === 'command' || name === 'meta' || name === 'super') return 'command';
+    if (name === 'shift') return 'shift';
+    if (name === 'alt' || name === 'option' || name === 'opt') return 'option';
+    if (name === 'ctrl' || name === 'control') return 'control';
+    return null;
   }
 
   // ─── CLIPBOARD ────────────────────────────────────────────────────
@@ -460,14 +750,26 @@ export class MacOSAdapter implements PlatformAdapter {
     handle: raw.handle ?? raw.processId,
   });
 
-  private normalizeElement = (raw: any): UiElement => ({
-    name: raw.name ?? '',
-    controlType: (raw.controlType ?? '').replace('AX', ''),
-    bounds: raw.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
-    value: raw.value,
-    enabled: raw.enabled,
-    focused: raw.focused,
-  });
+  private normalizeElement = (raw: any): UiElement => {
+    const enabled = raw.enabled;
+    return {
+      name: raw.name ?? '',
+      controlType: (raw.controlType ?? '').replace('AX', ''),
+      bounds: raw.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
+      value: raw.value,
+      enabled,
+      focused: raw.focused,
+      // Tranche 1A: state fields — the JXA helper surfaces these when set.
+      selected: raw.selected,
+      disabled: enabled === false ? true : undefined,
+      busy: raw.busy,
+      offscreen: raw.offscreen,
+      expandable: raw.expandable,
+      expanded: raw.expanded,
+      automationId: raw.identifier ?? raw.automationId,
+      processId: raw.processId,
+    };
+  };
 
   private flattenTree(node: any, acc: UiElement[] = []): UiElement[] {
     if (!node) return acc;

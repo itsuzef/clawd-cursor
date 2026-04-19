@@ -3,6 +3,12 @@
  *
  * Replaces scattered `if (IS_MAC) ... else ...` branching across 34 files.
  * Each platform implements this interface; business logic stays platform-free.
+ *
+ * Tranche 1A (v0.8.1-alpha): adds the primitives needed to unblock the
+ * Tranche 1B / 2 MCP tools (mouseDown/mouseUp, keyDown/keyUp, middle click,
+ * horizontal scroll, window-state / bounds control, display enumeration,
+ * waitForElement, widened invokeElement actions, UI-element state flags).
+ * Every change is ADDITIVE — existing signatures kept so no caller breaks.
  */
 
 export interface ScreenSize {
@@ -13,6 +19,26 @@ export interface ScreenSize {
   logicalWidth: number;
   logicalHeight: number;
   /** Physical / logical (e.g. 2.0 on Retina, 1.0 on standard). */
+  dpiRatio: number;
+}
+
+/**
+ * A physical display. `getScreenSize()` returns the primary display only —
+ * `listDisplays()` returns every connected display so callers can target a
+ * specific one for screenshots or mouse coordinates.
+ */
+export interface Display {
+  /** Index (0 = primary). Stable per boot. */
+  index: number;
+  /** Human label (e.g. "Display 1", "Built-in Retina Display"). */
+  label: string;
+  /** Whether this is the primary / main display. */
+  primary: boolean;
+  /** Logical bounds — mouse-coordinate space. Can be negative for left-of-primary. */
+  bounds: { x: number; y: number; width: number; height: number };
+  /** Physical (pixel) dimensions. */
+  physicalSize: { width: number; height: number };
+  /** Physical / logical scale. */
   dpiRatio: number;
 }
 
@@ -42,10 +68,26 @@ export interface UiElement {
   bounds: { x: number; y: number; width: number; height: number };
   /** Optional structured value (e.g. text field contents). */
   value?: string;
-  /** Whether the element is enabled and visible. */
+  /** Whether the element is enabled and interactable. */
   enabled?: boolean;
   /** Whether the element currently has keyboard focus. */
   focused?: boolean;
+  /** Whether the element is currently selected (list items, tabs, radios). */
+  selected?: boolean;
+  /** Element is in a disabled (grayed-out) state. Opposite of `enabled`. */
+  disabled?: boolean;
+  /** Element is marked busy (e.g. progress in-flight). */
+  busy?: boolean;
+  /** Element is off-screen / scrolled out of view. */
+  offscreen?: boolean;
+  /** Element supports expand/collapse (has an ExpandCollapse a11y pattern). */
+  expandable?: boolean;
+  /** Current expand state when `expandable` is true. */
+  expanded?: boolean;
+  /** Platform-opaque automation identifier (UIA AutomationId, AX identifier, AT-SPI name). */
+  automationId?: string;
+  /** Owning-process id when known. */
+  processId?: number;
 }
 
 export interface PermissionStatus {
@@ -57,6 +99,50 @@ export interface PermissionStatus {
   screenRecording: boolean;
 }
 
+/** Pointer button — extended in Tranche 1A to include middle click. */
+export type MouseButton = 'left' | 'right' | 'middle';
+
+/**
+ * Scroll direction — extended in Tranche 1A to include horizontal. Windows
+ * and macOS native wheel APIs support both axes; Linux X11 uses xdotool
+ * buttons 6/7 or nut-js's `scrollLeft/scrollRight`; Wayland is iffy on
+ * horizontal and degrades gracefully.
+ */
+export type ScrollDirection = 'up' | 'down' | 'left' | 'right';
+
+/**
+ * Canonical window state verbs. `setWindowState('close')` is a polite
+ * close request (WM_CLOSE / AXCloseAction / wmctrl -c) — the app MAY
+ * prompt the user (e.g. "Save changes?") and refuse. Callers must not
+ * assume the window was actually closed.
+ */
+export type WindowState = 'maximize' | 'minimize' | 'normal' | 'close';
+
+/**
+ * Invoke-element action union. Expanded in Tranche 1A to cover the UIA
+ * ExpandCollapse / Toggle / Selection patterns that `ps-bridge.ps1`
+ * already implements on Windows and that `invoke-element.jxa` now
+ * implements on macOS. Linux returns `{success:false}` until the
+ * AT-SPI bridge lands.
+ */
+export type InvokeAction =
+  | 'click'
+  | 'focus'
+  | 'set-value'
+  | 'get-value'
+  | 'expand'
+  | 'collapse'
+  | 'toggle'
+  | 'select';
+
+export interface WaitForElementQuery {
+  name?: string;
+  controlType?: string;
+  processId?: number;
+  /** Poll interval in ms (default 250). */
+  intervalMs?: number;
+}
+
 /**
  * Platform-agnostic interface every supported OS implements.
  *
@@ -66,6 +152,14 @@ export interface PlatformAdapter {
   /** OS family this adapter handles. */
   readonly platform: 'darwin' | 'win32' | 'linux';
 
+  /**
+   * Optional environment hint — Linux sets this to 'wayland' or 'x11' so
+   * callers can surface graceful "not supported on Wayland" errors for
+   * known-broken primitives (cursor queries, some global hotkeys).
+   * Undefined on Windows and macOS.
+   */
+  readonly environment?: 'wayland' | 'x11';
+
   /** One-time setup (warm caches, start helpers). */
   init(): Promise<void>;
 
@@ -73,83 +167,148 @@ export interface PlatformAdapter {
   shutdown(): Promise<void>;
 
   // ─── PERMISSIONS ────────────────────────────────────────────────
-  /** Check current permission status (no prompts). */
   checkPermissions(): Promise<PermissionStatus>;
-  /** Request OS to prompt the user for missing permissions. */
   requestPermissions(): Promise<PermissionStatus>;
 
   // ─── DISPLAY ────────────────────────────────────────────────────
   /** Get the primary display geometry. */
   getScreenSize(): Promise<ScreenSize>;
-  /** Capture the full screen as PNG. Optionally resize to maxWidth. */
-  screenshot(opts?: { maxWidth?: number }): Promise<ScreenshotResult>;
+  /**
+   * List ALL connected displays. Tranche 1A primitive — unblocks
+   * multi-monitor-aware screenshot and mouse targeting. Primary display
+   * is always at index 0.
+   */
+  listDisplays(): Promise<Display[]>;
+  /**
+   * Capture the full screen as PNG. Optionally resize to maxWidth.
+   * `displayIndex` (Tranche 1A) selects a specific display — 0 (default)
+   * is primary. Passing an out-of-range index falls back to primary.
+   */
+  screenshot(opts?: { maxWidth?: number; displayIndex?: number }): Promise<ScreenshotResult>;
   /** Capture a region of the screen. */
   screenshotRegion(x: number, y: number, w: number, h: number): Promise<ScreenshotResult>;
 
   // ─── WINDOWS ────────────────────────────────────────────────────
-  /** List all visible windows. */
   listWindows(): Promise<WindowInfo[]>;
-  /** Get the currently foreground window. */
   getActiveWindow(): Promise<WindowInfo | null>;
-  /** Bring a window to front by process name, pid, or title substring. */
   focusWindow(query: { processName?: string; processId?: number; title?: string }): Promise<boolean>;
-  /** Maximize the foreground window. */
+
+  /**
+   * Legacy shim — preserved for back-compat. New code should call
+   * `setWindowState('maximize')`. Default behavior unchanged.
+   */
   maximizeWindow(): Promise<void>;
 
+  /**
+   * Canonical window-state control. Semantics (Tranche 1A):
+   *   - 'maximize' — full-working-area size
+   *   - 'minimize' — hide to taskbar/Dock
+   *   - 'normal'   — restore from minimized/maximized to previous bounds
+   *   - 'close'    — polite close request; app may prompt / refuse
+   *
+   * Target: the currently-focused window unless `query` is supplied.
+   * Returns true when the request was accepted, NOT when the state
+   * transition completed.
+   */
+  setWindowState(
+    state: WindowState,
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean>;
+
+  /**
+   * Set the foreground (or matched) window's logical-pixel bounds.
+   * Returns true when the request was accepted. No-op where the WM
+   * refuses programmatic move/resize (some tiling Linux WMs).
+   */
+  setWindowBounds(
+    bounds: { x?: number; y?: number; width?: number; height?: number },
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean>;
+
   // ─── ACCESSIBILITY ──────────────────────────────────────────────
-  /** Get the accessibility tree of the focused window as a flat element list. */
   getUiTree(processId?: number): Promise<UiElement[]>;
-  /** Find UI elements matching a query (name, control type, etc.). */
   findElements(query: { name?: string; controlType?: string; processId?: number }): Promise<UiElement[]>;
-  /** Get the currently focused UI element. */
   getFocusedElement(): Promise<UiElement | null>;
-  /** Invoke an accessibility action on a named element (more reliable than coord click). */
-  invokeElement(query: { name?: string; controlType?: string; processId?: number; action?: 'click' | 'focus' | 'set-value'; value?: string }): Promise<{ success: boolean; bounds?: { x: number; y: number; width: number; height: number } }>;
+  /**
+   * Invoke an accessibility action on a named element. Action union
+   * widened in Tranche 1A. Platforms that don't support a given action
+   * return `{ success:false }` — no throw.
+   */
+  invokeElement(query: {
+    name?: string;
+    controlType?: string;
+    processId?: number;
+    action?: InvokeAction;
+    value?: string;
+  }): Promise<{
+    success: boolean;
+    bounds?: { x: number; y: number; width: number; height: number };
+    /** Action-specific payload, e.g. `{ value }` for get-value, `{ toggleState }` for toggle. */
+    data?: Record<string, unknown>;
+  }>;
+
+  /**
+   * Poll for an element to appear. Returns the first matching element or
+   * null when `timeoutMs` elapses. Useful for waiting out transient UI
+   * (dialogs, spinners). Tranche 1A primitive — lifted from
+   * `action-router.ts`'s internal `waitForElement` helper.
+   */
+  waitForElement(query: WaitForElementQuery, timeoutMs: number): Promise<UiElement | null>;
 
   // ─── INPUT (mouse) ──────────────────────────────────────────────
   /** All coords are in LOGICAL pixels (mouse coordinate space). */
-  mouseClick(x: number, y: number, opts?: { button?: 'left' | 'right'; count?: number }): Promise<void>;
+  mouseClick(x: number, y: number, opts?: { button?: MouseButton; count?: number }): Promise<void>;
   mouseMove(x: number, y: number): Promise<void>;
+  /**
+   * Move relative to the current cursor position. On Wayland where
+   * cursor-position queries are blocked, implementations SHOULD cache
+   * the last target from `mouseMove`/`mouseClick` and offset from there;
+   * if no cache is available, they return without error and log a
+   * graceful-degradation warning.
+   */
+  mouseMoveRelative(dx: number, dy: number): Promise<void>;
   mouseDrag(x1: number, y1: number, x2: number, y2: number): Promise<void>;
-  mouseScroll(x: number, y: number, direction: 'up' | 'down', amount?: number): Promise<void>;
+  mouseScroll(x: number, y: number, direction: ScrollDirection, amount?: number): Promise<void>;
+
+  /**
+   * Press a button without releasing. Pairs with `mouseUp`. Enables:
+   *   - Hold modifier + click (Ctrl+click, Shift+click selection)
+   *   - Multi-point drags (mouseDown at A, mouseMove through path, mouseUp at B)
+   *   - Press-and-hold gestures
+   */
+  mouseDown(button?: MouseButton): Promise<void>;
+  /** Release a previously-pressed button. No-op if nothing pressed. */
+  mouseUp(button?: MouseButton): Promise<void>;
 
   // ─── INPUT (keyboard) ───────────────────────────────────────────
-  /** Type a string of characters. */
   typeText(text: string): Promise<void>;
-  /** Press a key combo using a portable spec, e.g. "mod+s", "shift+Return". */
   keyPress(combo: PortableKeyCombo): Promise<void>;
+
+  /**
+   * Press a key without releasing. Pairs with `keyUp`. Enables:
+   *   - Hold shift while clicking
+   *   - Gaming-style chord input
+   *   - OS shortcuts that require precise down/up timing
+   *
+   * `key` accepts the same tokens as `keyPress` (e.g. "shift", "Return",
+   * "F5", "a"). macOS implementation uses `System Events` "key down"; Win
+   * and Linux use nut-js `keyboard.pressKey`.
+   */
+  keyDown(key: PortableKeyCombo): Promise<void>;
+  /** Release a previously-pressed key. No-op if not currently down. */
+  keyUp(key: PortableKeyCombo): Promise<void>;
 
   // ─── CLIPBOARD ──────────────────────────────────────────────────
   readClipboard(): Promise<string>;
   writeClipboard(text: string): Promise<void>;
 
   // ─── APPS ───────────────────────────────────────────────────────
-  /** Open an application by user-friendly name (e.g. "Safari", "notepad"). */
   openApp(name: string): Promise<{ pid?: number; title?: string }>;
-
-  /**
-   * Extended app launch (v0.8.1).
-   *
-   * Unlike {@link openApp}, this returns richer metadata (hwnd on Windows when
-   * available) and accepts launch options: `alwaysNewInstance` forces a fresh
-   * process (for apps like mspaint where the user may already have an instance
-   * running and want a separate window); `url` launches a browser directly at
-   * a target URL on platforms where that's a single syscall.
-   *
-   * Implementations SHOULD fall back to `openApp` behavior when their OS can't
-   * honor an option. The router port (pipeline/router) expects this method to
-   * exist for all three platforms.
-   */
   launchApp(name: string, opts?: {
     alwaysNewInstance?: boolean;
     url?: string;
     cwd?: string;
-    /**
-     * Windows UWP AppsFolder ID (e.g. `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`).
-     * When provided, the Windows adapter launches via `explorer.exe shell:AppsFolder\<id>`,
-     * which works reliably for UWP / Store apps where `Start-Process -FilePath <exe>`
-     * silently fails. Ignored on macOS and Linux.
-     */
+    /** Windows UWP AppsFolder ID. Ignored on macOS and Linux. */
     uwpAppId?: string;
   }): Promise<{ pid?: number; title?: string; handle?: number | string }>;
 }

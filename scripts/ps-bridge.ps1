@@ -423,6 +423,20 @@ function Cmd-InvokeElement {
                 $p.Expand(); return @{ success=$true; action="expand" }
             } catch { return @{ success=$false; error="ExpandCollapsePattern not supported" } }
         }
+        "collapse" {
+            try {
+                $p = $element.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                $p.Collapse(); return @{ success=$true; action="collapse" }
+            } catch { return @{ success=$false; error="ExpandCollapsePattern not supported" } }
+        }
+        "toggle" {
+            try {
+                $p = $element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                $p.Toggle()
+                $state = $p.Current.ToggleState.ToString()
+                return @{ success=$true; action="toggle"; data=@{ toggleState=$state } }
+            } catch { return @{ success=$false; error="TogglePattern not supported" } }
+        }
         "select" {
             try {
                 $p = $element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
