@@ -25,6 +25,7 @@ import {
   Button,
   Key,
 } from '@nut-tree-fork/nut-js';
+import { WaylandBackend } from './wayland-backend';
 import type {
   PlatformAdapter,
   ScreenSize,
@@ -61,6 +62,14 @@ export class LinuxAdapter implements PlatformAdapter {
   private screenSize: ScreenSize | null = null;
   private binaryCache = new Map<string, boolean>();
   private lastCursor: { x: number; y: number } | null = null;
+  /**
+   * Wayland input backend. On X11 this stays `kind:'none'` and all input
+   * flows through nut-js as before. On Wayland, ydotool takes over mouse +
+   * keyboard (if present); wtype is a keyboard-only fallback. Without
+   * either, we fall through to nut-js (which silently fails) and the
+   * adapter's permission probe reports input=false.
+   */
+  private wayland: WaylandBackend = new WaylandBackend('none');
 
   async init(): Promise<void> {
     // Tighten nut-js defaults (mirrors Windows path in legacy code).
@@ -75,12 +84,17 @@ export class LinuxAdapter implements PlatformAdapter {
       this.hasBinary('xclip'),
       this.hasBinary('xrandr'),
       this.hasBinary('xdg-open'),
-      // Wayland-era replacements — good to know if present so we can route
-      // through them later (Tranche 4a).
+      // Wayland-era replacements — detected here so Tranche 4a's routing
+      // decisions at init time are fast.
       this.hasBinary('ydotool'),
       this.hasBinary('wtype'),
       this.hasBinary('wl-copy'),
     ]);
+
+    // If we're on Wayland, initialize the backend. No-op on X11.
+    if (this.environment === 'wayland') {
+      this.wayland = await WaylandBackend.detect(name => this.hasBinary(name));
+    }
 
     // Pre-warm screen size so first capture is fast.
     await this.getScreenSize().catch(() => null);
@@ -540,14 +554,24 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async mouseClick(x: number, y: number, opts?: { button?: MouseButton; count?: number }): Promise<void> {
+    const count = opts?.count ?? 1;
+    const btn = opts?.button ?? 'left';
+    // Wayland: ydotool handles both move + click.
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      await this.delay(30);
+      await this.wayland.mouseClick(btn, count);
+      return;
+    }
+    // X11 (or Wayland without ydotool): nut-js.
     await mouse.setPosition(new Point(x, y));
     this.lastCursor = { x, y };
     await this.delay(30);
-    const count = opts?.count ?? 1;
-    const btn = this.toNutButton(opts?.button);
+    const nutBtn = this.toNutButton(btn);
     for (let i = 0; i < count; i++) {
-      if (btn === Button.RIGHT) await mouse.rightClick();
-      else if (btn === Button.MIDDLE) {
+      if (nutBtn === Button.RIGHT) await mouse.rightClick();
+      else if (nutBtn === Button.MIDDLE) {
         await mouse.pressButton(Button.MIDDLE);
         await this.delay(30);
         await mouse.releaseButton(Button.MIDDLE);
@@ -559,13 +583,27 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      return;
+    }
     await mouse.setPosition(new Point(x, y));
     this.lastCursor = { x, y };
   }
 
   async mouseMoveRelative(dx: number, dy: number): Promise<void> {
-    // On X11, nut-js getPosition() works. On Wayland it returns (0,0) —
-    // we degrade to the cached target from our last mouseMove / mouseClick.
+    if (this.wayland.canMouse()) {
+      // ydotool supports relative move natively.
+      await this.wayland.mouseMoveRelative(dx, dy);
+      if (this.lastCursor) {
+        this.lastCursor = { x: this.lastCursor.x + dx, y: this.lastCursor.y + dy };
+      }
+      return;
+    }
+    // On X11, nut-js getPosition() works. Without ydotool on Wayland it
+    // returns (0,0) — we degrade to the cached target from our last
+    // mouseMove / mouseClick.
     if (this.environment === 'x11') {
       try {
         const pos = await mouse.getPosition();
@@ -586,6 +624,26 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async mouseDrag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
+    if (this.wayland.canMouse()) {
+      // Wayland: absolute move to start, down, interpolated moves, up.
+      await this.wayland.mouseMoveAbsolute(x1, y1);
+      this.lastCursor = { x: x1, y: y1 };
+      await this.delay(50);
+      await this.wayland.mouseDown('left');
+      await this.delay(80);
+      const steps = Math.max(8, Math.floor(Math.hypot(x2 - x1, y2 - y1) / 18));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const nx = Math.round(x1 + (x2 - x1) * t);
+        const ny = Math.round(y1 + (y2 - y1) * t);
+        await this.wayland.mouseMoveAbsolute(nx, ny);
+        this.lastCursor = { x: nx, y: ny };
+        await this.delay(10);
+      }
+      await this.wayland.mouseUp('left');
+      return;
+    }
+    // X11 path — unchanged nut-js.
     await mouse.setPosition(new Point(x1, y1));
     this.lastCursor = { x: x1, y: y1 };
     await this.delay(50);
@@ -604,6 +662,13 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async mouseScroll(x: number, y: number, direction: ScrollDirection, amount: number = 3): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      await this.delay(30);
+      await this.wayland.mouseScroll(direction, amount);
+      return;
+    }
     await mouse.setPosition(new Point(x, y));
     this.lastCursor = { x, y };
     await this.delay(30);
@@ -632,10 +697,18 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async mouseDown(button?: MouseButton): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseDown(button ?? 'left');
+      return;
+    }
     await mouse.pressButton(this.toNutButton(button));
   }
 
   async mouseUp(button?: MouseButton): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseUp(button ?? 'left');
+      return;
+    }
     await mouse.releaseButton(this.toNutButton(button));
   }
 
@@ -643,11 +716,19 @@ export class LinuxAdapter implements PlatformAdapter {
 
   async typeText(text: string): Promise<void> {
     if (!text) return;
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.typeText(text);
+      return;
+    }
     await keyboard.type(text);
   }
 
   async keyPress(combo: PortableKeyCombo): Promise<void> {
     if (!combo) return;
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyPress(combo);
+      return;
+    }
 
     // Literal "+" — can't split on it.
     if (combo === '+') {
@@ -684,6 +765,10 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async keyDown(key: PortableKeyCombo): Promise<void> {
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyDown(key);
+      return;
+    }
     const lower = key.trim().toLowerCase();
     const modKey = this.resolveModifier(lower);
     if (modKey !== null) {
@@ -702,6 +787,10 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async keyUp(key: PortableKeyCombo): Promise<void> {
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyUp(key);
+      return;
+    }
     const lower = key.trim().toLowerCase();
     const modKey = this.resolveModifier(lower);
     if (modKey !== null) {
@@ -759,6 +848,14 @@ export class LinuxAdapter implements PlatformAdapter {
   // ─── CLIPBOARD ────────────────────────────────────────────────────
 
   async readClipboard(): Promise<string> {
+    // Prefer wl-paste on Wayland; xclip on X11. Fall through when neither
+    // is installed — clipboard is best-effort, same contract as macOS.
+    if (this.environment === 'wayland' && (await this.hasBinary('wl-paste'))) {
+      try {
+        const { stdout } = await execFileAsync('wl-paste', ['--no-newline'], { timeout: TOOL_TIMEOUT_MS });
+        return stdout;
+      } catch { return ''; }
+    }
     if (!(await this.hasBinary('xclip'))) return '';
     try {
       const { stdout } = await execFileAsync(
@@ -773,10 +870,14 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async writeClipboard(text: string): Promise<void> {
-    if (!(await this.hasBinary('xclip'))) return;
+    const tool =
+      this.environment === 'wayland' && (await this.hasBinary('wl-copy')) ? 'wl-copy'
+      : (await this.hasBinary('xclip')) ? 'xclip' : null;
+    if (!tool) return;
+    const args = tool === 'wl-copy' ? [] : ['-selection', 'clipboard'];
     await new Promise<void>((resolve) => {
       try {
-        const proc = spawn('xclip', ['-selection', 'clipboard']);
+        const proc = spawn(tool, args);
         const timer = setTimeout(() => {
           proc.kill();
           resolve();
