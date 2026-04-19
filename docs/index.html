@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Clawd Cursor v0.8.0</title>
-  <meta name="description" content="Clawd Cursor v0.8.0: vision-first agent, ground-truth verifier, 42 desktop tools, OS-agnostic via PlatformAdapter. Any AI, any desktop.">
-  <meta property="og:title" content="Clawd Cursor v0.8.0">
-  <meta property="og:description" content="V2 architecture: vision-first agent + ground-truth verifier. OS-agnostic. 42 tools. REST, MCP, or CLI. Any AI model.">
+  <title>Clawd Cursor v0.8.2</title>
+  <meta name="description" content="Clawd Cursor v0.8.2: the skill that gives any AI agent eyes, hands, and ears on a real desktop. 74 granular tools OR 6 compact compound tools (Anthropic Computer-Use style). Blind-first unified pipeline. Windows, macOS, Linux (X11 + Wayland).">
+  <meta property="og:title" content="Clawd Cursor v0.8.2">
+  <meta property="og:description" content="Blind-first desktop automation. 74 tools via REST + MCP, or 6 compact compound tools (1 per 12, ~12× fewer tokens). Any AI model, any OS.">
+
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://clawdcursor.com/">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -15,25 +16,37 @@
 
   <!--
     AGENT-READABLE SUMMARY
-    clawdcursor v0.8.0: OS-agnostic desktop automation tool server
+    clawdcursor v0.8.2: the skill that gives any AI agent eyes, hands, and ears on a real desktop.
 
     Install: powershell -c "irm https://clawdcursor.com/install.ps1 | iex" (Windows)
              curl -fsSL https://clawdcursor.com/install.sh | bash (macOS/Linux)
-    Commands: consent, doctor, grant, start, start --v2, serve, mcp, task "..."
+    Commands: consent, doctor, grant, start, serve, mcp [--compact], task "..."
 
-    Transport: start (REST :3847), mcp (stdio), /execute/{tool} (HTTP)
+    Transport:
+      • start (REST :3847, autonomous agent with built-in pipeline)
+      • serve (REST :3847, you reason + clawdcursor acts)
+      • mcp (stdio, 74 granular tools — back-compat)
+      • mcp --compact (stdio, 6 compound tools — recommended for LLM agents)
 
-    42 Tools: desktop_screenshot, mouse_click/double/right/hover/scroll/drag,
-      type_text, key_press, read_screen, get_windows, focus_window, find_element,
-      clipboard, cdp_*, smart_read/click/type, shortcuts_*, open_app, wait
+    Two surfaces:
+      • Granular (default): 74 tools — mouse_click, type_text, read_screen,
+        cdp_*, smart_click, invoke_element, a11y_toggle/expand/select,
+        maximize_window, resize_window, detect_webview_apps, etc.
+      • Compact (?mode=compact or --compact): 6 action-discriminated compound
+        tools — computer, accessibility, window, system, browser, task.
+        Anthropic Computer-Use style. ~12× fewer tool-catalog tokens.
 
-    V2 pipeline (--v2): Router (regex) → VisionAgent (screenshot loop) → GroundTruthVerifier (6 signals)
-    Legacy pipeline (default): SnapshotBuilder (free OCR+A11y) → TextNavigator (cheap LLM) → VisionFiller (last resort)
+    Unified pipeline (all modes): Router (zero LLM) → blind agent (a11y-first)
+      → hybrid (a11y + on-demand screenshot) → vision fallback. Picks the
+      cheapest path that works.
 
-    OS-agnostic: src/v2/platform/{macos,windows,linux}.ts — one PlatformAdapter interface,
-      one file per OS. No `if (IS_MAC)` branches in business logic.
-    Providers (13+): Anthropic, OpenAI, Groq, Together, DeepSeek, Kimi, Gemini, Ollama, etc.
-    macOS: System Events keyboard (TCC-safe), nut-js mouse, clawdcursor grant for permissions.
+    OS-agnostic: src/v2/platform/{macos,windows,linux}.ts — one PlatformAdapter
+      interface, one file per OS. No `if (IS_MAC)` branches in business logic.
+      Linux X11 + Wayland (ydotool/wtype) + AT-SPI a11y.
+    Providers (13+): Anthropic, OpenAI, Groq, Together, DeepSeek, Kimi, Gemini,
+      Ollama local, Mistral, xAI, Qwen, Fireworks, Cohere, Perplexity.
+    macOS: System Events keyboard (TCC-safe), nut-js mouse, `clawdcursor grant`
+      for permissions.
   -->
 
   <style>
@@ -315,9 +328,9 @@
 
   <!-- Hero -->
   <div class="hero">
-    <div class="hero-badge"><div class="pulse"></div> v0.8.0: vision-first agent + ground-truth verifier</div>
+    <div class="hero-badge"><div class="pulse"></div> v0.8.2: blind-first unified pipeline · compact MCP</div>
     <h1>Give your AI agent<br><span class="gr">eyes and hands</span><br>on your desktop</h1>
-    <p>Any tool-calling model. Any OS. 42 tools that see the screen, move the cursor, type, click, and verify the result actually happened.</p>
+    <p>Any tool-calling model. Any OS. <strong>74 granular tools or 6 compact compound tools</strong> (Anthropic Computer-Use style). Blind-first pipeline tries accessibility trees before pixels — ~12× cheaper per turn than vision-only agents.</p>
     <div class="hero-btns">
       <a href="https://github.com/AmrDab/clawdcursor" class="btn-p" id="star-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -333,8 +346,8 @@
 
   <!-- Stats -->
   <div class="stats">
-    <div class="stat"><div class="stat-val">42</div><div class="stat-lbl">Tools</div></div>
-    <div class="stat"><div class="stat-val">6</div><div class="stat-lbl">Verifier Signals</div></div>
+    <div class="stat"><div class="stat-val">74</div><div class="stat-lbl">Granular Tools</div></div>
+    <div class="stat"><div class="stat-val">6</div><div class="stat-lbl">Compact Tools</div></div>
     <div class="stat"><div class="stat-val">3</div><div class="stat-lbl">Operating Systems</div></div>
     <div class="stat"><div class="stat-val">any</div><div class="stat-lbl">AI Model</div></div>
   </div>
@@ -380,7 +393,7 @@
           <li>Desktop tools appear natively</li>
         </ol>
         <div class="mode-stats">
-          <div><div class="mode-stat-val">42</div><div class="mode-stat-lbl">Tools</div></div>
+          <div><div class="mode-stat-val">6 / 74</div><div class="mode-stat-lbl">Compact / Granular</div></div>
           <div><div class="mode-stat-val">$0</div><div class="mode-stat-lbl">Extra cost</div></div>
         </div>
       </div>
@@ -399,8 +412,8 @@
       <div class="mode-card a">
         <h3>REST API</h3>
         <ol>
-          <li>Run <code style="font-size:0.75rem;color:var(--accent2)">clawdcursor start</code></li>
-          <li>42 tools on localhost:3847</li>
+          <li>Run <code style="font-size:0.75rem;color:var(--accent2)">clawdcursor serve</code></li>
+          <li>74 tools on localhost:3847<br><span style="font-size:0.82em;color:var(--text2)">or 6 via <code>?mode=compact</code></span></li>
           <li>OpenAI function-calling format</li>
         </ol>
         <div class="mode-stats">
@@ -411,49 +424,48 @@
     </div>
   </section>
 
-  <!-- V2 Pipeline -->
+  <!-- Unified Pipeline -->
   <section class="sect" id="pipeline">
-    <div class="sect-label">V2 Architecture · opt in with <code>--v2</code></div>
-    <h2>Vision-first. Verified by ground truth.</h2>
-    <p class="sub">Three stages, each does one thing. The agent loops on screenshots, then six independent signals decide whether the task actually succeeded.</p>
+    <div class="sect-label">Unified Pipeline · blind-first by default</div>
+    <h2>Tries a11y first. Vision is the fallback.</h2>
+    <p class="sub">One loop, three modes. The pipeline picks the cheapest path that works: router → blind agent → hybrid → vision. Most tasks never touch a screenshot.</p>
 
     <div class="pipe-flow">
       <div class="pipe-step router">
         <h4><span class="pipe-num">1</span> Router</h4>
         <span class="pipe-tag">Free · zero LLM</span>
-        <p>Regex shortcuts for trivial tasks. "Open Safari" resolves in under a second. Everything else falls through to the agent.</p>
+        <p>Regex shortcuts + knowledge guides for trivial tasks. "Open Safari", "navigate to github.com" resolves in under a second. Everything else falls through.</p>
       </div>
       <div class="pipe-arrow" aria-hidden="true">→</div>
       <div class="pipe-step agent">
-        <h4><span class="pipe-num">2</span> VisionAgent</h4>
-        <span class="pipe-tag">One loop · 6-rule prompt</span>
-        <p>Screenshot → tool call → new screenshot → repeat. 16 tools. Works with Anthropic, OpenAI, OpenRouter — anything with vision + tool calls.</p>
+        <h4><span class="pipe-num">2</span> Blind / Hybrid / Vision Agent</h4>
+        <span class="pipe-tag">One loop · 3 strategy modes</span>
+        <p>Blind tries the a11y tree first (cheapest). Hybrid allows on-demand screenshots. Vision is the fallback when the UI is custom-canvas. Native tool_use for Anthropic / tool_calls for OpenAI / prose-JSON for everyone else.</p>
       </div>
       <div class="pipe-arrow" aria-hidden="true">→</div>
       <div class="pipe-step verifier">
-        <h4><span class="pipe-num">3</span> Verifier</h4>
-        <span class="pipe-tag">6 ground-truth signals</span>
-        <p>Pixel diff, window change, focus change, OCR delta, task assertions, and anti-patterns (error dialogs, send-failed). Cannot be fooled by "done" self-reports.</p>
+        <h4><span class="pipe-num">3</span> Safety + Verification</h4>
+        <span class="pipe-tag">Single chokepoint</span>
+        <p>Every tool call routes through the SafetyLayer. Destructive verbs (send, delete, close_window) escalate to confirm. Stagnation detection forces the agent to try a different approach or give_up.</p>
       </div>
     </div>
 
     <div class="feat-grid" style="grid-template-columns: repeat(2, 1fr);">
       <div class="feat-card">
-        <div class="feat-icon">🧩</div>
-        <h4>PlatformAdapter</h4>
-        <p>One interface, one file per OS: <code style="font-size:0.78em">macos.ts</code>, <code style="font-size:0.78em">windows.ts</code>, <code style="font-size:0.78em">linux.ts</code>. Replaces 142+ scattered <code style="font-size:0.78em">if (IS_MAC)</code> branches. Adding an OS is a single file.</p>
+        <div class="feat-icon">🎯</div>
+        <h4>Compact MCP surface</h4>
+        <p>6 compound tools — <code style="font-size:0.82em">computer</code>, <code style="font-size:0.82em">accessibility</code>, <code style="font-size:0.82em">window</code>, <code style="font-size:0.82em">system</code>, <code style="font-size:0.82em">browser</code>, <code style="font-size:0.82em">task</code> — that collapse the 74 granular primitives into Anthropic-Computer-Use shape. ~12× smaller tool catalog. <code style="font-size:0.82em">clawdcursor mcp --compact</code> or <code style="font-size:0.82em">?mode=compact</code>.</p>
       </div>
       <div class="feat-card">
-        <div class="feat-icon">🛡️</div>
-        <h4>False-positive resistant</h4>
-        <p>Tested end-to-end on macOS with Haiku + Sonnet. The verifier correctly rejected an email "send" that the legacy pipeline reported as success — caught a "Cannot send" dialog and a missing sent-folder entry.</p>
+        <div class="feat-icon">🧩</div>
+        <h4>PlatformAdapter</h4>
+        <p>One interface, one file per OS: <code style="font-size:0.78em">macos.ts</code>, <code style="font-size:0.78em">windows.ts</code>, <code style="font-size:0.78em">linux.ts</code>. Replaces 142+ scattered <code style="font-size:0.78em">if (IS_MAC)</code> branches. Linux covers both X11 (nut-js) and Wayland (ydotool/wtype) with AT-SPI a11y.</p>
       </div>
     </div>
 
     <div class="pipe-legacy">
-      <strong style="color:var(--text);font-weight:600;">Legacy pipeline still ships as the default.</strong>
-      The 7-layer cascade (SnapshotBuilder → TextNavigator → VisionFiller) is unchanged.
-      <code>clawdcursor start</code> without <code>--v2</code> behaves exactly as before — zero breaking changes.
+      <strong style="color:var(--text);font-weight:600;">One unified pipeline.</strong>
+      No more <code>--v2</code> vs legacy split. The 0.8.0 V2 agent and legacy cascade merged into a single blind-first loop. Existing <code>clawdcursor start</code> users get the unified pipeline automatically; the internal decision-maker is now the same whether you use REST, MCP, or the built-in autonomous agent.
     </div>
   </section>
 
@@ -476,7 +488,7 @@
       <div class="feat-card">
         <div class="feat-icon">🐧</div>
         <h4>Linux — AT-SPI + Tesseract</h4>
-        <p>Same 42 tools, same MCP interface. <code style="font-size:0.82em">sudo apt install tesseract-ocr</code> and you're in.</p>
+        <p>Same 74 tools (or 6 compact), same MCP interface. X11 + Wayland supported. <code style="font-size:0.82em">sudo apt install tesseract-ocr python3-gi gir1.2-atspi-2.0</code> for full a11y; <code style="font-size:0.82em">ydotool</code> or <code style="font-size:0.82em">wtype</code> on Wayland for input.</p>
       </div>
       <div class="feat-card">
         <div class="feat-icon">🖱️</div>
@@ -545,7 +557,7 @@
 </div>
 
 <footer>
-  <p>clawd<strong>cursor</strong> v0.8.0 · localhost only · MIT · <a href="https://clawdcursor.com">Home</a> · <a href="https://github.com/AmrDab/clawdcursor">GitHub</a> · <a href="https://discord.gg/UGBWKvmj">Discord</a></p>
+  <p>clawd<strong>cursor</strong> v0.8.2 · localhost only · MIT · <a href="https://clawdcursor.com">Home</a> · <a href="https://github.com/AmrDab/clawdcursor">GitHub</a> · <a href="https://discord.gg/UGBWKvmj">Discord</a></p>
 </footer>
 
 <script>

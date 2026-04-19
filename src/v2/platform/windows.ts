@@ -34,6 +34,12 @@ import type {
   UiElement,
   PermissionStatus,
   PortableKeyCombo,
+  Display,
+  InvokeAction,
+  MouseButton,
+  ScrollDirection,
+  WaitForElementQuery,
+  WindowState,
 } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -129,14 +135,95 @@ export class WindowsAdapter implements PlatformAdapter {
     return this.screenSize;
   }
 
-  async screenshot(opts?: { maxWidth?: number }): Promise<ScreenshotResult> {
-    const img = await screen.grab();
-    const srcWidth = img.width;
-    const srcHeight = img.height;
+  async listDisplays(): Promise<Display[]> {
+    // System.Windows.Forms.Screen.AllScreens enumerates every connected
+    // display with bounds + primary flag. We call it via the PS UIA path
+    // we already have warmed up.
+    try {
+      const { stdout } = await execFileAsync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          'Add-Type -AssemblyName System.Windows.Forms; ' +
+          '[System.Windows.Forms.Screen]::AllScreens | ForEach-Object { ' +
+          '  $b = $_.Bounds; ' +
+          '  [pscustomobject]@{ ' +
+          '    name = $_.DeviceName; ' +
+          '    primary = $_.Primary; ' +
+          '    x = $b.X; y = $b.Y; w = $b.Width; h = $b.Height ' +
+          '  } ' +
+          '} | ConvertTo-Json -Compress',
+        ],
+        { timeout: PS_TIMEOUT_MS },
+      );
+      const raw = JSON.parse(stdout.trim() || '[]');
+      const arr: any[] = Array.isArray(raw) ? raw : [raw];
+      // Physical pixel dimensions: we can only confidently compute these for
+      // the primary display (via our cached ScreenSize). For secondaries we
+      // assume the same dpiRatio — accurate on homogeneous setups, a safe
+      // approximation on mixed-DPI (caller can override per-monitor later).
+      const size = await this.getScreenSize();
+      return arr.map((s: any, i: number) => {
+        const w = Number(s.w) || 0;
+        const h = Number(s.h) || 0;
+        return {
+          index: i,
+          label: String(s.name || `Display ${i + 1}`),
+          primary: !!s.primary,
+          bounds: { x: Number(s.x) || 0, y: Number(s.y) || 0, width: w, height: h },
+          physicalSize: {
+            width: Math.round(w * size.dpiRatio),
+            height: Math.round(h * size.dpiRatio),
+          },
+          dpiRatio: size.dpiRatio,
+        };
+      });
+    } catch {
+      // Fallback to single display so callers don't have to special-case.
+      const size = await this.getScreenSize();
+      return [{
+        index: 0,
+        label: 'Display 1',
+        primary: true,
+        bounds: { x: 0, y: 0, width: size.logicalWidth, height: size.logicalHeight },
+        physicalSize: { width: size.physicalWidth, height: size.physicalHeight },
+        dpiRatio: size.dpiRatio,
+      }];
+    }
+  }
 
-    let pipeline = sharp(img.data as Buffer, {
-      raw: { width: srcWidth, height: srcHeight, channels: 4 },
-    });
+  async screenshot(opts?: { maxWidth?: number; displayIndex?: number }): Promise<ScreenshotResult> {
+    // displayIndex is plumbed through but nut-js's screen.grab() always
+    // captures ALL displays combined. For index selection on Windows,
+    // we crop to the target display's bounds after the grab.
+    const img = await screen.grab();
+    let srcWidth = img.width;
+    let srcHeight = img.height;
+    let rgba = img.data as Buffer;
+    let pipeline: sharp.Sharp;
+
+    if (opts?.displayIndex !== undefined && opts.displayIndex > 0) {
+      const displays = await this.listDisplays();
+      const target = displays[opts.displayIndex];
+      if (target) {
+        // Translate logical bounds into the physical image (nut-js returns
+        // hardware pixels; multiply by dpiRatio).
+        const r = target.dpiRatio || 1;
+        const left = Math.max(0, Math.round(target.bounds.x * r));
+        const top = Math.max(0, Math.round(target.bounds.y * r));
+        const width = Math.max(1, Math.min(Math.round(target.bounds.width * r), img.width - left));
+        const height = Math.max(1, Math.min(Math.round(target.bounds.height * r), img.height - top));
+        pipeline = sharp(rgba, { raw: { width: img.width, height: img.height, channels: 4 } })
+          .extract({ left, top, width, height });
+        srcWidth = width;
+        srcHeight = height;
+      } else {
+        pipeline = sharp(rgba, { raw: { width: srcWidth, height: srcHeight, channels: 4 } });
+      }
+    } else {
+      pipeline = sharp(rgba, { raw: { width: srcWidth, height: srcHeight, channels: 4 } });
+    }
 
     let width = srcWidth;
     let height = srcHeight;
@@ -241,6 +328,132 @@ export class WindowsAdapter implements PlatformAdapter {
     await this.keyPress('super+up').catch(() => { /* non-fatal */ });
   }
 
+  async setWindowState(
+    state: WindowState,
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    // Resolve the target: either the caller-supplied window or the
+    // foreground one. We drive the transition through a single PowerShell
+    // call that wraps Win32 ShowWindow / PostMessage so we don't depend
+    // on focus timing of a key-press chord.
+    let pid: number | undefined;
+    let hwnd: number | undefined;
+
+    if (query) {
+      // Prefer pid resolution when we can — cheaper than listWindows.
+      pid = query.processId;
+      if (pid === undefined) {
+        const match = await this.resolveWindow(query);
+        if (match) {
+          pid = match.processId;
+          const handle = (match as any).handle;
+          if (typeof handle === 'number') hwnd = handle;
+        }
+      }
+    }
+
+    const showCmd = state === 'maximize' ? 3       // SW_MAXIMIZE
+      : state === 'minimize' ? 6                   // SW_MINIMIZE
+      : state === 'normal'   ? 9                   // SW_RESTORE
+      : null;
+
+    const target = hwnd !== undefined
+      ? `[IntPtr]${hwnd}`
+      : pid !== undefined
+        ? `(Get-Process -Id ${pid}).MainWindowHandle`
+        : '[NativeMethods]::GetForegroundWindow()';
+
+    try {
+      if (state === 'close') {
+        // WM_CLOSE — polite close request. App may prompt, we return true
+        // when the message was posted, not when the window actually closed.
+        const ps =
+          'Add-Type -Name NativeMethods -Namespace Win32 -MemberDefinition @"' +
+          '[DllImport(\\"user32.dll\\")] public static extern System.IntPtr GetForegroundWindow();' +
+          '[DllImport(\\"user32.dll\\")] public static extern bool PostMessage(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, System.IntPtr lParam);' +
+          '"@ -PassThru | Out-Null;' +
+          `$h = ${target};` +
+          'if ($h -ne [System.IntPtr]::Zero) { [Win32.NativeMethods]::PostMessage($h, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero) | Out-Null; "ok" } else { "no-window" }';
+        const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: PS_TIMEOUT_MS });
+        return stdout.trim() === 'ok';
+      }
+
+      if (showCmd !== null) {
+        const ps =
+          'Add-Type -Name NativeMethods -Namespace Win32 -MemberDefinition @"' +
+          '[DllImport(\\"user32.dll\\")] public static extern System.IntPtr GetForegroundWindow();' +
+          '[DllImport(\\"user32.dll\\")] public static extern bool ShowWindowAsync(System.IntPtr hWnd, int nCmdShow);' +
+          '"@ -PassThru | Out-Null;' +
+          `$h = ${target};` +
+          `if ($h -ne [System.IntPtr]::Zero) { [Win32.NativeMethods]::ShowWindowAsync($h, ${showCmd}) | Out-Null; "ok" } else { "no-window" }`;
+        const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: PS_TIMEOUT_MS });
+        return stdout.trim() === 'ok';
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async setWindowBounds(
+    bounds: { x?: number; y?: number; width?: number; height?: number },
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    // SetWindowPos takes hwnd + x/y/w/h. Use SWP_NOZORDER to keep z-order.
+    let hwnd: number | undefined;
+    if (query) {
+      const match = await this.resolveWindow(query);
+      if (match && typeof (match as any).handle === 'number') hwnd = (match as any).handle;
+    }
+    const handleExpr = hwnd !== undefined
+      ? `[IntPtr]${hwnd}`
+      : '[Win32.NativeMethods]::GetForegroundWindow()';
+
+    try {
+      const x = bounds.x ?? -1;
+      const y = bounds.y ?? -1;
+      const w = bounds.width ?? -1;
+      const h = bounds.height ?? -1;
+      // When a dim is -1, we read the current rect and preserve it.
+      const ps =
+        'Add-Type -Name NativeMethods -Namespace Win32 -MemberDefinition @"' +
+        '[DllImport(\\"user32.dll\\")] public static extern System.IntPtr GetForegroundWindow();' +
+        '[DllImport(\\"user32.dll\\")] public static extern bool GetWindowRect(System.IntPtr hWnd, out System.Drawing.Rectangle rect);' +
+        '[DllImport(\\"user32.dll\\")] public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr hWndAfter, int X, int Y, int cx, int cy, uint uFlags);' +
+        '"@ -ReferencedAssemblies System.Drawing -PassThru | Out-Null;' +
+        `$h = ${handleExpr};` +
+        'if ($h -eq [System.IntPtr]::Zero) { "no-window"; exit }' +
+        '$r = New-Object System.Drawing.Rectangle;' +
+        '[Win32.NativeMethods]::GetWindowRect($h, [ref] $r) | Out-Null;' +
+        `$nx = ${x}; $ny = ${y}; $nw = ${w}; $nh = ${h};` +
+        'if ($nx -lt 0) { $nx = $r.X }' +
+        'if ($ny -lt 0) { $ny = $r.Y }' +
+        'if ($nw -lt 0) { $nw = $r.Width - $r.X }' +
+        'if ($nh -lt 0) { $nh = $r.Height - $r.Y }' +
+        '[Win32.NativeMethods]::SetWindowPos($h, [System.IntPtr]::Zero, $nx, $ny, $nw, $nh, 0x0004) | Out-Null;' +
+        '"ok"';
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: PS_TIMEOUT_MS });
+      return stdout.trim() === 'ok';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Internal helper — resolve a focusWindow-style query to a single
+   * WindowInfo. Same precedence the public `focusWindow` uses.
+   */
+  private async resolveWindow(query: { processName?: string; processId?: number; title?: string }): Promise<WindowInfo | null> {
+    const windows = await this.listWindows();
+    return windows.find(w => {
+      if (query.processId !== undefined && w.processId === query.processId) return true;
+      if (query.processName && w.processName.toLowerCase() === query.processName.toLowerCase()) return true;
+      if (query.title && w.title.toLowerCase().includes(query.title.toLowerCase())) return true;
+      return false;
+    }) ?? null;
+  }
+
   // ─── ACCESSIBILITY ────────────────────────────────────────────────
 
   async getUiTree(processId?: number): Promise<UiElement[]> {
@@ -290,9 +503,13 @@ export class WindowsAdapter implements PlatformAdapter {
     name?: string;
     controlType?: string;
     processId?: number;
-    action?: 'click' | 'focus' | 'set-value';
+    action?: InvokeAction;
     value?: string;
-  }): Promise<{ success: boolean; bounds?: { x: number; y: number; width: number; height: number } }> {
+  }): Promise<{
+    success: boolean;
+    bounds?: { x: number; y: number; width: number; height: number };
+    data?: Record<string, unknown>;
+  }> {
     // The underlying PS bridge requires a processId for invoke-element — when the
     // caller omits it, resolve via find-element first (same pattern as AccessibilityBridge).
     let processId = query.processId;
@@ -327,52 +544,128 @@ export class WindowsAdapter implements PlatformAdapter {
       return {
         success: result?.success === true,
         bounds: result?.bounds,
+        data: result?.data,
       };
     } catch {
       return { success: false };
     }
   }
 
+  async waitForElement(query: WaitForElementQuery, timeoutMs: number): Promise<UiElement | null> {
+    const interval = query.intervalMs ?? 250;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const hits = await this.findElements({
+        name: query.name,
+        controlType: query.controlType,
+        processId: query.processId,
+      });
+      if (hits.length > 0) return hits[0];
+      await this.delay(interval);
+    }
+    return null;
+  }
+
   // ─── INPUT (mouse) ────────────────────────────────────────────────
   // All coords are LOGICAL pixels — nut-js mouse API lives in that space on Win.
 
-  async mouseClick(x: number, y: number, opts?: { button?: 'left' | 'right'; count?: number }): Promise<void> {
+  /** Cursor cache for mouseMoveRelative — last known target. */
+  private lastCursor: { x: number; y: number } | null = null;
+
+  private toNutButton(button?: MouseButton): Button {
+    if (button === 'right') return Button.RIGHT;
+    if (button === 'middle') return Button.MIDDLE;
+    return Button.LEFT;
+  }
+
+  async mouseClick(x: number, y: number, opts?: { button?: MouseButton; count?: number }): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
     await this.delay(40);
     const count = opts?.count ?? 1;
+    const btn = this.toNutButton(opts?.button);
     for (let i = 0; i < count; i++) {
-      if (opts?.button === 'right') await mouse.rightClick();
-      else await mouse.click(Button.LEFT);
+      if (btn === Button.RIGHT) await mouse.rightClick();
+      else if (btn === Button.MIDDLE) {
+        // nut-js has no direct middleClick helper; press+release.
+        await mouse.pressButton(Button.MIDDLE);
+        await this.delay(30);
+        await mouse.releaseButton(Button.MIDDLE);
+      } else {
+        await mouse.click(Button.LEFT);
+      }
       if (i < count - 1) await this.delay(60);
     }
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
+  }
+
+  async mouseMoveRelative(dx: number, dy: number): Promise<void> {
+    // nut-js `getPosition()` works reliably on Windows — prefer that over
+    // the cache. Fall back to the cache if the query fails.
+    try {
+      const pos = await mouse.getPosition();
+      const nx = Math.round(pos.x + dx);
+      const ny = Math.round(pos.y + dy);
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
+    } catch {
+      if (this.lastCursor) {
+        const nx = this.lastCursor.x + dx;
+        const ny = this.lastCursor.y + dy;
+        await mouse.setPosition(new Point(nx, ny));
+        this.lastCursor = { x: nx, y: ny };
+      }
+    }
   }
 
   async mouseDrag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
     await mouse.setPosition(new Point(x1, y1));
+    this.lastCursor = { x: x1, y: y1 };
     await this.delay(50);
     await mouse.pressButton(Button.LEFT);
     await this.delay(80);
     const steps = Math.max(8, Math.floor(Math.hypot(x2 - x1, y2 - y1) / 18));
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      await mouse.setPosition(new Point(
-        Math.round(x1 + (x2 - x1) * t),
-        Math.round(y1 + (y2 - y1) * t),
-      ));
+      const nx = Math.round(x1 + (x2 - x1) * t);
+      const ny = Math.round(y1 + (y2 - y1) * t);
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
       await this.delay(10);
     }
     await mouse.releaseButton(Button.LEFT);
   }
 
-  async mouseScroll(x: number, y: number, direction: 'up' | 'down', amount: number = 3): Promise<void> {
+  async mouseScroll(x: number, y: number, direction: ScrollDirection, amount: number = 3): Promise<void> {
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
     await this.delay(30);
+    // nut-js only exposes scrollUp/scrollDown natively. For horizontal,
+    // fall back to Shift+scroll which most apps interpret as horizontal.
     if (direction === 'down') await mouse.scrollDown(amount);
-    else await mouse.scrollUp(amount);
+    else if (direction === 'up') await mouse.scrollUp(amount);
+    else {
+      // Horizontal: hold Shift, scroll vertically.
+      await keyboard.pressKey(Key.LeftShift);
+      try {
+        if (direction === 'left') await mouse.scrollUp(amount);
+        else await mouse.scrollDown(amount);
+      } finally {
+        await keyboard.releaseKey(Key.LeftShift);
+      }
+    }
+  }
+
+  async mouseDown(button?: MouseButton): Promise<void> {
+    await mouse.pressButton(this.toNutButton(button));
+  }
+
+  async mouseUp(button?: MouseButton): Promise<void> {
+    await mouse.releaseButton(this.toNutButton(button));
   }
 
   // ─── INPUT (keyboard) ─────────────────────────────────────────────
@@ -436,6 +729,22 @@ export class WindowsAdapter implements PlatformAdapter {
     }
   }
 
+  async keyDown(key: PortableKeyCombo): Promise<void> {
+    const mapped = this.mapKey(key);
+    if (mapped === 'TYPE_CHAR') {
+      // Single printable char without modifier semantics — treat as type.
+      await keyboard.type(key);
+      return;
+    }
+    await keyboard.pressKey(mapped as Key);
+  }
+
+  async keyUp(key: PortableKeyCombo): Promise<void> {
+    const mapped = this.mapKey(key);
+    if (mapped === 'TYPE_CHAR') return; // no-op — typing isn't held
+    await keyboard.releaseKey(mapped as Key);
+  }
+
   // ─── CLIPBOARD ────────────────────────────────────────────────────
 
   async readClipboard(): Promise<string> {
@@ -473,23 +782,86 @@ export class WindowsAdapter implements PlatformAdapter {
   // ─── APPS ─────────────────────────────────────────────────────────
 
   async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    // Best-effort launch via Start-Process. "name" may be an exe ("notepad"), a
-    // file path, a URL, or a shell verb — Start-Process handles them all.
+    return this.launchApp(name);
+  }
+
+  async launchApp(
+    name: string,
+    opts?: {
+      alwaysNewInstance?: boolean;
+      url?: string;
+      cwd?: string;
+      /**
+       * UWP AppsFolder ID, e.g. `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`.
+       * Launches via `explorer.exe shell:AppsFolder\<id>` which works for
+       * Store / UWP apps where `Start-Process -FilePath <exe>` silently fails.
+       * Takes precedence over `name` when provided.
+       */
+      uwpAppId?: string;
+    },
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // Reject control chars / backticks / $() that can escape PowerShell quoting
+    // regardless of how we serialize.
+    if (/[\r\n\t\x00-\x1f]/.test(name) || /[`$]/.test(name)) {
+      throw new Error('launchApp: illegal characters in app name');
+    }
+
+    // Route 1: UWP apps via explorer shell:AppsFolder\<id>. This is the Windows-
+    // sanctioned way to launch UWP / Store apps and is rock-solid — Calculator,
+    // Notepad-Win11, Photos, etc. all work.
+    if (opts?.uwpAppId) {
+      const id = opts.uwpAppId;
+      // App ID format is `<PackageFamily>_<Hash>!<AppId>`. Valid characters are
+      // alphanumerics, dots, underscores, hyphens, and a single `!`. Reject anything
+      // else to keep the shell: path from interpreting metacharacters.
+      if (!/^[A-Za-z0-9_.\-]+![A-Za-z0-9_.\-]+$/.test(id)) {
+        throw new Error(`launchApp: illegal uwpAppId "${id}"`);
+      }
+      try {
+        const child = spawn('explorer.exe', [`shell:AppsFolder\\${id}`], {
+          stdio: 'ignore', detached: true, windowsHide: true,
+        });
+        child.unref();
+      } catch {
+        // Non-fatal — continue and look for the window anyway.
+      }
+      return this.findLaunchedWindow(name, opts.alwaysNewInstance ? 1200 : 800);
+    }
+
+    // Route 2: classic Start-Process via PowerShell with safely quoted args.
+    const args = ['-NoProfile', '-Command'];
+    const cmdParts: string[] = ['Start-Process'];
+    cmdParts.push('-FilePath', this.psQuote(name));
+    if (opts?.url && !/[\r\n\t\x00-\x1f"'`$]/.test(opts.url)) {
+      cmdParts.push('-ArgumentList', this.psQuote(opts.url));
+    }
+    if (opts?.cwd && !/[\r\n\t\x00-\x1f"'`$]/.test(opts.cwd)) {
+      cmdParts.push('-WorkingDirectory', this.psQuote(opts.cwd));
+    }
+    args.push(cmdParts.join(' '));
+
     try {
-      // Fire and forget — don't wait for the app to exit. detached + unref so
-      // our process doesn't linger on the child.
-      const child = spawn(
-        'powershell.exe',
-        ['-NoProfile', '-Command', `Start-Process -FilePath "${name.replace(/"/g, '""')}"`],
-        { stdio: 'ignore', detached: true, windowsHide: true },
-      );
+      const child = spawn('powershell.exe', args, {
+        stdio: 'ignore', detached: true, windowsHide: true,
+      });
       child.unref();
     } catch {
       // Fall through to the lookup — the app may already be running.
     }
 
-    // Give the process a moment to appear in the window list, then try to find it.
-    await this.delay(800);
+    return this.findLaunchedWindow(name, opts?.alwaysNewInstance ? 1200 : 800);
+  }
+
+  /**
+   * After a launch, look for the window that appeared. Small settle + single
+   * listWindows scan. Returns `{}` when nothing matched — the caller is
+   * responsible for polling longer if it cares about the result.
+   */
+  private async findLaunchedWindow(
+    name: string,
+    settleMs: number,
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    await this.delay(settleMs);
     try {
       const windows = await this.listWindows();
       const target = name.toLowerCase();
@@ -500,6 +872,16 @@ export class WindowsAdapter implements PlatformAdapter {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * PowerShell single-quoted string escape. Inside single quotes, the only
+   * special char is the single quote itself, which doubles to escape.
+   * This is the only safe way to pass a user-controlled string as a
+   * PowerShell argument.
+   */
+  private psQuote(s: string): string {
+    return `'${s.replace(/'/g, "''")}'`;
   }
 
   // ─── INTERNAL HELPERS ─────────────────────────────────────────────
@@ -513,14 +895,26 @@ export class WindowsAdapter implements PlatformAdapter {
     handle: raw?.handle ?? raw?.processId,
   });
 
-  private normalizeElement = (raw: any): UiElement => ({
-    name: raw?.name ?? '',
-    controlType: (raw?.controlType ?? '').replace(/^ControlType\./, ''),
-    bounds: raw?.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
-    value: raw?.value,
-    enabled: raw?.isEnabled,
-    focused: raw?.focused,
-  });
+  private normalizeElement = (raw: any): UiElement => {
+    const enabled = raw?.isEnabled ?? raw?.enabled;
+    return {
+      name: raw?.name ?? '',
+      controlType: (raw?.controlType ?? '').replace(/^ControlType\./, ''),
+      bounds: raw?.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
+      value: raw?.value,
+      enabled,
+      focused: raw?.focused,
+      // Tranche 1A: richer state fields from ps-bridge.
+      selected: raw?.selected ?? raw?.isSelected,
+      disabled: enabled === false ? true : undefined,
+      busy: raw?.busy ?? raw?.isBusy,
+      offscreen: raw?.offscreen ?? raw?.isOffscreen,
+      expandable: raw?.expandable,
+      expanded: raw?.expanded,
+      automationId: raw?.automationId,
+      processId: raw?.processId ?? raw?.pid,
+    };
+  };
 
   /**
    * Flatten the UIA tree into a single list, matching the macOS adapter's

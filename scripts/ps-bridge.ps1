@@ -24,7 +24,24 @@ try {
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+        [DllImport("user32.dll")]
+        public static extern bool AllowSetForegroundWindow(int dwProcessId);
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        // Additional constants for force-focus path:
+        //   HWND_TOPMOST    = -1
+        //   HWND_NOTOPMOST  = -2
+        //   SWP_NOSIZE      = 0x0001
+        //   SWP_NOMOVE      = 0x0002
+        //   SWP_SHOWWINDOW  = 0x0040
+        //   SWP_NOACTIVATE  = 0x0010
     }
 "@
 } catch { } # May already be defined in a long-running session
@@ -239,17 +256,71 @@ function Cmd-FocusWindow {
         } catch {}
     }
 
-    try { $target.SetFocus() } catch {
-        try {
-            $hwnd = [IntPtr]$target.Current.NativeWindowHandle
+    # v0.8.2 force-focus path. Windows' focus-lock blocks SetForegroundWindow
+    # from any process that isn't the current foreground. We work around it
+    # with the AttachThreadInput trick: attach our thread to whatever's
+    # currently foreground, SetForegroundWindow (now allowed because we share
+    # its input queue), then detach. Also toggles HWND_TOPMOST off→on→off to
+    # guarantee the window renders above same-z siblings. Equivalent of what
+    # pywinauto and wmctrl-like tools do on X11.
+    $hwnd = [IntPtr]$target.Current.NativeWindowHandle
+    $forced = $false
+    try {
+        # Try UIA SetFocus first — cheap, works when the app is cooperative.
+        try { $target.SetFocus(); $forced = $true } catch {}
+
+        if (-not $forced) {
+            # Make sure the window is not minimized + not hidden. SW_RESTORE = 9.
             [Win32UIA]::ShowWindow($hwnd, 9) | Out-Null
-            Start-Sleep -Milliseconds 60
-            [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
-        } catch {}
-    }
+            Start-Sleep -Milliseconds 40
+
+            # Brief topmost toggle to push to the front of z-order.
+            $HWND_TOPMOST    = [IntPtr]::new(-1)
+            $HWND_NOTOPMOST  = [IntPtr]::new(-2)
+            $SWP_NOMOVE_SIZE = 0x0003  # NOMOVE | NOSIZE
+            [Win32UIA]::SetWindowPos($hwnd, $HWND_TOPMOST,   0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
+            Start-Sleep -Milliseconds 20
+            [Win32UIA]::SetWindowPos($hwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
+
+            # AttachThreadInput trick — bypasses foreground lock.
+            $currentThread = [Win32UIA]::GetCurrentThreadId()
+            $fg = [Win32UIA]::GetForegroundWindow()
+            $pidTmp = 0
+            $fgThread = 0
+            if ($fg -ne [IntPtr]::Zero) {
+                $fgThread = [Win32UIA]::GetWindowThreadProcessId($fg, [ref]$pidTmp)
+            }
+            $attached = $false
+            if ($fgThread -ne 0 -and $fgThread -ne $currentThread) {
+                try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $true) | Out-Null; $attached = $true } catch {}
+            }
+            try {
+                # Give the target's process permission to set foreground, then ask.
+                [Win32UIA]::AllowSetForegroundWindow(-1) | Out-Null   # ASFW_ANY
+                [Win32UIA]::BringWindowToTop($hwnd) | Out-Null
+                [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
+                $forced = $true
+            } catch {}
+            finally {
+                if ($attached) { try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $false) | Out-Null } catch {} }
+            }
+
+            # Final fallback: synthesize an Alt press. The OS briefly drops
+            # foreground-lock when a key event is dispatched, which lets the
+            # next SetForegroundWindow succeed.
+            if (-not $forced) {
+                try {
+                    [System.Windows.Forms.SendKeys]::SendWait('%') | Out-Null
+                    Start-Sleep -Milliseconds 30
+                    [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
+                    $forced = $true
+                } catch {}
+            }
+        }
+    } catch {}
 
     $c = $target.Current
-    return [ordered]@{ success=$true; title=$c.Name; processId=$c.ProcessId; handle=$c.NativeWindowHandle }
+    return [ordered]@{ success=$true; title=$c.Name; processId=$c.ProcessId; handle=$c.NativeWindowHandle; forced=$forced }
 }
 
 # ── Command: find-element (fuzzy name match) ──────────────────────────────────
@@ -422,6 +493,20 @@ function Cmd-InvokeElement {
                 $p = $element.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
                 $p.Expand(); return @{ success=$true; action="expand" }
             } catch { return @{ success=$false; error="ExpandCollapsePattern not supported" } }
+        }
+        "collapse" {
+            try {
+                $p = $element.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                $p.Collapse(); return @{ success=$true; action="collapse" }
+            } catch { return @{ success=$false; error="ExpandCollapsePattern not supported" } }
+        }
+        "toggle" {
+            try {
+                $p = $element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                $p.Toggle()
+                $state = $p.Current.ToggleState.ToString()
+                return @{ success=$true; action="toggle"; data=@{ toggleState=$state } }
+            } catch { return @{ success=$false; error="TogglePattern not supported" } }
         }
         "select" {
             try {

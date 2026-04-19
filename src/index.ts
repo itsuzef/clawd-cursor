@@ -19,6 +19,31 @@ process.on('uncaughtException', (err: any) => {
   process.exit(1);
 });
 
+// v0.8.1: unhandledRejection handler.
+// Prior behavior: rejected promises inside the agent loop killed the Node
+// process with only Node's default warning — HTTP clients would see connection
+// drops with no trace. Log through the new leveled logger so correlation IDs
+// come along, and keep the server running (server stability > loud death).
+// In CLI mode (no active server) we still exit 1 to surface the bug.
+process.on('unhandledRejection', (reason: any) => {
+  try {
+    // Lazy-require to avoid pulling the pipeline module at cold CLI startup.
+    const { logger } = require('./pipeline/observability/logger');
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    logger.error('unhandledRejection', { msg, stack });
+  } catch {
+    // Logger itself failed — fall back to stderr.
+    // eslint-disable-next-line no-console
+    console.error('unhandledRejection (logger unavailable):', reason);
+  }
+  // In server mode, (process.env.CLAWD_SERVER_MODE === '1') keep running.
+  // In CLI / one-shot mode, exit to surface the bug.
+  if (process.env.CLAWD_SERVER_MODE !== '1') {
+    process.exit(1);
+  }
+});
+
 import { Command } from 'commander';
 import { Agent } from './agent';
 import { createServer } from './server';
@@ -173,7 +198,8 @@ program
   .option('--api-key <key>', 'AI provider API key')
   .option('--debug', 'Save screenshots to debug/ folder (off by default)')
   .option('--accept', 'Accept desktop control consent non-interactively and start')
-  .option('--v2', 'Use the v2 architecture (vision-first agent + ground truth verifier, no legacy layers)')
+  .option('--legacy', 'Use the v0.7 legacy cascade (escape hatch for v0.8.1 regressions; removed in v0.9.0)')
+  .option('--no-vision', 'Refuse vision fallback — blind-first only (high-security mode)')
   .action(async (opts) => {
     // Single-instance guard
     const existingPid = claimPidFile('start');
@@ -254,16 +280,24 @@ program
     };
 
     console.log(`\x1b[32m\u2713\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m\u2014 desktop control active on ${config.server.host}:${config.server.port}\x1b[0m`);
-
-    if (resolvedApi.source === 'external') {
-      console.log(`${e('🔗', '--')} External credentials detected — pipeline config (.clawdcursor-config.json) takes priority`);
-    }
+    // Source-of-credentials banner ("External credentials detected…") was
+    // removed — the per-task header already shows the active model lineup,
+    // and doctor/status report the source explicitly when the user asks.
 
     // ── Agent ──────────────────────────────────────────────────────────────
+    //
+    // Default = the unified pipeline (blind-first by construction: a11y/OCR
+    // tried first, vision as fallback, decomposer splits compound tasks so
+    // each one runs its own full cycle). --legacy is the single escape hatch
+    // for the v0.7 cascade; scheduled for removal in v0.9.0.
     const agent = new Agent(config);
-    if (opts.v2) {
-      agent.enableV2();
-      console.log(`${e('🚀', '[v2]')} Using v2 architecture (vision-first agent + ground truth verifier)`);
+
+    if (opts.noVision) process.env.OPENCLAW_DISABLE_VISION = '1';
+
+    if (!opts.legacy) {
+      agent.enableUnifiedPipeline();
+    } else {
+      console.log(`${e('🕰️', '[legacy]')} Using v0.7 legacy cascade (--legacy flag; slated for removal in v0.9.0)`);
     }
 
     try {
@@ -283,10 +317,17 @@ program
     try {
       const { createToolServer } = await import('./tool-server');
       const { requireAuth } = await import('./server');
+      const { getPlatform } = await import('./v2/platform');
+      // Resolve the platform adapter eagerly — the unified pipeline already
+      // uses it, so reusing the same instance keeps OS state consistent
+      // between the agent and the tool-direct surface.
+      let startPlatform: import('./v2/platform/types').PlatformAdapter | undefined;
+      try { startPlatform = await getPlatform(); } catch { /* non-fatal */ }
       const toolCtx = {
         desktop: agent.getDesktop(),
         a11y: (agent as any).a11y,
         cdp: (agent as any).cdpDriver,
+        platform: startPlatform,
         getMouseScaleFactor: () => 1,  // start command uses agent's own scaling
         getScreenshotScaleFactor: () => agent.getDesktop().getScaleFactor(),
         ensureInitialized: async () => {},  // agent already initialized
@@ -868,10 +909,14 @@ async function createToolContext() {
   const { CDPDriver } = await import('./cdp-driver');
   const { DEFAULT_CONFIG } = await import('./types');
   const { DEFAULT_CDP_PORT } = await import('./browser-config');
+  const { getPlatform } = await import('./v2/platform');
 
   const desktop = new NativeDesktop({ ...DEFAULT_CONFIG });
   const a11y = new AccessibilityBridge();
   const cdp = new CDPDriver(DEFAULT_CDP_PORT);
+  // Lazy adapter handle — Tranche 1A primitives run through this. Populated
+  // in ensureInitialized so we share the same adapter the unified pipeline uses.
+  let platform: import('./v2/platform/types').PlatformAdapter | undefined;
 
   let initialized = false;
   let initPromise: Promise<void> | null = null;
@@ -883,6 +928,7 @@ async function createToolContext() {
     if (initPromise) return initPromise;
     initPromise = (async () => {
       await desktop.connect();
+      platform = await getPlatform();
       screenshotScaleFactor = desktop.getScaleFactor();
       try {
         const { execFileSync } = await import('child_process');
@@ -917,6 +963,7 @@ async function createToolContext() {
 
   return {
     desktop, a11y, cdp,
+    get platform() { return platform; },
     getMouseScaleFactor: () => mouseScaleFactor,
     getScreenshotScaleFactor: () => screenshotScaleFactor,
     ensureInitialized,
@@ -928,7 +975,8 @@ async function createToolContext() {
 program
   .command('mcp')
   .description('Run as MCP tool server over stdio (for Claude Code, Cursor, Windsurf, Zed)')
-  .action(async () => {
+  .option('--compact', 'Expose 6 compound tools instead of 72 granular ones (Anthropic Computer-Use style — recommended for most agents)')
+  .action(async (opts: { compact?: boolean }) => {
     // Single-instance guard (MCP servers can accumulate when editors restart them)
     const existingMcpPid = claimPidFile('mcp');
     if (existingMcpPid !== null) {
@@ -957,9 +1005,10 @@ program
       process.exit(1);
     }
 
-    console.log('clawdcursor MCP mode starting...');
+    const mode = opts.compact ? 'compact' : 'granular';
+    console.log(`clawdcursor MCP mode starting... (${mode})`);
 
-    const { getAllTools } = await import('./tools');
+    const { getAllTools, getCompactSurface } = await import('./tools');
     const ctx = await createToolContext();
 
     // Dynamic import MCP SDK (ESM package from CJS)
@@ -969,8 +1018,10 @@ program
 
     const server = new McpServer({ name: 'clawdcursor', version: '0.7.2' });
 
-    // Register all tools from the unified registry
-    const tools = getAllTools();
+    // Register tools. `--compact` ships the 6 compound tools that mirror
+    // Anthropic's computer_20250124 shape; default is the 72-tool granular
+    // surface (back-compat for existing MCP wirings).
+    const tools = opts.compact ? getCompactSurface() : getAllTools();
     for (const tool of tools) {
       // Convert parameters to Zod schema
       const zodParams: Record<string, any> = {};

@@ -35,6 +35,19 @@ const FAVORITES_PATH = join(DATA_DIR, '.clawdcursor-favorites.json');
 // ── Bearer token auth ─────────────────────────────────────────────────────────
 // Generated once at startup, persisted to ~/.clawdcursor/token so the
 // dashboard and external callers can read it. Rotates on every fresh start.
+//
+// v0.8.2 — silent-401 bug fix. Previous versions compared the incoming Bearer
+// token against an in-memory SERVER_TOKEN only. If a SECOND clawdcursor process
+// started (e.g. the pidfile guard saw a stale/dead pid and took over, or a
+// different mode was invoked concurrently), that second process rewrote the
+// token FILE but the first server's in-memory SERVER_TOKEN was never updated.
+// Clients reading the file sent the new token; the old server rejected it
+// silently — /health kept returning 200, making the failure invisible.
+//
+// Fix: the file is the source of truth. requireAuth() reads the on-disk token
+// (cached with an mtime gate so it's ~free on repeat calls) and accepts EITHER
+// the original in-memory SERVER_TOKEN or the current file token. This ensures
+// clients and server can never drift — whatever's on disk is always valid.
 const TOKEN_PATH = join(DATA_DIR, 'token');
 
 function generateToken(): string {
@@ -56,14 +69,95 @@ export let SERVER_TOKEN = '';
 /** Initialize the auth token. Called once from createServer(). */
 export function initServerToken(): string {
   SERVER_TOKEN = generateToken();
+  diskTokenCache = { token: SERVER_TOKEN, mtimeMs: nowMs(), nextCheckMs: 0 };
   return SERVER_TOKEN;
 }
 
-/** Middleware: require Authorization: Bearer <token> on mutating endpoints. */
+/** Disk-token cache with mtime invalidation. Zero I/O on hot auth paths. */
+let diskTokenCache: { token: string; mtimeMs: number; nextCheckMs: number } | null = null;
+const DISK_TOKEN_TTL_MS = 500; // re-check the file at most twice per second
+
+function nowMs(): number { return Date.now(); }
+
+/**
+ * Read the current on-disk token. Caches the value; re-reads only if the
+ * file's mtime has changed AND enough time has passed since the last check.
+ * Returns '' if the file is missing or unreadable (caller falls back to
+ * SERVER_TOKEN alone in that case).
+ */
+function currentDiskToken(): string {
+  const now = nowMs();
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('fs');
+  try {
+    if (diskTokenCache && now < diskTokenCache.nextCheckMs) {
+      return diskTokenCache.token;
+    }
+    const stat = fs.statSync(TOKEN_PATH);
+    const mtimeMs = stat.mtimeMs;
+    if (diskTokenCache && diskTokenCache.mtimeMs === mtimeMs) {
+      diskTokenCache.nextCheckMs = now + DISK_TOKEN_TTL_MS;
+      return diskTokenCache.token;
+    }
+    const token = fs.readFileSync(TOKEN_PATH, 'utf-8').trim();
+    diskTokenCache = { token, mtimeMs, nextCheckMs: now + DISK_TOKEN_TTL_MS };
+    return token;
+  } catch {
+    // Missing file or I/O error — return empty so callers fall back to memory.
+    return '';
+  }
+}
+
+/** Constant-time token compare (v0.8.1). Replaces the v0.8.0 `!==` which
+ *  short-circuits on first mismatch and leaks byte-level timing to any
+ *  attacker who can measure localhost response latency. */
+function timingSafeTokenEqual(received: string, expected: string): boolean {
+  if (!received || !expected) return false;
+  const a = Buffer.from(received, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) {
+    // Compare against self to keep timing stable when lengths differ.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('crypto').timingSafeEqual(a, a);
+    return false;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('crypto').timingSafeEqual(a, b);
+}
+
+/**
+ * Middleware: require Authorization: Bearer <token> on mutating endpoints.
+ *
+ * v0.8.2: accepts EITHER the in-memory `SERVER_TOKEN` (original, set when
+ * this process started) OR the current on-disk token. This means a second
+ * clawdcursor process that rotated the file doesn't silently 401 clients
+ * that read the new token from disk. Warns in the JSON log the first time
+ * we observe drift, so operators can see when this happens.
+ */
+let loggedTokenDrift = false;
 export function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token || token !== SERVER_TOKEN) {
+  const received = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+
+  const memoryOk = timingSafeTokenEqual(received, SERVER_TOKEN);
+  let diskOk = false;
+  if (!memoryOk) {
+    const diskToken = currentDiskToken();
+    if (diskToken && diskToken !== SERVER_TOKEN) {
+      // Token file was rotated by a different process. Tell the operator once.
+      if (!loggedTokenDrift) {
+        loggedTokenDrift = true;
+        console.warn(
+          `${e('⚠', '[WARN]')} Auth token file was rewritten by another process. ` +
+          `Accepting either the original or the new token to avoid silent 401s. ` +
+          `Run \`clawdcursor stop\` once and restart if you want a single canonical token.`,
+        );
+      }
+      diskOk = timingSafeTokenEqual(received, diskToken);
+    }
+  }
+
+  if (!memoryOk && !diskOk) {
     res.status(401).json({ error: 'Unauthorized — include Authorization: Bearer <token> header. Token is at ~/.clawdcursor/token' });
     return;
   }

@@ -2,6 +2,48 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.8.2] - 2026-04-19 — Session reliability, force-focus, Electron bridge
+
+First-time-user review surfaced six concrete pain points. This release fixes every one.
+
+### Fixed
+
+- **Silent 401 mid-session** (the session-killer). Previous versions compared the incoming Bearer token against an in-memory `SERVER_TOKEN` only. A second clawdcursor process (stale pidfile takeover, or a concurrent mode) rewrote the token FILE without updating the first server's in-memory copy — clients reading the file silently lost auth. `/health` kept returning 200 so the failure was invisible. Fix: `requireAuth` now accepts EITHER the in-memory token OR the current on-disk token (mtime-cached, ~free). Drift is logged once with a recovery hint. `src/server.ts`.
+- **`focus_window` force-to-front on Windows.** Previous implementation called `SetForegroundWindow` which the OS blocks when the caller isn't the current foreground process. New implementation uses the full sequence: `ShowWindow(SW_RESTORE)` → topmost-toggle → `AttachThreadInput` with the current foreground thread → `AllowSetForegroundWindow(ASFW_ANY)` → `BringWindowToTop` → `SetForegroundWindow`, with an Alt-key synthetic fallback. Raises any window through Windows' foreground lock. `scripts/ps-bridge.ps1`.
+- **Richer validation errors.** REST `/execute` rejections now carry the full expected tool signature. A missing param returns `Missing required parameter "target". Expected smart_click(target: string, processId?: number).` — agents no longer have to roundtrip to `/docs`. `src/tool-server.ts`.
+
+### Added
+
+- **Electron / WebView2 detection.** New MCP tools `detect_webview_apps` and `relaunch_with_cdp` (also exposed via compact `system({"action":"detect_webview"})` / `system({"action":"relaunch_with_cdp"})`). Recognises olk (New Outlook), Teams, Discord, Slack, VS Code, GitHub Desktop, Notion, Obsidian, Spotify. When detected, probes ports 9222/9223/9229/8315 for a live CDP endpoint; if found, tells the agent to attach via `browser({"action":"connect"})`. If not, shows the exact relaunch command (e.g. `discord --remote-debugging-port=9222`) so CDP can be enabled and the sparse UIA tree bypassed entirely. `src/tools/electron_bridge.ts`.
+- **`drag_path` documentation clarity.** Existing `mouse_drag_stepped` / compact `computer({"action":"drag_path","path":"[...]"})` now explicitly documented for freehand curve drawing (Paint, Figma, canvas apps). SKILL.md "Quick reference" covers when to use `drag_path` vs `drag`.
+
+### Changed
+
+- **SKILL.md pushes compact mode harder.** Top of doc now carries a directive callout: *"If you are an LLM reading this: YOU SHOULD BE USING COMPACT MODE."* with MCP config + REST URL. Granular stays available but is explicitly labeled the power-user / larger-prompt option.
+- **SKILL.md web-app keyboard warning.** Web-wrapped apps (Outlook, Teams, Gmail) treat `Escape` as "close dialog/modal" — sometimes closing the compose window. Documented: do not use Escape to dismiss autocompletes in web apps; use arrow keys + Enter or click-away.
+- **Error-recovery table** expanded with Electron-vs-true-canvas split, v0.8.2 auth recovery, v0.8.2 force-focus note, and the `drag_path` vs `drag` distinction.
+
+### Tests
+
+- 429 / 430 passing (one skipped, same as 0.8.0).
+- Schema snapshot regenerated → 74 granular tools (72 + 2 Electron bridge).
+- Live smoke: token auth survives a second `clawdcursor serve`; `focus_window` raises Paint through a full-screen window; `detect_webview_apps` correctly flags Outlook / Teams / VS Code when any are open.
+
+### Consolidates v0.8.1 (never tagged)
+
+0.8.1-alpha.0 through -alpha.N shipped unified-pipeline + compact-MCP + Linux AT-SPI + Wayland routing on the feature branch. They roll into 0.8.2 as a single stable release. See the v0.8.1-alpha tag range in the git history for per-tranche detail; headline features:
+
+- **Unified blind/hybrid/vision agent** — one loop, three modes. Replaces the v0.8.0 split `text-agent` + `vision-agent` with a single harness using native `tool_use` (Anthropic) / `tool_calls` (OpenAI) / prose-JSON fallback.
+- **Compact MCP surface** — 6 compound tools (`computer`, `accessibility`, `window`, `system`, `browser`, `task`) that collapse the full capability into ~1,500 tokens of catalog. Anthropic-Computer-Use shape extended across the whole product. `clawdcursor mcp --compact` or `GET /tools?mode=compact`.
+- **PlatformAdapter widened** — `mouseDown/Up`, `keyDown/Up`, `setWindowState`, `setWindowBounds`, `listDisplays`, `waitForElement`, widened `InvokeAction` (`expand`/`collapse`/`toggle`/`select`/`get-value`), richer `UiElement` state flags.
+- **Linux AT-SPI bridge** — read-only first pass via `python3-gi` + `gir1.2-atspi-2.0`. Linux a11y methods (`getUiTree`, `findElements`, `getFocusedElement`, `waitForElement`) now return real data on boxes where the bridge dependencies are present. `invokeElement` still stubbed — tracked for a follow-up pass.
+- **Linux Wayland input routing** — `ydotool` (mouse + keyboard) or `wtype` (keyboard fallback) detected at init. X11 path unchanged; Wayland no longer silently mis-fires through nut-js.
+- **Per-capability palettes + compound vision tools** — text-agent turns now see a 6-10 tool scoped palette based on the subtask's capability (`app_launch` / `text_input` / `navigation` / `form_fill` / `spatial` / `file_ops` / `window_mgmt` / `general`). Vision-agent turns see 3 compound `mouse` / `keyboard` / `window` tools with action enums. ~12× fewer catalog tokens per turn.
+- **Pretty TTY logs with HH:MM:SS timestamps** — layer-tagged (`[router]`, `[blind]`, `[vision]`, `[safety]`, etc.), no per-line repetition, `CLAWD_LOG=pretty` default on TTY.
+- **SKILL.md rewrite** — reviewed by a Sonnet subagent against legacy v0.6.3/v0.7.14 tone, verified model-agnostic + OS-agnostic, restored "USE AS A FALLBACK" + "IMPORTANT — READ THIS BEFORE ANYTHING ELSE" directive callouts and Sensitive App Policy.
+
+---
+
 ## [0.8.0] - 2026-04-16 — V2 Architecture (opt-in)
 
 A ground-up reimagining of the internal pipeline. Opt in with `clawdcursor start --v2`. The legacy pipeline is unchanged and remains the default.

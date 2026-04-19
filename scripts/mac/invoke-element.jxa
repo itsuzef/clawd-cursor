@@ -6,7 +6,8 @@
  * Finds a UI element and invokes an action on it.
  * 
  * Parameters:
- *   -action <string>     - Required. Action to perform: click, set-value, get-value, focus
+ *   -action <string>     - Required. One of: click | focus | set-value | get-value |
+ *                          expand | collapse | toggle | select
  *   -name <string>       - Match elements by name (contains match, case-insensitive)
  *   -role <string>       - Match elements by role (e.g., "button", "text field")
  *   -processId <number>  - Required. The process ID of the target application
@@ -304,7 +305,90 @@ function run(argv) {
                     };
                 }
                 break;
-                
+
+            // ── Tranche 1A: AX Expand/Collapse/Toggle/Select ────────────
+            // macOS AX exposes these through attributes (`AXExpanded`,
+            // `AXValue` for checkboxes) rather than actions. JXA lets us
+            // set them directly. Failing gracefully when an element
+            // doesn't support the attribute is important — UIA-style
+            // pattern-query equivalents don't exist on AX, so we just
+            // attempt the assignment and catch.
+            case 'expand':
+                try {
+                    targetElement.attributes['AXExpanded'].value = true;
+                    result = { success: true, action: 'expand' };
+                } catch (e) {
+                    try {
+                        // Menu-style elements respond to AXShowMenu action.
+                        targetElement.actions['AXShowMenu'].perform();
+                        result = { success: true, action: 'expand', method: 'AXShowMenu' };
+                    } catch (e2) {
+                        result = {
+                            success: false,
+                            error: 'Element does not support expand (no AXExpanded attribute or AXShowMenu action)'
+                        };
+                    }
+                }
+                break;
+
+            case 'collapse':
+                try {
+                    targetElement.attributes['AXExpanded'].value = false;
+                    result = { success: true, action: 'collapse' };
+                } catch (e) {
+                    result = {
+                        success: false,
+                        error: 'Element does not support collapse (no AXExpanded attribute)'
+                    };
+                }
+                break;
+
+            case 'toggle':
+                // Checkboxes / radios expose AXValue as 0/1.
+                try {
+                    var currentValue;
+                    try { currentValue = targetElement.attributes['AXValue'].value; }
+                    catch (vErr) { currentValue = 0; }
+                    var newValue = currentValue ? 0 : 1;
+                    targetElement.attributes['AXValue'].value = newValue;
+                    result = {
+                        success: true,
+                        action: 'toggle',
+                        data: { toggleState: newValue ? 'On' : 'Off' }
+                    };
+                } catch (e) {
+                    // Fallback: invoke a click (AXPress) — matches UIA Toggle semantics.
+                    try {
+                        targetElement.actions['AXPress'].perform();
+                        result = { success: true, action: 'toggle', method: 'AXPress' };
+                    } catch (e2) {
+                        result = {
+                            success: false,
+                            error: 'Element does not support toggle (no AXValue or AXPress)'
+                        };
+                    }
+                }
+                break;
+
+            case 'select':
+                // AX uses AXSelected attribute for list items / tabs.
+                try {
+                    targetElement.attributes['AXSelected'].value = true;
+                    result = { success: true, action: 'select' };
+                } catch (e) {
+                    // Some pickers use AXPick / AXMenuItemMark attributes — try AXPress as last resort.
+                    try {
+                        targetElement.actions['AXPress'].perform();
+                        result = { success: true, action: 'select', method: 'AXPress' };
+                    } catch (e2) {
+                        result = {
+                            success: false,
+                            error: 'Element does not support select (no AXSelected attribute or AXPress action)'
+                        };
+                    }
+                }
+                break;
+
             default:
                 result = {
                     success: false,

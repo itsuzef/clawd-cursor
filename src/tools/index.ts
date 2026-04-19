@@ -12,13 +12,18 @@ import { getOrchestrationTools } from './orchestration';
 import { getShortcutTools } from './shortcuts';
 import { getOcrTools } from './ocr';
 import { getSmartTools } from './smart';
+import { getExtraTools } from './extras';
+import { getA11yDepthTools } from './a11y_depth';
+import { getElectronBridgeTools } from './electron_bridge';
+import { getCompactTools } from './compact';
 import type { ToolDefinition, ToolContext, ToolResult } from './types';
 import { toOpenAiFunctions, toJsonSchema } from './types';
 
 export type { ToolDefinition, ToolContext, ToolResult };
 export { toOpenAiFunctions, toJsonSchema };
+export { getCompactTools };
 
-/** Get all registered tools */
+/** Get all registered GRANULAR tools (the 72-tool surface). */
 export function getAllTools(): ToolDefinition[] {
   return [
     ...getDesktopTools(),
@@ -28,7 +33,19 @@ export function getAllTools(): ToolDefinition[] {
     ...getShortcutTools(),
     ...getOcrTools(),
     ...getSmartTools(),
+    ...getExtraTools(),
+    ...getA11yDepthTools(),
+    ...getElectronBridgeTools(),
   ];
+}
+
+/**
+ * Get the COMPACT surface — 6 compound tools covering every granular
+ * primitive. Equivalent semantics; ~1/12th the catalog tokens. Use via
+ * `clawdcursor mcp --compact` or `GET /tools?mode=compact`.
+ */
+export function getCompactSurface(): ToolDefinition[] {
+  return getCompactTools();
 }
 
 /** Get tools by category */

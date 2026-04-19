@@ -38,6 +38,14 @@ export interface ToolContext {
   a11y: any;
   /** CDPDriver — browser DOM interaction via Chrome DevTools Protocol */
   cdp: any;
+  /**
+   * PlatformAdapter — OS-agnostic primitives added in Tranche 1A
+   * (mouseDown/Up, keyDown/Up, setWindowState, setWindowBounds,
+   * listDisplays, waitForElement, widened invokeElement).
+   * Lazy-loaded via `ensureInitialized` so tool handlers don't need
+   * async dance on every call.
+   */
+  platform?: import('../v2/platform/types').PlatformAdapter;
   /** Image-space → logical (mouse) coords. mouseCoord = imageCoord * factor */
   getMouseScaleFactor: () => number;
   /** Image-space → physical pixel coords (for screenshot region crop) */

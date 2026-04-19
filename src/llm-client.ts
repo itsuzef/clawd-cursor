@@ -569,3 +569,387 @@ async function _callVisionAnthropic(p: DirectVisionLLMOptions & { authHeaders: R
   }
   return text;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tool-use LLM — native Anthropic `tool_use` + OpenAI `tool_calls`
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A tool the model can call. Mirrors Anthropic's `tools` schema and
+ * OpenAI's `tools[].function` schema — both accept JSON-Schema input.
+ */
+export interface LLMTool {
+  name: string;
+  description: string;
+  /** JSON Schema for the tool's arguments. */
+  inputSchema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+}
+
+/**
+ * One structured tool call extracted from the model response. The agent
+ * runs this and feeds the result back on the next turn as a
+ * `tool_result` content block.
+ */
+export interface LLMToolCall {
+  /** Provider-assigned ID, used to associate the subsequent tool_result block. */
+  id: string;
+  name: string;
+  /** Already-parsed JSON args (never a JSON string). */
+  args: Record<string, unknown>;
+}
+
+/** Content blocks the agent's assistant turn can produce. */
+export type LLMAssistantBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
+
+/** Content blocks a user turn can carry. */
+export type LLMUserBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'image_url'; image_url: { url: string; detail?: string } }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+      >;
+      is_error?: boolean;
+    };
+
+/** Conversation turn for the tool-use API. */
+export interface LLMToolTurn {
+  role: 'user' | 'assistant';
+  content: string | LLMUserBlock[] | LLMAssistantBlock[];
+}
+
+export interface ToolUseResult {
+  /** Free-text prose the model emitted alongside tool calls (if any). */
+  text: string;
+  /** Zero or more tool calls in the order the model emitted them. */
+  toolCalls: LLMToolCall[];
+  /** Provider reason the turn ended — `tool_use` / `end_turn` / `stop` / `length`. */
+  stopReason: string;
+  /** Raw assistant content — forward verbatim on the next turn as `{role:'assistant', content: raw}`. */
+  raw: LLMAssistantBlock[];
+}
+
+export interface DirectToolUseOptions {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  isAnthropic: boolean;
+  system: string;
+  tools: LLMTool[];
+  messages: LLMToolTurn[];
+  /** "auto" (default) | "any" | "none" | specific tool name */
+  toolChoice?: 'auto' | 'any' | 'none' | { name: string };
+  maxTokens?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * Invoke an LLM with a tool catalog. Prefers native tool_use (Anthropic)
+ * or tool_calls (OpenAI) and falls back to JSON-in-prose parsing for
+ * providers that lack native support (Ollama text-only models, etc.).
+ *
+ * The caller supplies the tool catalog + multi-turn messages; the function
+ * returns a structured ToolUseResult with parsed tool calls. The agent runs
+ * each tool and feeds results back as `tool_result` blocks on the next turn.
+ */
+export async function callLLMWithTools(opts: DirectToolUseOptions): Promise<ToolUseResult> {
+  const authHeaders: Record<string, string> = opts.isAnthropic
+    ? { 'x-api-key': opts.apiKey, 'anthropic-version': '2023-06-01' }
+    : opts.apiKey
+      ? { 'Authorization': `Bearer ${opts.apiKey}` }
+      : {};
+
+  return opts.isAnthropic
+    ? callAnthropicTools({ ...opts, authHeaders })
+    : callOpenAITools({ ...opts, authHeaders });
+}
+
+// ─── Anthropic tool_use path ─────────────────────────────────────────────────
+
+async function callAnthropicTools(
+  p: DirectToolUseOptions & { authHeaders: Record<string, string> },
+): Promise<ToolUseResult> {
+  // Map our LLMTool shape directly onto Anthropic's `tools` schema.
+  const tools = p.tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema,
+  }));
+
+  // Normalize messages into Anthropic content-block format. We accept
+  // both `image_url` (OpenAI) and `image` (Anthropic) and normalize image_url
+  // to Anthropic's base64 variant.
+  const messages = p.messages.map(turn => {
+    if (typeof turn.content === 'string') {
+      return { role: turn.role, content: turn.content };
+    }
+    const blocks = (turn.content as any[]).map(b => {
+      if (b.type === 'image_url') {
+        const url: string = b.image_url?.url || '';
+        const m = url.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (m) return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } };
+        return b;
+      }
+      return b;
+    });
+    return { role: turn.role, content: blocks };
+  });
+
+  // Anthropic tool_choice shapes: {type:'auto'} | {type:'any'} | {type:'tool', name}
+  let toolChoice: unknown = undefined;
+  if (p.toolChoice && p.toolChoice !== 'none') {
+    toolChoice = typeof p.toolChoice === 'object'
+      ? { type: 'tool', name: p.toolChoice.name }
+      : { type: p.toolChoice };
+  }
+
+  const body: Record<string, unknown> = {
+    model: p.model,
+    max_tokens: p.maxTokens ?? 1024,
+    system: p.system,
+    messages,
+    tools,
+    temperature: 0,
+  };
+  if (toolChoice) body.tool_choice = toolChoice;
+
+  const fetchOpts: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...p.authHeaders },
+    body: JSON.stringify(body),
+  };
+  if (p.timeoutMs) fetchOpts.signal = AbortSignal.timeout(p.timeoutMs);
+
+  const response = await fetch(`${p.baseUrl}/messages`, fetchOpts);
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throwOnHttpError(response.status, p.model, errBody);
+  }
+  const data = await response.json() as any;
+  if (data.error) throw new LLMError(data.error.message || JSON.stringify(data.error));
+
+  const contentBlocks: any[] = Array.isArray(data.content) ? data.content : [];
+  const raw: LLMAssistantBlock[] = [];
+  const toolCalls: LLMToolCall[] = [];
+  let prose = '';
+
+  for (const block of contentBlocks) {
+    if (block.type === 'text') {
+      prose += block.text || '';
+      raw.push({ type: 'text', text: block.text || '' });
+    } else if (block.type === 'tool_use') {
+      const input = (block.input ?? {}) as Record<string, unknown>;
+      toolCalls.push({ id: String(block.id), name: String(block.name), args: input });
+      raw.push({ type: 'tool_use', id: String(block.id), name: String(block.name), input });
+    }
+  }
+
+  return {
+    text: prose,
+    toolCalls,
+    stopReason: String(data.stop_reason || 'end_turn'),
+    raw,
+  };
+}
+
+// ─── OpenAI tool_calls path ──────────────────────────────────────────────────
+
+async function callOpenAITools(
+  p: DirectToolUseOptions & { authHeaders: Record<string, string> },
+): Promise<ToolUseResult> {
+  // Map tools to OpenAI's tools[].function schema.
+  const tools = p.tools.map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+    },
+  }));
+
+  // Normalize messages into OpenAI chat format. OpenAI expects:
+  //   { role:'system'|'user'|'assistant'|'tool', content, tool_calls?, tool_call_id? }
+  // We keep it simple: one system message prepended, then caller's turns.
+  const openaiMessages: any[] = [{ role: 'system', content: p.system }];
+
+  for (const turn of p.messages) {
+    if (typeof turn.content === 'string') {
+      openaiMessages.push({ role: turn.role, content: turn.content });
+      continue;
+    }
+    const blocks = turn.content as any[];
+
+    if (turn.role === 'assistant') {
+      // Assistant turn may contain text + tool_use blocks; OpenAI wants
+      //   { role:'assistant', content?: string, tool_calls?: [...] }
+      let text = '';
+      const tcalls: any[] = [];
+      for (const b of blocks) {
+        if (b.type === 'text') text += b.text || '';
+        else if (b.type === 'tool_use') {
+          tcalls.push({
+            id: b.id,
+            type: 'function',
+            function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+          });
+        }
+      }
+      const msg: any = { role: 'assistant' };
+      if (text) msg.content = text;
+      if (tcalls.length) msg.tool_calls = tcalls;
+      if (!text && !tcalls.length) msg.content = '';
+      openaiMessages.push(msg);
+      continue;
+    }
+
+    // User turn: tool_result blocks become separate `tool` messages; other
+    // blocks are consolidated into one user content array.
+    const userContent: any[] = [];
+    for (const b of blocks) {
+      if (b.type === 'tool_result') {
+        // Emit a standalone `tool` role message BEFORE the rest of the user turn.
+        const resultText = Array.isArray(b.content)
+          ? b.content.map((c: any) => c.type === 'text' ? c.text : '').filter(Boolean).join('\n')
+          : '';
+        openaiMessages.push({
+          role: 'tool',
+          tool_call_id: b.tool_use_id,
+          content: resultText,
+        });
+      } else if (b.type === 'text') {
+        userContent.push({ type: 'text', text: b.text });
+      } else if (b.type === 'image') {
+        const url = `data:${b.source.media_type};base64,${b.source.data}`;
+        userContent.push({ type: 'image_url', image_url: { url } });
+      } else if (b.type === 'image_url') {
+        userContent.push({ type: 'image_url', image_url: b.image_url });
+      }
+    }
+    if (userContent.length === 1 && userContent[0].type === 'text') {
+      openaiMessages.push({ role: 'user', content: userContent[0].text });
+    } else if (userContent.length > 0) {
+      openaiMessages.push({ role: 'user', content: userContent });
+    }
+  }
+
+  // tool_choice mapping
+  let toolChoice: unknown = 'auto';
+  if (p.toolChoice === 'none') toolChoice = 'none';
+  else if (p.toolChoice === 'any') toolChoice = 'required';
+  else if (typeof p.toolChoice === 'object') {
+    toolChoice = { type: 'function', function: { name: p.toolChoice.name } };
+  }
+
+  const body: Record<string, unknown> = {
+    model: p.model,
+    messages: openaiMessages,
+    tools,
+    tool_choice: toolChoice,
+    max_tokens: p.maxTokens ?? 1024,
+    temperature: 0,
+  };
+
+  const fetchOpts: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...p.authHeaders },
+    body: JSON.stringify(body),
+  };
+  if (p.timeoutMs) fetchOpts.signal = AbortSignal.timeout(p.timeoutMs);
+
+  const response = await fetch(`${p.baseUrl}/chat/completions`, fetchOpts);
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throwOnHttpError(response.status, p.model, errBody);
+  }
+  const data = await response.json() as any;
+  if (data.error) throw new LLMError(data.error.message || JSON.stringify(data.error));
+
+  const msg = data.choices?.[0]?.message ?? {};
+  const stopReason = String(data.choices?.[0]?.finish_reason || 'stop');
+  const text = typeof msg.content === 'string' ? msg.content : '';
+
+  const raw: LLMAssistantBlock[] = [];
+  const toolCalls: LLMToolCall[] = [];
+
+  if (text) raw.push({ type: 'text', text });
+  const tcalls: any[] = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  for (const tc of tcalls) {
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(tc.function?.arguments ?? '{}'); } catch { /* keep empty */ }
+    const id = String(tc.id || `call_${toolCalls.length}`);
+    const name = String(tc.function?.name || '');
+    if (!name) continue;
+    toolCalls.push({ id, name, args });
+    raw.push({ type: 'tool_use', id, name, input: args });
+  }
+
+  // Fallback: some providers (Ollama, some local models) don't emit native
+  // tool_calls even when `tools` is provided. If we got a prose response
+  // that *looks* like a tool call, parse it out so the agent keeps moving.
+  if (toolCalls.length === 0 && text) {
+    const parsed = tryParseProseToolCall(text);
+    if (parsed) {
+      const id = `prose_${Date.now()}`;
+      toolCalls.push({ id, name: parsed.name, args: parsed.args });
+      raw.push({ type: 'tool_use', id, name: parsed.name, input: parsed.args });
+    }
+  }
+
+  return { text, toolCalls, stopReason, raw };
+}
+
+/**
+ * Fallback prose→tool-call parser for providers that don't emit native tool_calls.
+ * Looks for the first `{ ... }` object with `tool`/`name` + `args`/`input`
+ * keys. Deliberately lenient. Returns null if the prose doesn't look like
+ * a tool call.
+ */
+export function tryParseProseToolCall(prose: string): { name: string; args: Record<string, unknown> } | null {
+  // Strip code fences.
+  const stripped = prose.replace(/```(?:json)?\s*|```\s*$/g, '').trim();
+  // Find first balanced JSON object.
+  const start = stripped.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let end = -1;
+  for (let i = start; i < stripped.length; i++) {
+    const c = stripped[i];
+    if (esc) { esc = false; continue; }
+    if (c === '\\') { esc = true; continue; }
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) { end = i + 1; break; }
+    }
+  }
+  if (end === -1) return null;
+  const candidate = stripped.slice(start, end);
+  let obj: any;
+  try { obj = JSON.parse(candidate); } catch { return null; }
+  if (!obj || typeof obj !== 'object') return null;
+  const name = typeof obj.tool === 'string' ? obj.tool
+    : typeof obj.name === 'string' ? obj.name
+    : typeof obj.action === 'string' ? obj.action
+    : '';
+  if (!name) return null;
+  const args = (obj.args && typeof obj.args === 'object') ? obj.args
+    : (obj.input && typeof obj.input === 'object') ? obj.input
+    : (obj.parameters && typeof obj.parameters === 'object') ? obj.parameters
+    : {};
+  return { name, args: args as Record<string, unknown> };
+}

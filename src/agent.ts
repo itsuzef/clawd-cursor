@@ -64,6 +64,20 @@ const MAX_STEPS = 15;
 const MAX_SIMILAR_ACTION = 3;
 const MAX_LLM_FALLBACK_STEPS = 10;
 
+/**
+ * Provider-agnostic Anthropic-endpoint detector. Anthropic native endpoints
+ * use the `/messages` API shape; everything else (OpenAI, Groq, Together,
+ * Kimi, DeepSeek, Ollama, Gemini-via-OpenAI-compat) uses `/chat/completions`.
+ * Local endpoints and Ollama always take the OpenAI-compat path even if their
+ * host happens to match an Anthropic-ish substring.
+ */
+function isAnthropicEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  if (baseUrl.includes('localhost')) return false;
+  if (baseUrl.includes('11434')) return false; // Ollama default port
+  return baseUrl.includes('anthropic.com');
+}
+
 export class Agent {
   private desktop: NativeDesktop;
   private brain: AIBrain;
@@ -96,9 +110,18 @@ export class Agent {
   private useV2 = false;
   private pipelineV2: import('./v2/orchestrator').PipelineV2 | null = null;
 
-  /** Enable the v2 pipeline (vision-first agent + ground truth verifier). */
+  /** Unified pipeline — default entry in v0.8.1. See `_executeTaskUnified`. */
+  private useUnifiedPipeline = false;
+  private pipelineUnified: import('./pipeline').Pipeline | null = null;
+
+  /** Enable the v2 pipeline (legacy; kept for one release behind an internal flag). */
   enableV2(): void {
     this.useV2 = true;
+  }
+
+  /** Opt into the unified pipeline. Called by default from `clawdcursor start`. */
+  enableUnifiedPipeline(): void {
+    this.useUnifiedPipeline = true;
   }
 
   constructor(config: ClawdConfig) {
@@ -128,15 +151,11 @@ export class Agent {
     this.skillCache.load();
 
     if (pipelineConfig && pipelineConfig.layer2.enabled) {
+      // Legacy reasoners are still constructed so --legacy keeps working,
+      // but we no longer print the old stage-named banners — the unified
+      // pipeline's per-task header prints the active model lineup instead.
       this.snapshotBuilder = new SnapshotBuilder(this.ocrEngine, this.a11y, this.desktop, pipelineConfig);
       this.ocrReasoner = new OcrReasoner(this.ocrEngine, this.desktop, this.a11y, pipelineConfig);
-      const ocrStatus = this.ocrEngine.isAvailable() ? 'OCR+A11y' : 'A11y-only';
-      console.log(`👁️ Stage 1 (SnapshotBuilder): ${ocrStatus} parallel capture`);
-      console.log(`🧠 Stage 2 (TextNavigator): ${pipelineConfig.layer2.model}`);
-    }
-    const skillStats = this.skillCache.getStats();
-    if (skillStats.total > 0) {
-      console.log(`📚 Layer 2 (Skill Cache): ${skillStats.total} cached skills`);
     }
 
     // hasApiKey gates LLM decomposition — true if cloud key OR local LLM (Ollama) is available
@@ -333,18 +352,23 @@ public class WinAPI {
     const textModel = pipelineConfig?.layer2?.model || this.config.ai.model || 'unavailable';
     const visionModel = pipelineConfig?.layer3?.model || this.config.ai.visionModel || 'unavailable';
 
-    const textProvider = this.inferProviderLabel(
+    // Active-model summary ("🤖 Active models: text=… | vision=…") was
+    // removed — the per-task header prints the live model lineup right
+    // before every task so the startup banner stays short. Provider
+    // labels are still computed below for the legacy computerUse path.
+    void textModel;
+    void visionModel;
+    const _textProvider = this.inferProviderLabel(
       this.config.ai.textApiKey || this.config.ai.apiKey,
       pipelineConfig?.layer2?.baseUrl || this.config.ai.textBaseUrl || this.config.ai.baseUrl,
       pipelineConfig?.providerKey || this.config.ai.provider,
     );
-    const visionProvider = this.inferProviderLabel(
+    const _visionProvider = this.inferProviderLabel(
       this.config.ai.visionApiKey || this.config.ai.apiKey,
       pipelineConfig?.layer3?.baseUrl || this.config.ai.visionBaseUrl || this.config.ai.baseUrl,
       pipelineConfig?.providerKey || this.config.ai.provider,
     );
-
-    console.log(`🤖 Active models: text=${textModel} (${textProvider}) | vision=${visionModel} (${visionProvider})`);
+    void _textProvider; void _visionProvider;
 
     this.browserLayer = new BrowserLayer(this.config, pipelineConfig || {} as PipelineConfig);
     // Browser layer initialized
@@ -367,15 +391,16 @@ public class WinAPI {
     // Use provider capability flag instead of hardcoded provider name check
     const pipelineHasNativeCU = !!pipelineConfig?.provider?.computerUse;
     if (pipelineHasNativeCU && ComputerUseBrain.isSupported(this.config, computerUseOverrides)) {
+      // Legacy Anthropic Computer Use path — only used when --legacy is set.
+      // Startup banner stays quiet about it; the legacy task flow prints
+      // its own heading when it actually runs.
       this.computerUse = new ComputerUseBrain(this.config, this.desktop, this.a11y, this.safety, computerUseOverrides);
       this.computerUse.setVerifier(this.verifier);
-      console.log(`🖥️  Computer Use API enabled (Anthropic native tool + accessibility)`);
     } else if (isGenericComputerUseSupported(this.config, pipelineConfig)) {
-      // Non-Anthropic provider with a vision model — use the universal OpenAI-compat loop
+      // Non-Anthropic provider with a vision model — legacy generic
+      // Computer Use loop. Same deal: quiet at startup, loud when it runs.
       this.genericComputerUse = new GenericComputerUse(this.config, this.desktop, this.a11y, this.safety, pipelineConfig);
       this.genericComputerUse.setVerifier(this.verifier);
-      const visionModel = pipelineConfig?.layer3?.model || this.config.ai.visionModel || 'unknown';
-      console.log(`🌐 Generic Computer Use enabled (${visionModel})`);
     }
 
     const size = this.desktop.getScreenSize();
@@ -419,6 +444,9 @@ public class WinAPI {
     });
 
     try {
+      if (this.useUnifiedPipeline) {
+        return await Promise.race([this._executeTaskUnified(task, startTime), timeoutPromise]);
+      }
       if (this.useV2) {
         return await Promise.race([this._executeTaskV2(task, startTime), timeoutPromise]);
       }
@@ -484,6 +512,112 @@ public class WinAPI {
       for (const sig of result.verifyResult.signals) {
         console.log(`   ${sig.value ? '✓' : '✗'} ${sig.name}: ${sig.detail}`);
       }
+    }
+
+    this.state.status = 'idle';
+    return {
+      success: result.success,
+      steps,
+      duration: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * v0.8.1 unified pipeline — blind-first by construction; vision is the
+   * fallback, not a competing default. Decomposer splits compound tasks
+   * into subtasks, each of which runs its own full pipeline cycle.
+   *
+   * Routes through: classify → router → knowledge → sense (a11y) →
+   * text-agent (no screenshots) → vision-agent (fallback).
+   *
+   * Model-agnostic: LLM clients are injected from the live provider
+   * config. No premium retry tier, no per-model escape hatch. If vision
+   * also fails, the MCP client is free to retry with a different strategy.
+   *
+   * Lazy-loaded so legacy/V2 users don't pay the import cost.
+   */
+  private async _executeTaskUnified(task: string, startTime: number): Promise<TaskResult> {
+    if (!this.pipelineUnified) {
+      const { Pipeline } = await import('./pipeline');
+      const { getPlatform } = await import('./v2/platform');
+      const adapter = await getPlatform();
+      const pipelineConfig = loadPipelineConfig();
+
+      const hasTextModel   = !!(pipelineConfig?.layer2.model && pipelineConfig.layer2.baseUrl);
+      const hasVisionModel = !!(pipelineConfig?.layer3?.model && pipelineConfig?.layer3?.baseUrl);
+
+      // Build direct LLM configs for the unified agent. The agent uses
+      // native tool_use (Anthropic) / tool_calls (OpenAI) via
+      // callLLMWithTools — so we pass baseUrl/model/apiKey/isAnthropic
+      // rather than wrapping callTextLLM / callVisionLLM.
+      const textConfig = hasTextModel && pipelineConfig
+        ? {
+            baseUrl: pipelineConfig.layer2.baseUrl,
+            model: pipelineConfig.layer2.model,
+            apiKey: pipelineConfig.layer2.apiKey || pipelineConfig.apiKey || '',
+            isAnthropic: isAnthropicEndpoint(pipelineConfig.layer2.baseUrl),
+            maxTokens: 1024,
+          }
+        : undefined;
+
+      const visionLayer = pipelineConfig?.layer3;
+      const visionConfig = hasVisionModel && visionLayer && pipelineConfig
+        ? {
+            baseUrl: visionLayer.baseUrl,
+            model: visionLayer.model,
+            apiKey: visionLayer.apiKey || pipelineConfig.apiKey || '',
+            isAnthropic: isAnthropicEndpoint(visionLayer.baseUrl),
+            maxTokens: 1024,
+          }
+        : undefined;
+
+      this.pipelineUnified = new Pipeline({
+        adapter,
+        llm: {
+          text: textConfig,
+          vision: visionConfig,
+        },
+        disableVision: process.env.OPENCLAW_DISABLE_VISION === '1',
+      });
+
+      if (!hasTextModel && !hasVisionModel) {
+        console.log('⚡ No AI model configured — only router/playbook tasks will run.');
+        console.log('   Run `clawdcursor doctor` to configure an AI provider (any OpenAI-compatible endpoint).');
+      }
+      // Otherwise the new logger's header block prints the full task banner
+      // (task + correlationId + models) when pipeline.start fires.
+    }
+
+    this.state = { ...this.state, status: 'thinking', currentTask: task, stepsCompleted: 0, stepsTotal: 0 };
+
+    const result = await this.pipelineUnified.run({
+      task,
+      isAborted: () => this.aborted,
+    });
+
+    const steps: StepResult[] = result.trace.length > 0
+      ? result.trace.map(t => ({
+          action: (t.action as any).type ?? 'unknown',
+          description: t.result.text,
+          success: t.result.success,
+          timestamp: Date.now(),
+          layer: result.path === 'text-agent' ? 'ocr' as const : 'unified' as const,
+          method: (t.action as any).type,
+          latencyMs: t.durationMs,
+        }))
+      : [{
+          action: result.success ? 'done' : 'error',
+          description: result.text,
+          success: result.success,
+          timestamp: Date.now(),
+          layer: result.path === 'router' ? 'router' as const : 'unified' as const,
+        }];
+
+    // The new logger emits a `pipeline.done` footer block (path + cost +
+    // duration, framed in a divider) so we skip the legacy double banner.
+    // Final free-text evidence still goes to stdout for the MCP / REST client.
+    if (result.text) {
+      console.log(`   ${result.text}`);
     }
 
     this.state.status = 'idle';

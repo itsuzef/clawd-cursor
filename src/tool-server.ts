@@ -13,31 +13,52 @@
  */
 
 import express from 'express';
-import { getAllTools, toOpenAiFunctions, getTool, toJsonSchema } from './tools';
+import { getAllTools, getCompactSurface, toOpenAiFunctions, getTool, toJsonSchema } from './tools';
 import type { ToolContext } from './tools';
 import type { ToolDefinition } from './tools/types';
 import { VERSION } from './version';
 
+/**
+ * Render a tool's parameter schema as a compact human-readable signature,
+ * e.g. `(x: number, y: number, button?: string)`. Used inside error
+ * responses so an agent never has to go back to `/docs` just to learn
+ * what params a tool takes.
+ */
+function renderSignature(tool: ToolDefinition): string {
+  const entries = Object.entries(tool.parameters);
+  if (entries.length === 0) return '(no parameters)';
+  const parts = entries.map(([name, def]) => {
+    const optional = def.required === false ? '?' : '';
+    const typ = def.enum ? def.enum.map(e => JSON.stringify(e)).join('|') : def.type;
+    return `${name}${optional}: ${typ}`;
+  });
+  return `(${parts.join(', ')})`;
+}
+
 /** Validate request body against a tool's parameter schema. Returns error string or null. */
 function validateParams(body: Record<string, unknown>, tool: ToolDefinition): string | null {
   const params = tool.parameters;
+  const sig = renderSignature(tool);
   for (const [name, def] of Object.entries(params)) {
     const value = body[name];
     if (def.required !== false && value === undefined) {
-      return `Missing required parameter: "${name}"`;
+      return `Missing required parameter "${name}". Expected ${tool.name}${sig}.`;
     }
     if (value !== undefined) {
       const expected = def.type;
       const actual = typeof value;
-      if (expected === 'number' && actual !== 'number') return `Parameter "${name}" must be a number, got ${actual}`;
-      if (expected === 'string' && actual !== 'string') return `Parameter "${name}" must be a string, got ${actual}`;
-      if (expected === 'boolean' && actual !== 'boolean') return `Parameter "${name}" must be a boolean, got ${actual}`;
+      if (expected === 'number' && actual !== 'number') return `Parameter "${name}" must be a number, got ${actual}. Expected ${tool.name}${sig}.`;
+      if (expected === 'string' && actual !== 'string') return `Parameter "${name}" must be a string, got ${actual}. Expected ${tool.name}${sig}.`;
+      if (expected === 'boolean' && actual !== 'boolean') return `Parameter "${name}" must be a boolean, got ${actual}. Expected ${tool.name}${sig}.`;
+      if (def.enum && typeof value === 'string' && !def.enum.includes(value)) {
+        return `Parameter "${name}" must be one of [${def.enum.map(v => `"${v}"`).join(', ')}], got "${value}". Expected ${tool.name}${sig}.`;
+      }
     }
   }
   // Reject unknown parameters to catch typos
   for (const key of Object.keys(body)) {
     if (!(key in params)) {
-      return `Unknown parameter: "${key}". Valid: ${Object.keys(params).join(', ') || '(none)'}`;
+      return `Unknown parameter "${key}". Expected ${tool.name}${sig}.`;
     }
   }
   return null;
@@ -49,7 +70,10 @@ export function createToolServer(ctx: ToolContext): express.Router {
   // ── Tool Discovery ──
 
   router.get('/tools', (_req, res) => {
-    const tools = getAllTools();
+    // `?mode=compact` → 6 compound tools (Anthropic Computer-Use style).
+    // Default   → 72 granular tools (back-compat, fine-grained control).
+    const mode = _req.query.mode === 'compact' ? 'compact' : 'granular';
+    const tools = mode === 'compact' ? getCompactSurface() : getAllTools();
     const format = _req.query.format as string;
 
     if (format === 'raw') {
@@ -70,12 +94,15 @@ export function createToolServer(ctx: ToolContext): express.Router {
 
   router.post('/execute/:name', async (req, res) => {
     const { name } = req.params;
-    const tool = getTool(name);
+    // Try the compact surface first (6 compound names), then fall back to
+    // the granular registry. A tool's name is unique across both.
+    const compactTool = getCompactSurface().find(t => t.name === name);
+    const tool = compactTool ?? getTool(name);
 
     if (!tool) {
       return res.status(404).json({
         error: `Tool "${name}" not found`,
-        available: getAllTools().map(t => t.name),
+        available: [...getCompactSurface(), ...getAllTools()].map(t => t.name),
       });
     }
 
@@ -112,7 +139,9 @@ export function createToolServer(ctx: ToolContext): express.Router {
   // ── Documentation ──
 
   router.get('/docs', (_req, res) => {
-    const tools = getAllTools();
+    // `?mode=compact` serves the 6-compound surface; default is granular.
+    const mode = _req.query.mode === 'compact' ? 'compact' : 'granular';
+    const tools = mode === 'compact' ? getCompactSurface() : getAllTools();
     const categories = new Map<string, typeof tools>();
 
     for (const t of tools) {
@@ -122,11 +151,22 @@ export function createToolServer(ctx: ToolContext): express.Router {
     }
 
     let md = `# clawdcursor Tool API\n\n`;
-    md += `**${tools.length} tools** for OS-level desktop automation.\n\n`;
+    md += `**Two tool surfaces** are available over this server:\n\n`;
+    md += `| Surface | Tools | Use when |\n`;
+    md += `|---|---|---|\n`;
+    md += `| **Granular** (default) | 72 | You're writing code that calls individual primitives by name (\`mouse_click\`, \`type_text\`, …). |\n`;
+    md += `| **Compact** (\`?mode=compact\`) | 6 | You're an LLM agent. Collapses the 72 primitives into 6 compound tools with action enums — Anthropic Computer-Use style. ~12× fewer tool-catalog tokens. |\n\n`;
+    md += `You are currently viewing the **${mode}** surface.\n\n`;
     md += `## Endpoints\n\n`;
-    md += `- \`GET /tools\` — Tool schemas (OpenAI function format)\n`;
-    md += `- \`POST /execute/{name}\` — Execute a tool\n`;
-    md += `- \`GET /docs\` — This page\n\n`;
+    md += `- \`GET /tools\` — Granular schemas (OpenAI function format)\n`;
+    md += `- \`GET /tools?mode=compact\` — Compact schemas (6 compound tools)\n`;
+    md += `- \`POST /execute/{name}\` — Execute a tool (accepts granular or compact names)\n`;
+    md += `- \`GET /docs\` — Granular docs\n`;
+    md += `- \`GET /docs?mode=compact\` — Compact docs\n\n`;
+    md += `## Picking a compound action (compact mode)\n\n`;
+    md += `Each compound tool has an \`action\` parameter with an enum of sub-actions. ` +
+          `Call \`computer({"action":"click","x":100,"y":200})\` instead of \`mouse_click({"x":100,"y":200})\`. ` +
+          `See each tool's description below for the valid action enum.\n\n`;
 
     const categoryLabels: Record<string, string> = {
       perception: 'Perception (Screen Reading)',

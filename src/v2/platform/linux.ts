@@ -16,6 +16,7 @@
 
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import * as path from 'path';
 import sharp from 'sharp';
 import {
   mouse,
@@ -25,6 +26,7 @@ import {
   Button,
   Key,
 } from '@nut-tree-fork/nut-js';
+import { WaylandBackend } from './wayland-backend';
 import type {
   PlatformAdapter,
   ScreenSize,
@@ -33,6 +35,12 @@ import type {
   UiElement,
   PermissionStatus,
   PortableKeyCombo,
+  Display,
+  InvokeAction,
+  MouseButton,
+  ScrollDirection,
+  WaitForElementQuery,
+  WindowState,
 } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -40,12 +48,45 @@ const execFileAsync = promisify(execFile);
 // Tunables
 const TOOL_TIMEOUT_MS = 3_000;
 const SCREENSHOT_TIMEOUT_MS = 10_000;
+/**
+ * AT-SPI tree walks can be slow on big apps — give them a longer budget
+ * than the generic tool timeout. Python bridge caps its own traversal at
+ * MAX_TREE_NODES to prevent runaway calls.
+ */
+const A11Y_TIMEOUT_MS = 10_000;
 
 export class LinuxAdapter implements PlatformAdapter {
   readonly platform = 'linux' as const;
+  /**
+   * Wayland-vs-X11 detection runs at init(). Wayland blocks many X11-era
+   * input primitives (global mouse coords, cross-window drag, synthetic
+   * modifier injection) — callers use this flag to decide whether to
+   * surface graceful "not supported on Wayland" errors instead of silently
+   * misfiring through nut-js.
+   */
+  readonly environment: 'wayland' | 'x11' = detectLinuxEnvironment();
 
   private screenSize: ScreenSize | null = null;
   private binaryCache = new Map<string, boolean>();
+  private lastCursor: { x: number; y: number } | null = null;
+  /**
+   * Wayland input backend. On X11 this stays `kind:'none'` and all input
+   * flows through nut-js as before. On Wayland, ydotool takes over mouse +
+   * keyboard (if present); wtype is a keyboard-only fallback. Without
+   * either, we fall through to nut-js (which silently fails) and the
+   * adapter's permission probe reports input=false.
+   */
+  private wayland: WaylandBackend = new WaylandBackend('none');
+  /**
+   * AT-SPI D-Bus a11y bridge state (Tranche 4b). The bridge is a
+   * self-contained Python script (scripts/linux/atspi-bridge.py) that
+   * wraps gi.repository.Atspi. We probe its availability at init —
+   * requires python3 + python3-gi + gir1.2-atspi-2.0. When unavailable
+   * every a11y method returns its pre-existing safe empty response so
+   * nothing regresses on boxes without AT-SPI.
+   */
+  private atspiAvailable = false;
+  private atspiScript = '';
 
   async init(): Promise<void> {
     // Tighten nut-js defaults (mirrors Windows path in legacy code).
@@ -60,7 +101,36 @@ export class LinuxAdapter implements PlatformAdapter {
       this.hasBinary('xclip'),
       this.hasBinary('xrandr'),
       this.hasBinary('xdg-open'),
+      // Wayland-era replacements — detected here so Tranche 4a's routing
+      // decisions at init time are fast.
+      this.hasBinary('ydotool'),
+      this.hasBinary('wtype'),
+      this.hasBinary('wl-copy'),
     ]);
+
+    // If we're on Wayland, initialize the backend. No-op on X11.
+    if (this.environment === 'wayland') {
+      this.wayland = await WaylandBackend.detect(name => this.hasBinary(name));
+    }
+
+    // Probe the AT-SPI bridge (Tranche 4b). Two conditions must be met:
+    // python3 must be on PATH, AND `from gi.repository import Atspi` must
+    // succeed (requires python3-gi + gir1.2-atspi-2.0). We run the probe
+    // with a short timeout so boots stay snappy when neither is installed.
+    this.atspiScript = path.resolve(__dirname, '..', '..', '..', 'scripts', 'linux', 'atspi-bridge.py');
+    if (await this.hasBinary('python3')) {
+      try {
+        await execFileAsync(
+          'python3',
+          ['-c', 'import gi; gi.require_version("Atspi","2.0"); from gi.repository import Atspi'],
+          { timeout: 2_000 },
+        );
+        this.atspiAvailable = true;
+      } catch {
+        // Probe failed — gi.repository.Atspi isn't installed. Keep stubs.
+        this.atspiAvailable = false;
+      }
+    }
 
     // Pre-warm screen size so first capture is fast.
     await this.getScreenSize().catch(() => null);
@@ -73,9 +143,17 @@ export class LinuxAdapter implements PlatformAdapter {
   // ─── PERMISSIONS ──────────────────────────────────────────────────
 
   async checkPermissions(): Promise<PermissionStatus> {
-    // X11 has no TCC-style permission gating — user-level access is implicit.
-    // Wayland would require portals, but the brief says assume X11 for now.
-    return { input: true, accessibility: true, screenRecording: true };
+    // X11: implicit user-level input access. Wayland: synthetic-input APIs
+    // are blocked by compositors unless the user runs ydotool (kernel
+    // uinput daemon).
+    // Accessibility: now reflects whether the AT-SPI bridge (Tranche 4b)
+    // is available — true when python3 + python3-gi + gir1.2-atspi-2.0
+    // are installed and the probe at init() succeeded.
+    if (this.environment === 'wayland') {
+      const canInject = await this.hasBinary('ydotool');
+      return { input: canInject, accessibility: this.atspiAvailable, screenRecording: true };
+    }
+    return { input: true, accessibility: this.atspiAvailable, screenRecording: true };
   }
 
   async requestPermissions(): Promise<PermissionStatus> {
@@ -155,7 +233,78 @@ export class LinuxAdapter implements PlatformAdapter {
     return this.screenSize;
   }
 
-  async screenshot(opts?: { maxWidth?: number }): Promise<ScreenshotResult> {
+  async listDisplays(): Promise<Display[]> {
+    // xrandr --query lists every connected output with geometry.
+    if (!(await this.hasBinary('xrandr'))) {
+      const size = await this.getScreenSize();
+      return [{
+        index: 0,
+        label: 'Primary',
+        primary: true,
+        bounds: { x: 0, y: 0, width: size.logicalWidth, height: size.logicalHeight },
+        physicalSize: { width: size.physicalWidth, height: size.physicalHeight },
+        dpiRatio: size.dpiRatio,
+      }];
+    }
+    try {
+      const { stdout } = await execFileAsync('xrandr', ['--query'], {
+        timeout: TOOL_TIMEOUT_MS,
+      });
+      const displays: Display[] = [];
+      // Match lines like: "HDMI-1 connected primary 1920x1080+0+0 ..."
+      const re = /^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(-?\d+)\+(-?\d+)/gm;
+      let m: RegExpExecArray | null;
+      let idx = 0;
+      const size = await this.getScreenSize();
+      while ((m = re.exec(stdout)) !== null) {
+        const [, name, primaryFlag, w, h, x, y] = m;
+        const width = parseInt(w, 10);
+        const height = parseInt(h, 10);
+        displays.push({
+          index: idx++,
+          label: name,
+          primary: !!primaryFlag,
+          bounds: {
+            x: parseInt(x, 10),
+            y: parseInt(y, 10),
+            width,
+            height,
+          },
+          physicalSize: {
+            width: Math.round(width * size.dpiRatio),
+            height: Math.round(height * size.dpiRatio),
+          },
+          dpiRatio: size.dpiRatio,
+        });
+      }
+      if (displays.length === 0) {
+        // xrandr present but parsed nothing — single-display fallback.
+        return [{
+          index: 0,
+          label: 'Primary',
+          primary: true,
+          bounds: { x: 0, y: 0, width: size.logicalWidth, height: size.logicalHeight },
+          physicalSize: { width: size.physicalWidth, height: size.physicalHeight },
+          dpiRatio: size.dpiRatio,
+        }];
+      }
+      // Ensure exactly one primary — prefer xrandr's flag; fallback to index 0.
+      if (!displays.some(d => d.primary)) displays[0].primary = true;
+      return displays;
+    } catch {
+      const size = await this.getScreenSize();
+      return [{
+        index: 0,
+        label: 'Primary',
+        primary: true,
+        bounds: { x: 0, y: 0, width: size.logicalWidth, height: size.logicalHeight },
+        physicalSize: { width: size.physicalWidth, height: size.physicalHeight },
+        dpiRatio: size.dpiRatio,
+      }];
+    }
+  }
+
+  async screenshot(opts?: { maxWidth?: number; displayIndex?: number }): Promise<ScreenshotResult> {
     const img = await this.grabScreen();
     let pipeline = sharp(img.data, {
       raw: { width: img.width, height: img.height, channels: 4 },
@@ -164,6 +313,22 @@ export class LinuxAdapter implements PlatformAdapter {
     let width = img.width;
     let height = img.height;
     let scaleFactor = 1;
+
+    // Display index → crop to that display's bounds (xrandr geometry).
+    if (opts?.displayIndex !== undefined && opts.displayIndex > 0) {
+      const displays = await this.listDisplays();
+      const target = displays[opts.displayIndex];
+      if (target) {
+        const r = target.dpiRatio || 1;
+        const left = Math.max(0, Math.round(target.bounds.x * r));
+        const top = Math.max(0, Math.round(target.bounds.y * r));
+        const w = Math.max(1, Math.min(Math.round(target.bounds.width * r), img.width - left));
+        const h = Math.max(1, Math.min(Math.round(target.bounds.height * r), img.height - top));
+        pipeline = pipeline.extract({ left, top, width: w, height: h });
+        width = w;
+        height = h;
+      }
+    }
 
     if (opts?.maxWidth && width > opts.maxWidth) {
       scaleFactor = width / opts.maxWidth;
@@ -291,83 +456,397 @@ export class LinuxAdapter implements PlatformAdapter {
     }
   }
 
-  // ─── ACCESSIBILITY ────────────────────────────────────────────────
-  // AT-SPI D-Bus bridge is not yet implemented — return safe empties.
+  async setWindowState(
+    state: WindowState,
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    if (!(await this.hasBinary('wmctrl'))) return false;
+    const target = await this.resolveWindowHandle(query);
+    if (!target) return false;
 
-  async getUiTree(_processId?: number): Promise<UiElement[]> {
-    return [];
+    try {
+      if (state === 'maximize') {
+        await execFileAsync('wmctrl', ['-i', '-r', target, '-b', 'add,maximized_vert,maximized_horz'], { timeout: TOOL_TIMEOUT_MS });
+      } else if (state === 'minimize') {
+        await execFileAsync('wmctrl', ['-i', '-r', target, '-b', 'add,hidden'], { timeout: TOOL_TIMEOUT_MS });
+      } else if (state === 'normal') {
+        // Remove maximize + hidden so the window returns to its original bounds.
+        await execFileAsync('wmctrl', ['-i', '-r', target, '-b', 'remove,maximized_vert,maximized_horz,hidden'], { timeout: TOOL_TIMEOUT_MS });
+      } else if (state === 'close') {
+        // wmctrl -c sends _NET_CLOSE_WINDOW — the app can prompt / refuse.
+        // wmctrl's -c takes a name-substring, not a window id, so we hand
+        // it a title match where we can, else fall back to a generic match.
+        if (query?.title) {
+          await execFileAsync('wmctrl', ['-c', query.title], { timeout: TOOL_TIMEOUT_MS });
+        } else {
+          // xdotool lets us close by window id directly.
+          if (await this.hasBinary('xdotool')) {
+            await execFileAsync('xdotool', ['windowclose', target], { timeout: TOOL_TIMEOUT_MS });
+          } else {
+            return false;
+          }
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  async findElements(_query: { name?: string; controlType?: string; processId?: number }): Promise<UiElement[]> {
-    return [];
+  async setWindowBounds(
+    bounds: { x?: number; y?: number; width?: number; height?: number },
+    query?: { processName?: string; processId?: number; title?: string },
+  ): Promise<boolean> {
+    if (!(await this.hasBinary('wmctrl'))) return false;
+    const target = await this.resolveWindowHandle(query);
+    if (!target) return false;
+
+    try {
+      // Read current bounds for fields not supplied.
+      const windows = await this.listWindows();
+      const current = windows.find(w => typeof w.handle === 'number' && '0x' + w.handle.toString(16) === target);
+      const cur = current?.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+      const x = bounds.x ?? cur.x;
+      const y = bounds.y ?? cur.y;
+      const w = bounds.width ?? cur.width;
+      const h = bounds.height ?? cur.height;
+      // wmctrl -e format: gravity,x,y,width,height — 0 = default gravity.
+      await execFileAsync('wmctrl', ['-i', '-r', target, '-e', `0,${x},${y},${w},${h}`], { timeout: TOOL_TIMEOUT_MS });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveWindowHandle(query?: { processName?: string; processId?: number; title?: string }): Promise<string | null> {
+    if (!query) {
+      // Active window handle via xdotool.
+      if (await this.hasBinary('xdotool')) {
+        try {
+          const { stdout } = await execFileAsync('xdotool', ['getactivewindow'], {
+            timeout: TOOL_TIMEOUT_MS,
+          });
+          const id = parseInt(stdout.trim(), 10);
+          if (Number.isFinite(id)) return '0x' + id.toString(16);
+        } catch { /* fall through */ }
+      }
+      return null;
+    }
+
+    const windows = await this.listWindows();
+    const match = windows.find(w => {
+      if (query.processId !== undefined && w.processId === query.processId) return true;
+      if (query.processName && w.processName.toLowerCase() === query.processName.toLowerCase()) return true;
+      if (query.title && w.title.toLowerCase().includes(query.title.toLowerCase())) return true;
+      return false;
+    });
+    if (match && typeof match.handle === 'number') {
+      return '0x' + match.handle.toString(16);
+    }
+    return null;
+  }
+
+  // ─── ACCESSIBILITY ────────────────────────────────────────────────
+  //
+  // Tranche 4b — AT-SPI D-Bus bridge (READ-ONLY first pass).
+  //
+  // When the bridge is available (python3 + python3-gi + Atspi), we
+  // spawn `atspi-bridge.py` to answer getUiTree / findElements /
+  // getFocusedElement / waitForElement. The script emits JSON with the
+  // same UiElement shape used on Windows / macOS.
+  //
+  // `invokeElement` stays stubbed — action dispatch (click / focus /
+  // set-value / expand / ...) needs per-role handling via AT-SPI's
+  // Action / EditableText / Value interfaces. Scoped out of this pass
+  // so we can land READ support for Linux now and iterate. When the
+  // bridge isn't available, every method falls back to the same safe
+  // empty responses as before — zero regression on boxes without AT-SPI.
+
+  async getUiTree(processId?: number): Promise<UiElement[]> {
+    if (!this.atspiAvailable) return [];
+    try {
+      const args = ['--cmd', 'get-tree'];
+      if (typeof processId === 'number') args.push('--process-id', String(processId));
+      const { stdout } = await execFileAsync('python3', [this.atspiScript, ...args], {
+        timeout: A11Y_TIMEOUT_MS,
+      });
+      const data = JSON.parse(stdout) as { elements?: any[] };
+      const raw = Array.isArray(data.elements) ? data.elements : [];
+      return raw.map(this.normalizeAtspiElement);
+    } catch {
+      return [];
+    }
+  }
+
+  async findElements(query: { name?: string; controlType?: string; processId?: number }): Promise<UiElement[]> {
+    if (!this.atspiAvailable) return [];
+    try {
+      const args = ['--cmd', 'find'];
+      if (query.name) args.push('--name', query.name);
+      if (query.controlType) args.push('--role', query.controlType);
+      if (typeof query.processId === 'number') args.push('--process-id', String(query.processId));
+      const { stdout } = await execFileAsync('python3', [this.atspiScript, ...args], {
+        timeout: A11Y_TIMEOUT_MS,
+      });
+      const data = JSON.parse(stdout) as { elements?: any[] };
+      const raw = Array.isArray(data.elements) ? data.elements : [];
+      return raw.map(this.normalizeAtspiElement);
+    } catch {
+      return [];
+    }
   }
 
   async getFocusedElement(): Promise<UiElement | null> {
-    return null;
+    if (!this.atspiAvailable) return null;
+    try {
+      const { stdout } = await execFileAsync('python3', [this.atspiScript, '--cmd', 'focused'], {
+        timeout: A11Y_TIMEOUT_MS,
+      });
+      const data = JSON.parse(stdout) as { element?: any };
+      return data.element ? this.normalizeAtspiElement(data.element) : null;
+    } catch {
+      return null;
+    }
   }
 
   async invokeElement(_query: {
     name?: string;
     controlType?: string;
     processId?: number;
-    action?: 'click' | 'focus' | 'set-value';
+    action?: InvokeAction;
     value?: string;
-  }): Promise<{ success: boolean; bounds?: { x: number; y: number; width: number; height: number } }> {
+  }): Promise<{
+    success: boolean;
+    bounds?: { x: number; y: number; width: number; height: number };
+    data?: Record<string, unknown>;
+  }> {
+    // Action dispatch is the next AT-SPI step — needs per-role AT-SPI
+    // Action / Value / EditableText interface handling. Until then,
+    // Linux agents use getUiTree + coord click as a coarse fallback.
     return { success: false };
   }
 
+  async waitForElement(query: WaitForElementQuery, timeoutMs: number): Promise<UiElement | null> {
+    if (!this.atspiAvailable) return null;
+    const interval = query.intervalMs ?? 250;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const hits = await this.findElements({
+        name: query.name, controlType: query.controlType, processId: query.processId,
+      });
+      if (hits.length > 0) return hits[0];
+      await this.delay(interval);
+    }
+    return null;
+  }
+
+  /**
+   * Normalize one element record from the Python bridge into the shared
+   * UiElement shape used by the Windows + macOS adapters. Missing bounds
+   * default to zero; missing state flags pass through as undefined.
+   */
+  private normalizeAtspiElement = (raw: any): UiElement => {
+    const enabled = typeof raw?.enabled === 'boolean' ? raw.enabled : undefined;
+    return {
+      name: raw?.name ?? '',
+      controlType: raw?.controlType ?? '',
+      bounds: raw?.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
+      value: typeof raw?.value === 'string' ? raw.value : undefined,
+      enabled,
+      focused: raw?.focused,
+      selected: raw?.selected,
+      disabled: enabled === false ? true : undefined,
+      busy: raw?.busy,
+      offscreen: raw?.offscreen,
+      automationId: raw?.automationId ?? undefined,
+      processId: typeof raw?.processId === 'number' ? raw.processId : undefined,
+    };
+  };
+
   // ─── INPUT (mouse) ────────────────────────────────────────────────
 
-  async mouseClick(x: number, y: number, opts?: { button?: 'left' | 'right'; count?: number }): Promise<void> {
-    await mouse.setPosition(new Point(x, y));
-    await this.delay(30);
+  private toNutButton(button?: MouseButton): Button {
+    if (button === 'right') return Button.RIGHT;
+    if (button === 'middle') return Button.MIDDLE;
+    return Button.LEFT;
+  }
+
+  async mouseClick(x: number, y: number, opts?: { button?: MouseButton; count?: number }): Promise<void> {
     const count = opts?.count ?? 1;
+    const btn = opts?.button ?? 'left';
+    // Wayland: ydotool handles both move + click.
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      await this.delay(30);
+      await this.wayland.mouseClick(btn, count);
+      return;
+    }
+    // X11 (or Wayland without ydotool): nut-js.
+    await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
+    await this.delay(30);
+    const nutBtn = this.toNutButton(btn);
     for (let i = 0; i < count; i++) {
-      if (opts?.button === 'right') await mouse.rightClick();
-      else await mouse.click(Button.LEFT);
+      if (nutBtn === Button.RIGHT) await mouse.rightClick();
+      else if (nutBtn === Button.MIDDLE) {
+        await mouse.pressButton(Button.MIDDLE);
+        await this.delay(30);
+        await mouse.releaseButton(Button.MIDDLE);
+      } else {
+        await mouse.click(Button.LEFT);
+      }
       if (i < count - 1) await this.delay(50);
     }
   }
 
   async mouseMove(x: number, y: number): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      return;
+    }
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
+  }
+
+  async mouseMoveRelative(dx: number, dy: number): Promise<void> {
+    if (this.wayland.canMouse()) {
+      // ydotool supports relative move natively.
+      await this.wayland.mouseMoveRelative(dx, dy);
+      if (this.lastCursor) {
+        this.lastCursor = { x: this.lastCursor.x + dx, y: this.lastCursor.y + dy };
+      }
+      return;
+    }
+    // On X11, nut-js getPosition() works. Without ydotool on Wayland it
+    // returns (0,0) — we degrade to the cached target from our last
+    // mouseMove / mouseClick.
+    if (this.environment === 'x11') {
+      try {
+        const pos = await mouse.getPosition();
+        const nx = Math.round(pos.x + dx);
+        const ny = Math.round(pos.y + dy);
+        await mouse.setPosition(new Point(nx, ny));
+        this.lastCursor = { x: nx, y: ny };
+        return;
+      } catch { /* fall through */ }
+    }
+    if (this.lastCursor) {
+      const nx = this.lastCursor.x + dx;
+      const ny = this.lastCursor.y + dy;
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
+    }
+    // No cache, no query — silently no-op rather than warp the cursor to (0,0).
   }
 
   async mouseDrag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
+    if (this.wayland.canMouse()) {
+      // Wayland: absolute move to start, down, interpolated moves, up.
+      await this.wayland.mouseMoveAbsolute(x1, y1);
+      this.lastCursor = { x: x1, y: y1 };
+      await this.delay(50);
+      await this.wayland.mouseDown('left');
+      await this.delay(80);
+      const steps = Math.max(8, Math.floor(Math.hypot(x2 - x1, y2 - y1) / 18));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const nx = Math.round(x1 + (x2 - x1) * t);
+        const ny = Math.round(y1 + (y2 - y1) * t);
+        await this.wayland.mouseMoveAbsolute(nx, ny);
+        this.lastCursor = { x: nx, y: ny };
+        await this.delay(10);
+      }
+      await this.wayland.mouseUp('left');
+      return;
+    }
+    // X11 path — unchanged nut-js.
     await mouse.setPosition(new Point(x1, y1));
+    this.lastCursor = { x: x1, y: y1 };
     await this.delay(50);
     await mouse.pressButton(Button.LEFT);
     await this.delay(80);
     const steps = Math.max(8, Math.floor(Math.hypot(x2 - x1, y2 - y1) / 18));
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      await mouse.setPosition(
-        new Point(
-          Math.round(x1 + (x2 - x1) * t),
-          Math.round(y1 + (y2 - y1) * t),
-        ),
-      );
+      const nx = Math.round(x1 + (x2 - x1) * t);
+      const ny = Math.round(y1 + (y2 - y1) * t);
+      await mouse.setPosition(new Point(nx, ny));
+      this.lastCursor = { x: nx, y: ny };
       await this.delay(10);
     }
     await mouse.releaseButton(Button.LEFT);
   }
 
-  async mouseScroll(x: number, y: number, direction: 'up' | 'down', amount: number = 3): Promise<void> {
+  async mouseScroll(x: number, y: number, direction: ScrollDirection, amount: number = 3): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseMoveAbsolute(x, y);
+      this.lastCursor = { x, y };
+      await this.delay(30);
+      await this.wayland.mouseScroll(direction, amount);
+      return;
+    }
     await mouse.setPosition(new Point(x, y));
+    this.lastCursor = { x, y };
     await this.delay(30);
     if (direction === 'down') await mouse.scrollDown(amount);
-    else await mouse.scrollUp(amount);
+    else if (direction === 'up') await mouse.scrollUp(amount);
+    else {
+      // Horizontal: xdotool uses buttons 6 (left) / 7 (right) for horizontal wheel.
+      // Fall back to Shift+wheel where xdotool is missing.
+      if (await this.hasBinary('xdotool')) {
+        const btn = direction === 'left' ? '6' : '7';
+        try {
+          for (let i = 0; i < amount; i++) {
+            await execFileAsync('xdotool', ['click', btn], { timeout: TOOL_TIMEOUT_MS });
+          }
+          return;
+        } catch { /* fall through */ }
+      }
+      await keyboard.pressKey(Key.LeftShift);
+      try {
+        if (direction === 'left') await mouse.scrollUp(amount);
+        else await mouse.scrollDown(amount);
+      } finally {
+        await keyboard.releaseKey(Key.LeftShift);
+      }
+    }
+  }
+
+  async mouseDown(button?: MouseButton): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseDown(button ?? 'left');
+      return;
+    }
+    await mouse.pressButton(this.toNutButton(button));
+  }
+
+  async mouseUp(button?: MouseButton): Promise<void> {
+    if (this.wayland.canMouse()) {
+      await this.wayland.mouseUp(button ?? 'left');
+      return;
+    }
+    await mouse.releaseButton(this.toNutButton(button));
   }
 
   // ─── INPUT (keyboard) ─────────────────────────────────────────────
 
   async typeText(text: string): Promise<void> {
     if (!text) return;
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.typeText(text);
+      return;
+    }
     await keyboard.type(text);
   }
 
   async keyPress(combo: PortableKeyCombo): Promise<void> {
     if (!combo) return;
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyPress(combo);
+      return;
+    }
 
     // Literal "+" — can't split on it.
     if (combo === '+') {
@@ -401,6 +880,46 @@ export class LinuxAdapter implements PlatformAdapter {
     } catch {
       /* non-fatal — caller likely has a retry or fallback */
     }
+  }
+
+  async keyDown(key: PortableKeyCombo): Promise<void> {
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyDown(key);
+      return;
+    }
+    const lower = key.trim().toLowerCase();
+    const modKey = this.resolveModifier(lower);
+    if (modKey !== null) {
+      await keyboard.pressKey(modKey).catch(() => {});
+      return;
+    }
+    const k = this.resolveKey(lower.length === 1 ? lower : lower);
+    if (k !== null) {
+      await keyboard.pressKey(k).catch(() => {});
+      return;
+    }
+    // Printable char without nut-js Key mapping — type it (no hold semantics).
+    if (key.length === 1) {
+      await keyboard.type(key).catch(() => {});
+    }
+  }
+
+  async keyUp(key: PortableKeyCombo): Promise<void> {
+    if (this.wayland.canKeyboard()) {
+      await this.wayland.keyUp(key);
+      return;
+    }
+    const lower = key.trim().toLowerCase();
+    const modKey = this.resolveModifier(lower);
+    if (modKey !== null) {
+      await keyboard.releaseKey(modKey).catch(() => {});
+      return;
+    }
+    const k = this.resolveKey(lower.length === 1 ? lower : lower);
+    if (k !== null) {
+      await keyboard.releaseKey(k).catch(() => {});
+    }
+    // Printable non-mapped: no-op — nothing was held.
   }
 
   private resolveModifier(name: string): Key | null {
@@ -447,6 +966,14 @@ export class LinuxAdapter implements PlatformAdapter {
   // ─── CLIPBOARD ────────────────────────────────────────────────────
 
   async readClipboard(): Promise<string> {
+    // Prefer wl-paste on Wayland; xclip on X11. Fall through when neither
+    // is installed — clipboard is best-effort, same contract as macOS.
+    if (this.environment === 'wayland' && (await this.hasBinary('wl-paste'))) {
+      try {
+        const { stdout } = await execFileAsync('wl-paste', ['--no-newline'], { timeout: TOOL_TIMEOUT_MS });
+        return stdout;
+      } catch { return ''; }
+    }
     if (!(await this.hasBinary('xclip'))) return '';
     try {
       const { stdout } = await execFileAsync(
@@ -461,10 +988,14 @@ export class LinuxAdapter implements PlatformAdapter {
   }
 
   async writeClipboard(text: string): Promise<void> {
-    if (!(await this.hasBinary('xclip'))) return;
+    const tool =
+      this.environment === 'wayland' && (await this.hasBinary('wl-copy')) ? 'wl-copy'
+      : (await this.hasBinary('xclip')) ? 'xclip' : null;
+    if (!tool) return;
+    const args = tool === 'wl-copy' ? [] : ['-selection', 'clipboard'];
     await new Promise<void>((resolve) => {
       try {
-        const proc = spawn('xclip', ['-selection', 'clipboard']);
+        const proc = spawn(tool, args);
         const timer = setTimeout(() => {
           proc.kill();
           resolve();
@@ -488,19 +1019,36 @@ export class LinuxAdapter implements PlatformAdapter {
   // ─── APPS ─────────────────────────────────────────────────────────
 
   async openApp(name: string): Promise<{ pid?: number; title?: string }> {
+    return this.launchApp(name);
+  }
+
+  async launchApp(
+    name: string,
+    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string; uwpAppId?: string },
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // uwpAppId is Windows-only — ignore on Linux.
+    void opts?.uwpAppId;
+    if (/[\r\n\t\x00-\x1f]/.test(name)) {
+      throw new Error('launchApp: illegal characters in app name');
+    }
+    const settleMs = opts?.alwaysNewInstance ? 1200 : 800;
+
     // 1) Try the bare executable name directly (detached so it survives us).
-    const direct = await this.spawnDetached(name, []);
+    const directArgs: string[] = [];
+    if (opts?.url) directArgs.push(opts.url);
+    const direct = await this.spawnDetached(name, directArgs, opts?.cwd);
     if (direct.ok) {
-      await this.delay(800);
+      await this.delay(settleMs);
       const match = await this.findSpawnedWindow(name, direct.pid);
       return match ?? { pid: direct.pid };
     }
 
     // 2) Fallback to xdg-open (handles desktop-file names, URLs, file paths).
+    const target = opts?.url ?? name;
     if (await this.hasBinary('xdg-open')) {
-      const fallback = await this.spawnDetached('xdg-open', [name]);
+      const fallback = await this.spawnDetached('xdg-open', [target], opts?.cwd);
       if (fallback.ok) {
-        await this.delay(800);
+        await this.delay(settleMs);
         const match = await this.findSpawnedWindow(name);
         return match ?? {};
       }
@@ -522,10 +1070,10 @@ export class LinuxAdapter implements PlatformAdapter {
     return byName ? { pid: byName.processId, title: byName.title } : null;
   }
 
-  private spawnDetached(cmd: string, args: string[]): Promise<{ ok: boolean; pid?: number }> {
+  private spawnDetached(cmd: string, args: string[], cwd?: string): Promise<{ ok: boolean; pid?: number }> {
     return new Promise((resolve) => {
       try {
-        const proc = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+        const proc = spawn(cmd, args, { detached: true, stdio: 'ignore', cwd });
         let settled = false;
 
         // "error" fires synchronously-ish for ENOENT.
@@ -628,6 +1176,19 @@ export class LinuxAdapter implements PlatformAdapter {
   private delay(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
   }
+}
+
+/**
+ * Detect Linux display server. Wayland reports itself via `XDG_SESSION_TYPE`
+ * or `WAYLAND_DISPLAY`; everything else defaults to X11. `detect-once-at-init`
+ * semantics — the compositor doesn't change mid-session.
+ */
+function detectLinuxEnvironment(): 'wayland' | 'x11' {
+  const sessionType = (process.env.XDG_SESSION_TYPE || '').toLowerCase();
+  if (sessionType === 'wayland') return 'wayland';
+  if (sessionType === 'x11') return 'x11';
+  if (process.env.WAYLAND_DISPLAY) return 'wayland';
+  return 'x11';
 }
 
 // Named-key table — lowercase lookup, maps to nut-js Key enum.

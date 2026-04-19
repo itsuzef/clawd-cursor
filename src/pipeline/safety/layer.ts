@@ -1,0 +1,392 @@
+/**
+ * SafetyLayer — unified gate for every agent action (v0.8.1 rebuild).
+ *
+ * v0.8.0's `src/safety.ts` classified only by description-string match, which
+ * the audit correctly flagged as trivially bypassable (a `mouse_click(x,y)` on
+ * a Send button never contains the word "send"). V2 orchestrator didn't call
+ * SafetyLayer at all, and the `/action` REST endpoint bypassed it entirely.
+ *
+ * v0.8.1 fixes the chokepoint problem:
+ *  - Pure function `evaluate(action, context) → Decision` keyed on the ACTION
+ *    TYPE, not on description prose. A mouse_click on a button whose OCR
+ *    label matches a Confirm-tier pattern elevates to Confirm. A key combo
+ *    in BLOCKED_KEYS returns Block.
+ *  - Registry-driven coverage test (`safety-coverage.test.ts`) enforces
+ *    that every MCP tool handler invokes `evaluate` before its first side
+ *    effect.
+ *  - Decision is observable via the audit log (`safety.decision` events).
+ *
+ * Model-agnostic: no LLM calls. Pure rule engine.
+ */
+
+import { isBlockedKey, blockReason } from '../playbooks/keys-blocklist';
+import { logger } from '../observability/logger';
+import { getCorrelationId } from '../observability/correlation';
+
+export type Tier = 'read' | 'input' | 'destructive' | 'system';
+
+export type Decision =
+  | { decision: 'allow'; tier: Tier }
+  | { decision: 'confirm'; tier: Tier; reason: string }
+  | { decision: 'block'; tier: Tier; reason: string };
+
+/** What the evaluator sees. Tool name is CANONICAL — not a description. */
+export interface EvaluationContext {
+  /** Canonical tool / action name (e.g. "mouse_click", "a11y_set_value"). */
+  tool: string;
+  /** Arbitrary args shape — typed by caller; evaluator pattern-matches safely. */
+  args: Record<string, unknown>;
+  /** Optional OCR label of the element the action targets, when known. */
+  targetLabel?: string;
+  /** Optional active app name — raises the tier for sensitive domains
+   *  (email, banking, messaging, password managers). */
+  activeApp?: string;
+}
+
+/**
+ * Patterns in a target element's OCR/a11y label that elevate the tier to
+ * Confirm. Matched case-insensitively. Derived from v0.6.3 sensitive-app
+ * policy + v0.8.0 audit findings.
+ */
+const CONFIRM_LABEL_PATTERNS: RegExp[] = [
+  /\bsend\b/i,             // email, message, wire transfer
+  /\bdelete\b/i,           // destructive
+  /\bremove\b/i,
+  /\btrash\b/i,
+  /\berase\b/i,
+  /\buninstall\b/i,
+  /\bdrop\s+(database|table)/i,
+  /\bshut\s*down\b/i,
+  /\brestart\b/i,
+  /\blog\s*out\b/i,
+  /\bsign\s*out\b/i,
+  /\bpurchase\b/i,
+  /\bbuy\b/i,
+  /\bcheckout\b/i,
+  /\bpay\b/i,
+  /\btransfer\b/i,
+  /\bpublish\b/i,
+  /\bconfirm\b/i,          // confirm dialogs themselves — require user
+];
+
+/** Apps where even innocuous clicks should elevate to Confirm. */
+const SENSITIVE_APPS = /\b(outlook|olk|mail|gmail|banking|1password|lastpass|bitwarden|keeper|signal|whatsapp|messages|telegram|imessage)\b/i;
+
+/** Tool name → default tier. */
+const TOOL_TIER: Record<string, Tier> = {
+  // Read — always allow
+  'read_screen': 'read',
+  'ocr_read_screen': 'read',
+  'smart_read': 'read',
+  'desktop_screenshot': 'read',
+  'desktop_screenshot_region': 'read',
+  'get_screen_size': 'read',
+  'get_windows': 'read',
+  'get_active_window': 'read',
+  'get_focused_element': 'read',
+  'find_element': 'read',
+  'read_clipboard': 'read',
+  'cdp_page_context': 'read',
+  'cdp_read_text': 'read',
+  'cdp_list_tabs': 'read',
+  'shortcuts_list': 'read',
+  // Input — allow with label check
+  'mouse_click': 'input',
+  'mouse_double_click': 'input',
+  'mouse_right_click': 'input',
+  'mouse_hover': 'input',
+  'mouse_scroll': 'input',
+  'mouse_drag': 'input',
+  'type_text': 'input',
+  'smart_type': 'input',
+  'smart_click': 'input',
+  'invoke_element': 'input',
+  'key_press': 'input',
+  'write_clipboard': 'input',
+  'cdp_click': 'input',
+  'cdp_type': 'input',
+  'cdp_select_option': 'input',
+  'cdp_scroll': 'input',
+  'cdp_wait_for_selector': 'input',
+  'cdp_switch_tab': 'input',
+  'cdp_connect': 'input',
+  'navigate_browser': 'input',
+  'focus_window': 'input',
+  'minimize_window': 'input',
+  'shortcuts_execute': 'input',
+  // System — always confirm (or block)
+  'cdp_evaluate': 'system',
+  'open_app': 'input',
+  'wait': 'read',
+  'delegate_to_agent': 'input',
+  // Pipeline-internal actions
+  'a11y_click': 'input',
+  'a11y_set_value': 'input',
+  'click': 'input',
+  'type': 'input',
+  'press': 'input',
+  'scroll': 'input',
+  'drag': 'input',
+  'screenshot': 'read',
+  'run_playbook': 'input',
+  'done': 'read',
+  'give_up': 'read',
+  'cannot_read': 'read',
+  // Tranche 1B — new MCP tools (extras.ts)
+  'mouse_move_relative': 'input',
+  'mouse_middle_click': 'input',
+  'mouse_triple_click': 'input',
+  'mouse_down': 'input',
+  'mouse_up': 'input',
+  'mouse_scroll_horizontal': 'input',
+  'mouse_drag_stepped': 'input',
+  'key_down': 'input',
+  'key_up': 'input',
+  'maximize_window': 'input',
+  'minimize_window_to_taskbar': 'input',
+  'restore_window': 'input',
+  'close_window': 'destructive',    // polite request, but the user may not want this on autopilot
+  'resize_window': 'input',
+  'list_displays': 'read',
+  'focus_element': 'input',
+  'wait_for_element': 'read',
+  'open_file': 'input',
+  'open_url': 'input',
+  'get_system_time': 'read',
+  'switch_tab_os': 'input',
+  'undo_last': 'input',
+  // Tranche 2 — a11y depth tools
+  'a11y_expand': 'input',
+  'a11y_collapse': 'input',
+  'a11y_toggle': 'input',
+  'a11y_select': 'input',
+  'a11y_get_element': 'read',
+  'a11y_get_value': 'read',
+  'get_element_state': 'read',
+  'a11y_list_children': 'read',
+  // v0.8.2 — Electron/WebView2 bridge tools
+  'detect_webview_apps': 'read',
+  'relaunch_with_cdp': 'destructive',  // closes the app — app may prompt to save
+  // Tranche 3 — compact compound MCP surface. When an agent calls one of
+  // these, the real action is decided by the `action` arg (already
+  // unpacked above via unpackCompoundTool for the unified-agent compound
+  // tools: mouse/keyboard/window). These public-MCP names share the
+  // same canonicalization philosophy — tier defaults to 'input' and the
+  // delegated granular tool's tier kicks in during actual dispatch.
+  'computer': 'input',
+  'accessibility': 'read',
+  'window': 'input',
+  'system': 'input',
+  'browser': 'input',
+  'task': 'input',
+};
+
+/**
+ * Map a compound-tool call (Tranche 2.5 vision agent) to its canonical
+ * granular name for tier lookup. `mouse({action:"click"})` resolves to
+ * `mouse_click`, `keyboard({action:"press"})` to `key_press`, etc.
+ *
+ * Without this, compound tools default to 'input' tier because
+ * `TOOL_TIER` is keyed on the canonical names. The mapping keeps the
+ * existing tier map as the single source of truth — no compound-specific
+ * tier entries needed.
+ */
+function unpackCompoundTool(tool: string, args: Record<string, unknown>): string {
+  // Tranche 3 public-MCP compound tools: computer/accessibility/window/
+  // system/browser/task. These are dispatched inside compact.ts and the
+  // granular delegate handles the real action — but for the audit log
+  // we want to surface the granular name here so forensic trails make
+  // sense. Mapping mirrors compact.ts's ACTION_MAP tables.
+  const publicCompoundMap: Record<string, Record<string, string>> = {
+    computer: {
+      screenshot: 'desktop_screenshot', screenshot_region: 'desktop_screenshot_region',
+      click: 'mouse_click', double_click: 'mouse_double_click', right_click: 'mouse_right_click',
+      middle_click: 'mouse_middle_click', triple_click: 'mouse_triple_click',
+      hover: 'mouse_hover', move: 'mouse_hover', move_relative: 'mouse_move_relative',
+      scroll: 'mouse_scroll', scroll_horizontal: 'mouse_scroll_horizontal',
+      drag: 'mouse_drag', drag_path: 'mouse_drag_stepped',
+      mouse_down: 'mouse_down', mouse_up: 'mouse_up',
+      type: 'type_text', key: 'key_press', key_press: 'key_press',
+      key_down: 'key_down', key_up: 'key_up', wait: 'wait',
+    },
+    accessibility: {
+      read_tree: 'read_screen', find: 'find_element', get_element: 'a11y_get_element',
+      focused: 'get_focused_element', invoke: 'invoke_element', focus: 'focus_element',
+      set_value: 'set_field_value', get_value: 'a11y_get_value',
+      expand: 'a11y_expand', collapse: 'a11y_collapse',
+      toggle: 'a11y_toggle', select: 'a11y_select', state: 'get_element_state',
+      list_children: 'a11y_list_children', wait_for: 'wait_for_element',
+    },
+    window: {
+      list: 'get_windows', active: 'get_active_window', focus: 'focus_window',
+      maximize: 'maximize_window', minimize: 'minimize_window_to_taskbar',
+      restore: 'restore_window', close: 'close_window', resize: 'resize_window',
+      list_displays: 'list_displays', screen_size: 'get_screen_size',
+      open_app: 'open_app', open_file: 'open_file', open_url: 'open_url',
+      switch_tab: 'switch_tab_os', navigate: 'navigate_browser',
+    },
+    system: {
+      clipboard_read: 'read_clipboard', clipboard_write: 'write_clipboard',
+      system_time: 'get_system_time', ocr: 'ocr_read_screen', undo: 'undo_last',
+      shortcuts_list: 'shortcuts_list', shortcuts_run: 'shortcuts_execute',
+      delegate: 'delegate_to_agent',
+      // v0.8.2
+      detect_webview: 'detect_webview_apps',
+      relaunch_with_cdp: 'relaunch_with_cdp',
+    },
+    browser: {
+      connect: 'cdp_connect', page_context: 'cdp_page_context', read_text: 'cdp_read_text',
+      click: 'cdp_click', type: 'cdp_type', select_option: 'cdp_select_option',
+      evaluate: 'cdp_evaluate', wait_for: 'cdp_wait_for_selector',
+      list_tabs: 'cdp_list_tabs', switch_tab: 'cdp_switch_tab', scroll: 'cdp_scroll',
+    },
+  };
+  const actionArg = typeof args.action === 'string' ? args.action : '';
+  if (tool in publicCompoundMap && actionArg) {
+    const mapped = publicCompoundMap[tool][actionArg];
+    if (mapped) return mapped;
+  }
+  if (tool === 'task') return 'delegate_to_agent';
+
+  if (tool !== 'mouse' && tool !== 'keyboard' && tool !== 'window') return tool;
+  const action = typeof args.action === 'string' ? args.action : '';
+
+  if (tool === 'mouse') {
+    switch (action) {
+      case 'click':         return 'mouse_click';
+      case 'double_click':  return 'mouse_double_click';
+      case 'right_click':   return 'mouse_right_click';
+      case 'middle_click':  return 'mouse_middle_click';
+      case 'triple_click':  return 'mouse_triple_click';
+      case 'move':
+      case 'hover':         return 'mouse_hover';
+      case 'move_relative': return 'mouse_move_relative';
+      case 'down':          return 'mouse_down';
+      case 'up':            return 'mouse_up';
+      case 'scroll':        return 'mouse_scroll';
+      case 'drag':          return 'mouse_drag';
+      case 'drag_stepped':  return 'mouse_drag_stepped';
+      default:              return 'mouse_click'; // safe default
+    }
+  }
+  if (tool === 'keyboard') {
+    switch (action) {
+      case 'press': return 'key_press';
+      case 'down':  return 'key_down';
+      case 'up':    return 'key_up';
+      case 'type':  return 'type_text';
+      default:      return 'key_press';
+    }
+  }
+  // window
+  switch (action) {
+    case 'focus':         return 'focus_window';
+    case 'maximize':      return 'maximize_window';
+    case 'minimize':      return 'minimize_window';
+    case 'restore':       return 'restore_window';
+    case 'close':         return 'close_window';
+    case 'resize':        return 'resize_window';
+    case 'list':          return 'get_windows';
+    case 'list_displays': return 'list_displays';
+    default:              return 'focus_window';
+  }
+}
+
+/**
+ * Evaluate an action. Pure function — no side effects other than the
+ * `safety.decision` audit log.
+ */
+export function evaluate(ctx: EvaluationContext): Decision {
+  // Unpack compound tool calls (vision agent's mouse/keyboard/window)
+  // into the canonical granular name so tier lookup hits the same map
+  // that drives granular tools.
+  const canonicalTool = unpackCompoundTool(ctx.tool, ctx.args);
+  const tier: Tier = TOOL_TIER[canonicalTool] ?? 'input';
+  const correlationId = getCorrelationId();
+
+  const emit = (decision: Decision) => {
+    // When a compound tool was unpacked, log BOTH names so the audit
+    // trail shows the canonical action (for tier forensics) and the
+    // surface tool the LLM actually called (for debugging).
+    const logMeta: Record<string, unknown> = { tool: ctx.tool, ...decision, correlationId };
+    if (canonicalTool !== ctx.tool) logMeta.canonicalTool = canonicalTool;
+    logger.info('safety.decision', logMeta);
+    return decision;
+  };
+
+  // 1. Keyboard combos: if blocked, reject immediately.
+  //    Check the full set of keyboard-emitting surfaces: `key_press`,
+  //    `press` (pipeline-internal), and the compound `keyboard` tool
+  //    after unpacking (canonicalTool = 'key_press').
+  const isKeyboardSurface =
+    ctx.tool === 'key_press' || ctx.tool === 'press' ||
+    canonicalTool === 'key_press' || canonicalTool === 'key_down';
+  if (isKeyboardSurface) {
+    if (typeof ctx.args.combo === 'string' && isBlockedKey(ctx.args.combo)) {
+      return emit({ decision: 'block', tier: 'destructive', reason: blockReason(ctx.args.combo) });
+    }
+    if (typeof ctx.args.key === 'string' && isBlockedKey(ctx.args.key)) {
+      return emit({ decision: 'block', tier: 'destructive', reason: blockReason(ctx.args.key) });
+    }
+  }
+
+  // 2. cdp_evaluate is ungated in v0.8.0 (audit C5). Require Confirm here;
+  // full allowArbitraryJs config gate lands in v0.8.2.
+  if (ctx.tool === 'cdp_evaluate') {
+    return emit({
+      decision: 'confirm',
+      tier: 'system',
+      reason: 'cdp_evaluate runs arbitrary JS in the active page — requires user approval',
+    });
+  }
+
+  // 3. Read tier: always allow.
+  if (tier === 'read') {
+    return emit({ decision: 'allow', tier });
+  }
+
+  // 4. System tier: always confirm (catch-all).
+  if (tier === 'system') {
+    return emit({ decision: 'confirm', tier, reason: `${ctx.tool} is a system-tier action` });
+  }
+
+  // 4b. Destructive tier: confirm. Matches the tool-registry tag for
+  //     explicitly-destructive verbs (close_window, etc.) so the gate
+  //     fires even when there's no label match.
+  if (tier === 'destructive') {
+    return emit({ decision: 'confirm', tier, reason: `${ctx.tool} is a destructive-tier action` });
+  }
+
+  // 5. Input tier with a Confirm-pattern target label.
+  if (ctx.targetLabel) {
+    for (const pattern of CONFIRM_LABEL_PATTERNS) {
+      if (pattern.test(ctx.targetLabel)) {
+        return emit({
+          decision: 'confirm',
+          tier: 'destructive',
+          reason: `target "${ctx.targetLabel}" matches destructive pattern ${pattern.source}`,
+        });
+      }
+    }
+  }
+
+  // 6. Sensitive-app elevation: clicks/typing inside email/banking/messaging apps.
+  if (ctx.activeApp && SENSITIVE_APPS.test(ctx.activeApp)) {
+    // Only elevate for actions that could send/delete. Reads stay allowed.
+    if (['smart_click', 'cdp_click', 'mouse_click', 'a11y_click', 'click', 'invoke_element'].includes(ctx.tool)) {
+      // Without a target label, we can't be sure — mark Input but audit.
+      logger.debug('safety.sensitive_app.click', { app: ctx.activeApp, tool: ctx.tool, correlationId });
+    }
+  }
+
+  // 7. Default allow at input tier.
+  return emit({ decision: 'allow', tier });
+}
+
+/**
+ * Convenience predicate. Returns true if the decision allows the action to
+ * proceed without user confirmation.
+ */
+export function isAllowed(d: Decision): boolean {
+  return d.decision === 'allow';
+}
