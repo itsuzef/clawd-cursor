@@ -1,0 +1,132 @@
+/**
+ * Text-LLM tool palettes — one small tool list per Capability.
+ *
+ * The text agent (`mode: 'blind' | 'hybrid'`) sees a SCOPED catalog
+ * based on the subtask's capability classification. This is the
+ * clawdcursor analogue of Anthropic's `computer_20250124` tool shape
+ * — the model picks among a handful of focused primitives instead of
+ * scanning 30+ at every turn.
+ *
+ * Why text, not vision: the text agent operates on the a11y tree and
+ * the subtask's intent is known upfront (type text, launch app, etc.).
+ * The vision agent operates on pixels and might need any primitive
+ * turn-to-turn — it gets the compound-tool form instead (see
+ * `compound.ts`).
+ *
+ * Fall-through: capability === 'general' → return undefined → caller
+ * serves the full agent catalog (pre-Tranche-2.5 behavior).
+ */
+
+import type { Capability } from '../classify/capability';
+
+/**
+ * Tool-name lists per capability. Names MUST exist in
+ * `buildUnifiedTools()`'s catalog (agent/tools.ts). Terminal actions
+ * (`done`, `give_up`, `cannot_read`) are present in every palette
+ * because the agent needs an exit door.
+ *
+ * These palettes are intentionally small. A tighter palette means:
+ *   - fewer tokens in the system prompt per turn
+ *   - less ambiguity for smaller models (Haiku, Kimi, Ollama)
+ *   - faster tool_use resolution on the model side
+ *
+ * Design rule: include the minimum tools needed to complete the
+ * capability + an escape hatch. Don't smuggle in "helpful extras" —
+ * that defeats the purpose. If a palette is wrong, the model emits
+ * `cannot_read` and the escalator promotes to hybrid/vision.
+ */
+export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
+  app_launch: [
+    'open_app',
+    'focus_window',
+    'wait_for_element',
+    'list_windows',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  text_input: [
+    'type',
+    'key',
+    'set_field_value',
+    'focus_element',
+    'read_screen',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  navigation: [
+    'key',
+    'focus_window',
+    'switch_tab_os',
+    'open_url',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  form_fill: [
+    'set_field_value',
+    'invoke_element',
+    'type',
+    'key',
+    'wait_for_element',
+    'focus_element',
+    'read_screen',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  spatial: [
+    // Spatial tasks typically reach the vision agent. This palette is the
+    // fallback when the text agent attempts one first and needs the mouse
+    // primitives to land a drag without screenshots. If the model calls
+    // `cannot_read` here, the pipeline escalates to hybrid/vision cleanly.
+    'mouse_move_relative',
+    'mouse_down',
+    'mouse_up',
+    'click',
+    'drag',
+    'read_screen',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  file_ops: [
+    'open_file',
+    'open_url',
+    'read_clipboard',
+    'write_clipboard',
+    'key',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+
+  window_mgmt: [
+    'focus_window',
+    'maximize_window',
+    'minimize_window',
+    'restore_window',
+    'close_window',
+    'resize_window',
+    'list_windows',
+    'list_displays',
+    'done',
+    'give_up',
+    'cannot_read',
+  ],
+};
+
+/**
+ * Look up the palette for a capability. Returns null for `general` so
+ * the caller hands the model the full agent catalog (back-compat).
+ */
+export function paletteFor(capability: Capability): string[] | null {
+  if (capability === 'general') return null;
+  return TEXT_PALETTES[capability] ?? null;
+}

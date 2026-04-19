@@ -20,14 +20,33 @@
  */
 
 import type { UnifiedTool, UnifiedToolResult, AgentToolContext } from './types';
+import type { Capability } from '../classify/capability';
+import { paletteFor } from './palettes';
+import { getCompoundTools, COMPOUND_REPLACES } from './compound';
 
 /**
- * Build the unified tool catalog. Modes:
- *   - 'blind'  → no screenshot tool
- *   - 'hybrid' → full catalog; model can call screenshot on demand
- *   - 'vision' → full catalog; initial screenshot is seeded elsewhere
+ * Build the unified tool catalog per mode + capability.
+ *
+ * Modes:
+ *   - 'blind'  → text-LLM; no `screenshot` tool in catalog
+ *   - 'hybrid' → text-LLM; `screenshot` tool available on demand
+ *   - 'vision' → vision-LLM; COMPOUND TOOL FORM (mouse/keyboard/window
+ *                as action-discriminated schemas à la Anthropic
+ *                computer_20250124) + perception + a11y + terminals
+ *
+ * Capability (text modes only):
+ *   - When supplied and non-'general', filter to the scoped palette
+ *     defined in `palettes.ts`. Typical palette ≈ 6–10 tools.
+ *   - 'general' / undefined → full text-agent catalog (back-compat).
+ *
+ * Terminal actions (`done`, `give_up`, `cannot_read`) are always
+ * present regardless of mode/capability — the agent must always have
+ * an exit door.
  */
-export function buildUnifiedTools(mode: 'blind' | 'hybrid' | 'vision'): UnifiedTool[] {
+export function buildUnifiedTools(
+  mode: 'blind' | 'hybrid' | 'vision',
+  capability?: Capability,
+): UnifiedTool[] {
   const tools: UnifiedTool[] = [
     // ─── PERCEPTION ─────────────────────────────────────────────
     {
@@ -291,6 +310,372 @@ export function buildUnifiedTools(mode: 'blind' | 'hybrid' | 'vision'): UnifiedT
       },
     },
 
+    // ─── WINDOW STATE + BOUNDS (Tranche 1B primitives) ──────────
+    {
+      name: 'maximize_window',
+      description: 'Maximize the foreground window (or a matched window). Polite request; WM may interpret.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          processName: { type: 'string' },
+          processId: { type: 'number' },
+          title: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const q = buildWinQuery(args);
+        const ok = await ctx.platform.setWindowState('maximize', q);
+        return { success: ok, text: ok ? 'Maximized window.' : 'Maximize request ignored.' };
+      },
+    },
+
+    {
+      name: 'minimize_window',
+      description: 'Minimize the foreground or matched window to the taskbar / Dock.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          processName: { type: 'string' },
+          processId: { type: 'number' },
+          title: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const q = buildWinQuery(args);
+        const ok = await ctx.platform.setWindowState('minimize', q);
+        return { success: ok, text: ok ? 'Minimized window.' : 'Minimize request failed.' };
+      },
+    },
+
+    {
+      name: 'restore_window',
+      description: 'Restore a minimized or maximized window to its previous bounds.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          processName: { type: 'string' },
+          processId: { type: 'number' },
+          title: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const q = buildWinQuery(args);
+        const ok = await ctx.platform.setWindowState('normal', q);
+        return { success: ok, text: ok ? 'Restored window.' : 'Restore request failed.' };
+      },
+    },
+
+    {
+      name: 'close_window',
+      description: 'Polite close request (WM_CLOSE / AXCloseAction / _NET_CLOSE_WINDOW). App may prompt.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          processName: { type: 'string' },
+          processId: { type: 'number' },
+          title: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const q = buildWinQuery(args);
+        const ok = await ctx.platform.setWindowState('close', q);
+        return { success: ok, text: ok ? 'Close request posted.' : 'Close request failed.', targetLabel: 'close_window' };
+      },
+    },
+
+    {
+      name: 'resize_window',
+      description: 'Set the foreground (or matched) window bounds in logical pixels. Omitted fields preserved.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          x: { type: 'number' }, y: { type: 'number' },
+          width: { type: 'number' }, height: { type: 'number' },
+          processName: { type: 'string' },
+          processId: { type: 'number' },
+          title: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const q = buildWinQuery(args);
+        const x = typeof args.x === 'number' ? args.x : undefined;
+        const y = typeof args.y === 'number' ? args.y : undefined;
+        const width = typeof args.width === 'number' ? args.width : undefined;
+        const height = typeof args.height === 'number' ? args.height : undefined;
+        const ok = await ctx.platform.setWindowBounds({ x, y, width, height }, q);
+        return { success: ok, text: ok ? `Resized window (x=${x ?? '-'}, y=${y ?? '-'}, w=${width ?? '-'}, h=${height ?? '-'}).` : 'Resize failed.' };
+      },
+    },
+
+    {
+      name: 'list_displays',
+      description: 'Enumerate connected displays with logical bounds + DPI ratio. Use before display-specific screenshots.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      changesScreen: false,
+      async execute(_args, ctx) {
+        const displays = await ctx.platform.listDisplays();
+        return { success: true, text: JSON.stringify(displays) };
+      },
+    },
+
+    {
+      name: 'switch_tab_os',
+      description: 'Cycle next/previous browser tab (mod+Tab / mod+Shift+Tab) or jump to tab N (mod+1..9).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          index: { type: 'number', description: '1-9 for direct tab jump' },
+          direction: { type: 'string', enum: ['next', 'previous'] },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        if (typeof args.index === 'number') {
+          const n = Math.max(1, Math.min(9, Math.floor(args.index)));
+          await ctx.platform.keyPress(`mod+${n}`);
+          return { success: true, text: `Switched to tab ${n}` };
+        }
+        const dir = args.direction === 'previous' ? 'previous' : 'next';
+        await ctx.platform.keyPress(dir === 'next' ? 'mod+Tab' : 'mod+shift+Tab');
+        return { success: true, text: `Cycled to ${dir} tab` };
+      },
+    },
+
+    // ─── ACCESSIBILITY DEPTH (Tranche 1B) ───────────────────────
+    {
+      name: 'focus_element',
+      description: 'Keyboard-focus an element by a11y name. Does NOT raise window — use focus_window first if needed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const name = String(args.name ?? '');
+        const result = await ctx.platform.invokeElement({
+          name,
+          controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+          processId: typeof args.processId === 'number' ? args.processId : undefined,
+          action: 'focus',
+        });
+        return {
+          success: result.success,
+          text: result.success ? `Focused "${name}" via a11y.` : `Could not focus "${name}".`,
+          targetLabel: name,
+        };
+      },
+    },
+
+    {
+      name: 'wait_for_element',
+      description: 'Poll the a11y tree until an element matching name/controlType appears. Useful after an action spawns a dialog.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          controlType: { type: 'string' },
+          processId: { type: 'number' },
+          timeoutMs: { type: 'number', description: 'Default 5000', maximum: 30000 },
+          intervalMs: { type: 'number', description: 'Default 250' },
+        },
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        const timeout = typeof args.timeoutMs === 'number' ? Math.min(30000, args.timeoutMs) : 5000;
+        const element = await ctx.platform.waitForElement(
+          {
+            name: typeof args.name === 'string' ? args.name : undefined,
+            controlType: typeof args.controlType === 'string' ? args.controlType : undefined,
+            processId: typeof args.processId === 'number' ? args.processId : undefined,
+            intervalMs: typeof args.intervalMs === 'number' ? args.intervalMs : 250,
+          },
+          timeout,
+        );
+        if (!element) return { success: false, text: `wait_for_element: timed out after ${timeout}ms` };
+        return { success: true, text: `Found element: ${element.name} [${element.controlType}] @${element.bounds.x},${element.bounds.y}` };
+      },
+    },
+
+    // ─── SYSTEM OPEN HELPERS (Tranche 1B) ───────────────────────
+    {
+      name: 'open_file',
+      description: 'Open a file or folder in the OS default app (explorer / open / xdg-open).',
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const p = String(args.path ?? '');
+        try {
+          if (ctx.platform.platform === 'darwin') await ctx.platform.launchApp('open', { url: p });
+          else if (ctx.platform.platform === 'linux') await ctx.platform.launchApp('xdg-open', { url: p });
+          else await ctx.platform.launchApp('explorer.exe', { url: p });
+          await sleep(500);
+          return { success: true, text: `Opened: ${p}` };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { success: false, text: `open_file failed: ${msg}` };
+        }
+      },
+    },
+
+    {
+      name: 'open_url',
+      description: 'Open a URL in the default browser. Use instead of navigate_browser when you don\'t care which browser.',
+      inputSchema: {
+        type: 'object',
+        properties: { url: { type: 'string' } },
+        required: ['url'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const u = String(args.url ?? '');
+        if (!/^https?:\/\//i.test(u)) return { success: false, text: 'open_url: URL must start with http(s)://' };
+        try {
+          if (ctx.platform.platform === 'darwin') await ctx.platform.launchApp('open', { url: u });
+          else if (ctx.platform.platform === 'linux') await ctx.platform.launchApp('xdg-open', { url: u });
+          else await ctx.platform.launchApp('explorer.exe', { url: u });
+          await sleep(800);
+          return { success: true, text: `Opened URL: ${u}` };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { success: false, text: `open_url failed: ${msg}` };
+        }
+      },
+    },
+
+    {
+      name: 'get_system_time',
+      description: 'Return current system time (ISO, epoch, timezone). Zero I/O.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      changesScreen: false,
+      async execute() {
+        const now = new Date();
+        return {
+          success: true,
+          text: JSON.stringify({
+            iso: now.toISOString(),
+            epochMs: now.getTime(),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }),
+        };
+      },
+    },
+
+    // ─── MOUSE + KEYBOARD EXTENDED (Tranche 1B) ────────────────
+    {
+      name: 'mouse_move_relative',
+      description: 'Move cursor by a relative offset (dx, dy). Wayland-safe via cursor cache.',
+      inputSchema: {
+        type: 'object',
+        properties: { dx: { type: 'number' }, dy: { type: 'number' } },
+        required: ['dx', 'dy'],
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        await ctx.platform.mouseMoveRelative(Number(args.dx ?? 0), Number(args.dy ?? 0));
+        return { success: true, text: `Cursor moved by (${args.dx}, ${args.dy})` };
+      },
+    },
+
+    {
+      name: 'mouse_down',
+      description: 'Press a mouse button without releasing. Pair with mouse_up. Enables hold-and-drag + modifier clicks.',
+      inputSchema: {
+        type: 'object',
+        properties: { button: { type: 'string', enum: ['left', 'right', 'middle'] } },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const b = (args.button as 'left' | 'right' | 'middle') ?? 'left';
+        await ctx.platform.mouseDown(b);
+        return { success: true, text: `Mouse ${b} down.` };
+      },
+    },
+
+    {
+      name: 'mouse_up',
+      description: 'Release a mouse button previously pressed with mouse_down.',
+      inputSchema: {
+        type: 'object',
+        properties: { button: { type: 'string', enum: ['left', 'right', 'middle'] } },
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const b = (args.button as 'left' | 'right' | 'middle') ?? 'left';
+        await ctx.platform.mouseUp(b);
+        return { success: true, text: `Mouse ${b} up.` };
+      },
+    },
+
+    {
+      name: 'key_down',
+      description: 'Press a key without releasing. Pair with key_up. Use to hold modifiers (shift, ctrl) during clicks.',
+      inputSchema: {
+        type: 'object',
+        properties: { key: { type: 'string' } },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        await ctx.platform.keyDown(String(args.key ?? ''));
+        return { success: true, text: `Key down: ${args.key}` };
+      },
+    },
+
+    {
+      name: 'key_up',
+      description: 'Release a key previously pressed with key_down.',
+      inputSchema: {
+        type: 'object',
+        properties: { key: { type: 'string' } },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      changesScreen: false,
+      async execute(args, ctx) {
+        await ctx.platform.keyUp(String(args.key ?? ''));
+        return { success: true, text: `Key up: ${args.key}` };
+      },
+    },
+
+    {
+      name: 'undo_last',
+      description: 'Send the OS Undo keystroke (mod+Z).',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      changesScreen: true,
+      async execute(_args, ctx) {
+        await ctx.platform.keyPress('mod+z');
+        return { success: true, text: 'Sent undo.' };
+      },
+    },
+
     // ─── CLIPBOARD ─────────────────────────────────────────────
     {
       name: 'read_clipboard',
@@ -408,14 +793,55 @@ export function buildUnifiedTools(mode: 'blind' | 'hybrid' | 'vision'): UnifiedT
     },
   ];
 
-  // Strip screenshot from blind mode. Keep `cannot_read` — that's the
-  // blind-only escape hatch.
+  // ── Vision mode: compound tools + perception + a11y + terminals ─
+  // Replace the individual mouse/keyboard/window primitives with the
+  // three action-discriminated compound schemas. This shrinks the
+  // catalog the vision LLM sees from ~30 tool definitions to ~12,
+  // cutting prompt tokens ~7× and letting the model pick categories
+  // first, specific actions second (exactly Anthropic's pattern).
+  if (mode === 'vision') {
+    const kept = tools.filter(t =>
+      !COMPOUND_REPLACES.has(t.name) &&
+      t.name !== 'cannot_read' && // vision has nothing to escalate to
+      t.name !== 'screenshot',    // included separately below so it sits at top
+    );
+    const screenshot = tools.find(t => t.name === 'screenshot');
+    const compound = getCompoundTools();
+    return [
+      ...(screenshot ? [screenshot] : []),
+      ...compound,
+      ...kept,
+    ];
+  }
+
+  // ── Text modes (blind / hybrid): capability-scoped palettes ────
+  // When the preprocessor supplied a specific capability, filter to
+  // the tight palette. `general` or undefined → full catalog, matching
+  // pre-Tranche-2.5 behavior.
+  if (capability && capability !== 'general') {
+    const allow = new Set(paletteFor(capability) ?? []);
+    // Blind mode must keep cannot_read; hybrid can call screenshot if
+    // the palette asks for it (rare — most palettes omit it).
+    const palette = tools.filter(t => allow.has(t.name));
+    if (mode === 'blind') return palette.filter(t => t.name !== 'screenshot');
+    return palette;
+  }
+
+  // Full catalog (general capability) with mode-specific trim:
   if (mode === 'blind') {
+    // Strip screenshot; keep cannot_read as the blind→vision escape.
     return tools.filter(t => t.name !== 'screenshot');
   }
-  // Remove cannot_read when vision is already available — there's nothing
-  // to escalate to. Model can use give_up if stuck.
+  // Hybrid: full catalog minus cannot_read (hybrid already has vision access).
   return tools.filter(t => t.name !== 'cannot_read');
+}
+
+function buildWinQuery(args: Record<string, unknown>): { processName?: string; processId?: number; title?: string } | undefined {
+  const q: { processName?: string; processId?: number; title?: string } = {};
+  if (typeof args.processName === 'string') q.processName = args.processName;
+  if (typeof args.processId === 'number') q.processId = args.processId;
+  if (typeof args.title === 'string') q.title = args.title;
+  return Object.keys(q).length ? q : undefined;
 }
 
 function sleep(ms: number): Promise<void> {

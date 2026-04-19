@@ -24,6 +24,14 @@ export interface AgentInput {
   mode: AgentMode;
   /** Optional app-knowledge fragment from the knowledge loader. */
   guide?: { appName: string; promptFragment: string };
+  /**
+   * Subtask capability classification from the preprocessor. In text
+   * modes (blind/hybrid) this narrows the tool catalog to a focused
+   * palette per `agent/palettes.ts`. `'general'` / undefined → full
+   * catalog (back-compat). Vision mode always uses compound tools and
+   * ignores this field.
+   */
+  capability?: import('../classify/capability').Capability;
   /** Hard cap on turns. Default 20. */
   maxTurns?: number;
   /** Cooperative cancel — polled every turn. */

@@ -23,6 +23,7 @@
 
 import type { ClassifyResult } from '../types';
 import { classifyTask } from '../classify/classify';
+import { classifyCapability, type Capability } from '../classify/capability';
 import { decompose as regexDecompose } from '../decompose/parser';
 import { detectApp, loadGuide, getWorkflowForTask } from '../knowledge/loader';
 
@@ -49,6 +50,13 @@ export interface PreprocessDecision {
     guide?: { appName: string; promptFragment: string };
     /** Short telemetry reason for why this strategy was picked. */
     reason: string;
+    /**
+     * Capability classification (Tranche 2.5) — governs which tools the
+     * text agent sees on this subtask. `general` = full catalog; specific
+     * values scope to a tight palette (`pipeline/agent/palettes.ts`).
+     * Vision agent ignores this and uses compound tools regardless.
+     */
+    capability?: Capability;
   };
   /** Underlying classification, preserved for telemetry / debugging. */
   classification: ClassifyResult;
@@ -72,6 +80,12 @@ export interface PreprocessContext {
 export function preprocess(task: string, ctx: PreprocessContext = {}): PreprocessDecision {
   const trimmed = task.trim();
   const classification = classifyTask(trimmed);
+  // Capability classification is on the SUBTASK STRING itself. Compound
+  // tasks split into subtasks downstream; each subtask carries its own
+  // capability, so the outer preprocess runs this against the whole
+  // task text as a best-effort hint (the Pipeline re-preprocesses each
+  // subtask individually so the final tag is always subtask-specific).
+  const capability = classifyCapability(trimmed);
 
   // ── Compound task? Try regex decomposition. ──
   // If the decomposer splits cleanly, the caller is expected to run each
@@ -114,7 +128,7 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
     return {
       strategy: 'router',
       subtasks,
-      hints: { appKey, guide, reason: 'router-pattern match' },
+      hints: { appKey, guide, reason: 'router-pattern match', capability },
       classification,
     };
   }
@@ -124,7 +138,7 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
     return {
       strategy: 'vision',
       subtasks,
-      hints: { appKey, guide, reason: 'classify:spatial — a11y cannot describe canvases' },
+      hints: { appKey, guide, reason: 'classify:spatial — a11y cannot describe canvases', capability },
       classification,
     };
   }
@@ -136,7 +150,7 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
     return {
       strategy: 'hybrid',
       subtasks,
-      hints: { appKey, guide, reason: 'visual-wording match → blind-first with screenshot tool' },
+      hints: { appKey, guide, reason: 'visual-wording match → blind-first with screenshot tool', capability },
       classification,
     };
   }
@@ -145,7 +159,7 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
   return {
     strategy: 'blind',
     subtasks,
-    hints: { appKey, guide, reason: 'default blind-first' },
+    hints: { appKey, guide, reason: 'default blind-first', capability },
     classification,
   };
 }

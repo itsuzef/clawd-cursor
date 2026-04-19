@@ -125,6 +125,7 @@ export class Pipeline {
         strategy: outerDecision.strategy,
         reason: outerDecision.hints.reason,
         appKey: outerDecision.hints.appKey,
+        capability: outerDecision.hints.capability,
         subtasks: outerDecision.subtasks.length,
       });
 
@@ -340,6 +341,7 @@ export class Pipeline {
         task,
         mode,
         guide: decision.hints.guide,
+        capability: decision.hints.capability,
         maxTurns: this.maxTurnsPerRung,
         isAborted: env.isAborted,
       },

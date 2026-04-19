@@ -319,9 +319,11 @@ function prettyEmit(level: Level, event: string, meta?: Record<string, unknown>)
     const strategy = String(meta?.strategy ?? '');
     const reason = String(meta?.reason ?? '');
     const subtasks = Number(meta?.subtasks ?? 0);
+    const capability = typeof meta?.capability === 'string' ? meta.capability : '';
     const stratColor = mapStrategyTag(strategy).color;
     const subInfo = subtasks > 0 ? ` · ${subtasks} subtasks` : '';
-    writePrettyLine(`${tagStr} preprocess → ${colorize(strategy, stratColor)}${subInfo} ${colorize(`· ${reason}`, C.dim)}`);
+    const capInfo = capability && capability !== 'general' ? ` · cap=${capability}` : '';
+    writePrettyLine(`${tagStr} preprocess → ${colorize(strategy, stratColor)}${subInfo}${capInfo} ${colorize(`· ${reason}`, C.dim)}`);
     return;
   }
 

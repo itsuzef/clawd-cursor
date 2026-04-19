@@ -158,26 +158,94 @@ const TOOL_TIER: Record<string, Tier> = {
 };
 
 /**
+ * Map a compound-tool call (Tranche 2.5 vision agent) to its canonical
+ * granular name for tier lookup. `mouse({action:"click"})` resolves to
+ * `mouse_click`, `keyboard({action:"press"})` to `key_press`, etc.
+ *
+ * Without this, compound tools default to 'input' tier because
+ * `TOOL_TIER` is keyed on the canonical names. The mapping keeps the
+ * existing tier map as the single source of truth — no compound-specific
+ * tier entries needed.
+ */
+function unpackCompoundTool(tool: string, args: Record<string, unknown>): string {
+  if (tool !== 'mouse' && tool !== 'keyboard' && tool !== 'window') return tool;
+  const action = typeof args.action === 'string' ? args.action : '';
+
+  if (tool === 'mouse') {
+    switch (action) {
+      case 'click':         return 'mouse_click';
+      case 'double_click':  return 'mouse_double_click';
+      case 'right_click':   return 'mouse_right_click';
+      case 'middle_click':  return 'mouse_middle_click';
+      case 'triple_click':  return 'mouse_triple_click';
+      case 'move':
+      case 'hover':         return 'mouse_hover';
+      case 'move_relative': return 'mouse_move_relative';
+      case 'down':          return 'mouse_down';
+      case 'up':            return 'mouse_up';
+      case 'scroll':        return 'mouse_scroll';
+      case 'drag':          return 'mouse_drag';
+      case 'drag_stepped':  return 'mouse_drag_stepped';
+      default:              return 'mouse_click'; // safe default
+    }
+  }
+  if (tool === 'keyboard') {
+    switch (action) {
+      case 'press': return 'key_press';
+      case 'down':  return 'key_down';
+      case 'up':    return 'key_up';
+      case 'type':  return 'type_text';
+      default:      return 'key_press';
+    }
+  }
+  // window
+  switch (action) {
+    case 'focus':         return 'focus_window';
+    case 'maximize':      return 'maximize_window';
+    case 'minimize':      return 'minimize_window';
+    case 'restore':       return 'restore_window';
+    case 'close':         return 'close_window';
+    case 'resize':        return 'resize_window';
+    case 'list':          return 'get_windows';
+    case 'list_displays': return 'list_displays';
+    default:              return 'focus_window';
+  }
+}
+
+/**
  * Evaluate an action. Pure function — no side effects other than the
  * `safety.decision` audit log.
  */
 export function evaluate(ctx: EvaluationContext): Decision {
-  const tier: Tier = TOOL_TIER[ctx.tool] ?? 'input';
+  // Unpack compound tool calls (vision agent's mouse/keyboard/window)
+  // into the canonical granular name so tier lookup hits the same map
+  // that drives granular tools.
+  const canonicalTool = unpackCompoundTool(ctx.tool, ctx.args);
+  const tier: Tier = TOOL_TIER[canonicalTool] ?? 'input';
   const correlationId = getCorrelationId();
 
   const emit = (decision: Decision) => {
-    logger.info('safety.decision', { tool: ctx.tool, ...decision, correlationId });
+    // When a compound tool was unpacked, log BOTH names so the audit
+    // trail shows the canonical action (for tier forensics) and the
+    // surface tool the LLM actually called (for debugging).
+    const logMeta: Record<string, unknown> = { tool: ctx.tool, ...decision, correlationId };
+    if (canonicalTool !== ctx.tool) logMeta.canonicalTool = canonicalTool;
+    logger.info('safety.decision', logMeta);
     return decision;
   };
 
   // 1. Keyboard combos: if blocked, reject immediately.
-  if ((ctx.tool === 'key_press' || ctx.tool === 'press') && typeof ctx.args.combo === 'string') {
-    if (isBlockedKey(ctx.args.combo)) {
+  //    Check the full set of keyboard-emitting surfaces: `key_press`,
+  //    `press` (pipeline-internal), and the compound `keyboard` tool
+  //    after unpacking (canonicalTool = 'key_press').
+  const isKeyboardSurface =
+    ctx.tool === 'key_press' || ctx.tool === 'press' ||
+    canonicalTool === 'key_press' || canonicalTool === 'key_down';
+  if (isKeyboardSurface) {
+    if (typeof ctx.args.combo === 'string' && isBlockedKey(ctx.args.combo)) {
       return emit({ decision: 'block', tier: 'destructive', reason: blockReason(ctx.args.combo) });
     }
-  }
-  if ((ctx.tool === 'key_press' || ctx.tool === 'press') && typeof ctx.args.key === 'string') {
-    if (isBlockedKey(ctx.args.key)) {
+    if (typeof ctx.args.key === 'string' && isBlockedKey(ctx.args.key)) {
       return emit({ decision: 'block', tier: 'destructive', reason: blockReason(ctx.args.key) });
     }
   }
