@@ -2,6 +2,58 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.8.5] - 2026-04-30 — Review-fix maintenance + compact-tool keyboard fix
+
+Two remote review passes (six findings + ten findings) on the v0.8.4 docs uncovered one real behavior bug, several factually wrong install instructions, and a long tail of documentation drift that had built up across SKILL.md, README, docs/index.html, and source comments. This release closes all of it. 429/430 tests still pass; granular schema snapshot unchanged.
+
+### Fixed
+
+- **`computer({"action":"key","combo":"..."})` now works.** The compound `key` / `key_press` / `key_down` / `key_up` actions had no `argRemap`, so the schema exposed `key` (not `combo`). REST rejected `combo` as an unknown parameter; MCP silently dropped it and the granular handler crashed with `(undefined).toLowerCase()`. Implemented the remap that `compact.ts:46-47` had documented as the canonical example since v0.8.1 — `argRemap: { combo: 'key' }` on all four keyboard actions. Granular schema is unaffected; the `key` granular tool still takes `key`. `src/tools/compact.ts`.
+- **Stale "72 granular tools" count** in user-visible places — `clawdcursor mcp --help`, the markdown returned by `GET /docs`, plus four internal source comments. CHANGELOG v0.8.2 established 74 (72 + 2 Electron-bridge tools) as canonical; the agent-facing surfaces are now consistent. `src/index.ts`, `src/tool-server.ts`, `src/tools/compact.ts`, `src/tools/index.ts`.
+
+### Documentation
+
+- **README installer claims rewritten.** The previous wording falsely claimed the installer (1) drops files into `~/.clawdcursor`, (2) registers an MCP server in `~/.claude/settings.json`, and (3) copies SKILL.md into every detected agent's skill directory. Verified against `docs/install.sh` and `docs/install.ps1`: the installer only clones to `~/clawdcursor` (no dot), runs `npm install + build`, and `npm link`s the global shim. The dotted `~/.clawdcursor/` directory holds runtime state only. Wiring the skill into Claude Code now correctly says the JSON block is required, not optional.
+- **Compact-action surface corrections.** The README's compact-tool table used invented action names — `accessibility.read_screen` (actual: `read_tree`), `accessibility.get_focused` (`focused`), `window.set_state`/`set_bounds`/`get_active` (none exist), `system.open_app` (lives on `window`), `system.read_clipboard` (`clipboard_read`), `browser.navigate` (lives on `window`), and the entire `task` action enum (`task` has no enum — just `{instruction}`). All rewritten against `src/tools/compact.ts`. Marquee example also fixed to use real calls.
+- **Linux accessibility package.** Was `at-spi2-core` + `python3-gi`; the actual missing package on a fresh Ubuntu install is `gir1.2-atspi-2.0` (the AT-SPI typelib that `python3-gi` consumes). Brought into line with SKILL.md, the probe script's hint, and the platform adapter docstring.
+- **Compact-action tables now non-exhaustive by default.** Added a "Most-used actions" header + caveat pointing to `GET /tools?mode=compact`, and filled in the high-value entries that had been silently dropped (`accessibility.list_children`, `browser.page_context`, `window.list_displays` / `screen_size` / `switch_tab`, `computer.scroll_horizontal` / `triple_click`).
+- **`clawdcursor dashboard` removed** from the README CLI block — that command never existed; the dashboard is reachable at `http://127.0.0.1:3847` while `serve` or `start` is running. `status` and `consent` subcommands added to the CLI block since they were referenced in the Options block but never introduced.
+- **`--compact` / `--accept` flag scopes corrected.** README claimed `--compact` works on `serve`; it's mcp-only (`serve` uses `?mode=compact` on `GET /tools`). README claimed `--accept` is universal; it lives on `start` and `consent` (`serve` uses `--skip-consent`).
+- **"Anthropic Agent SDK" → "Claude Agent SDK"** (the official product name) across README.
+- **`invoke_element` recategorized** from "Window / App" to "Accessibility" in the README — matches its registration in `src/tools/a11y_depth.ts` and the SKILL.md taxonomy.
+- **`docs/index.html` install snippets** no longer push `clawdcursor start` as the canonical post-install step (contradicts the new "skill, not application" framing). Replaced with `clawdcursor doctor` (verify-the-install) and a footer note that `start` is testing-only. Hero badge CVE list now includes `follow-redirects`.
+- **SKILL.md `/health` example** now uses `<x.y.z>` placeholder instead of a hard-coded version that drifts every release. "What's new" section expanded to cover 0.8.4 + 0.8.3 + 0.8.2.
+- **Cost-tier ladder + "no task is impossible" callout** added to SKILL.md (lines 38, 108-118). Sets the default agent disposition: GUI + mouse + keyboard = everything you need; start at T1 (structured a11y), escalate only when the current tier fails.
+- **Skill-first README rewrite.** The headline now reads "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop." `start` / `task` are demoted to a "Testing and Troubleshooting" appendix with explicit guidance that agents should not invoke them — they go through MCP or the REST surface. Replaces the earlier "OS-level desktop automation server" framing.
+- **Stale tagline cleanup.** Removed "ears" (no audio capture exists in `src/`) from `package.json` description, SKILL.md frontmatter, and `docs/index.html` meta tags + agent-readable summary. Aligned with the README's existing "eyes, hands, and a keyboard" wording.
+- **Pre-existing fix while in the area:** dropped the blocking `clawdcursor serve` step from `metadata.openclaw.install` in SKILL.md. `serve` is a foreground HTTP server with no auto-exit; using it as a sequential install step would either hang the installer or leave a zombie daemon — directly contradicts the "nothing runs in the foreground" framing.
+
+### Verified, not changed
+
+- **Cmd+Q is blocked.** Review claimed Cmd+Q is not actually blocked by the safety layer. Verified against `src/pipeline/playbooks/keys-blocklist.ts:24` + `src/pipeline/safety/layer.ts:325-328`: it IS blocked through the SafetyLayer chokepoint via both `combo` and `key` arg paths. README is correct; no change needed.
+
+---
+
+## [0.8.4] - 2026-04-21 — Security maintenance + README rewrite
+
+Dependency audit release. No functional changes, no schema changes, 429/430 tests still pass.
+
+### Security
+
+Patched every fixable advisory in the dependency tree (5 of 12 surfaced by `npm audit`). The remaining 7 moderate alerts all chain through `jimp → @nut-tree-fork/nut-js` and have no upstream fix yet; tracked for a follow-up once nut-js releases a jimp upgrade.
+
+- **`vite`** → 7.3.2+ · **High** · path traversal in optimized-deps `.map` handling ([GHSA-4w7w-66w2-5vf9](https://github.com/advisories/GHSA-4w7w-66w2-5vf9)), `server.fs.deny` bypass via query strings ([GHSA-v2wj-q39q-566r](https://github.com/advisories/GHSA-v2wj-q39q-566r)), arbitrary file read via dev-server WebSocket ([GHSA-p9ff-h696-f583](https://github.com/advisories/GHSA-p9ff-h696-f583)).
+- **`path-to-regexp`** → 0.1.13+ · **High** · ReDoS via multiple route parameters ([GHSA-37ch-88jc-xwx2](https://github.com/advisories/GHSA-37ch-88jc-xwx2)).
+- **`picomatch`** → 4.0.4+ · **High** · method injection in POSIX character classes + ReDoS via extglob quantifiers ([GHSA-3v7f-55p6-f55p](https://github.com/advisories/GHSA-3v7f-55p6-f55p), [GHSA-c2c7-rcm5-vvqj](https://github.com/advisories/GHSA-c2c7-rcm5-vvqj)).
+- **`hono`** → 4.12.14+ · Moderate · HTML injection in `hono/jsx` SSR via unsafe attribute names ([GHSA-458j-xx4x-4375](https://github.com/advisories/GHSA-458j-xx4x-4375)).
+- **`follow-redirects`** → 1.15.12+ · Moderate · custom auth headers leaked across cross-domain redirects ([GHSA-r4q5-vmmm-2653](https://github.com/advisories/GHSA-r4q5-vmmm-2653)).
+
+### Changed
+
+- **README rewrite.** Removed stale "What's New in v0.8.0 — V2 Architecture" headliner (v0.8.0's V2-vs-legacy split was unified in v0.8.2 — no opt-in flag, no two pipelines). Pipeline section now reflects the unified blind → hybrid → vision router, the `safety.evaluate()` chokepoint, ground-truth verification, and the v0.8.3 runaway guard. Tool surface reorganized around the 6-tool compact catalog and the 74-tool granular catalog. Tone tightened; marketing phrasing trimmed.
+
+---
+
 ## [0.8.3] - 2026-04-19 — Hotfix: "Outlook keeps opening" + runaway guard
 
 User reported Outlook launching repeatedly during a test. Root-cause diagnosis traced to three compounding failures: (1) `PlatformAdapter.openApp` spawned a new instance even when the app was already running, (2) the escalation ladder (router → blind → hybrid → vision) re-ran `open_app` at each rung because earlier rungs couldn't verify success through New Outlook's sparse WebView2 accessibility tree, (3) `clawdcursor stop` only killed the `start` process on port 3847, missing `serve` (different port / same port different process) and `mcp` (stdio, no port) entirely. A stale `serve` kept receiving MCP traffic after the user thought they'd stopped everything.
