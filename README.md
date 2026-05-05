@@ -54,10 +54,11 @@ No app-specific integrations. No per-service API keys. No cloud round-trip &mdas
 
 ## Latest Release
 
-**v0.8.7** &mdash; security hardening release. Direct tool calls (REST `/execute/:name` and MCP `callTool`) now route through a shared safety gate, closing a gap where direct invocations bypassed the checks the agent loop applied. Accessibility, window, and clipboard reads consolidate onto `PlatformAdapter`. The version string is now single-sourced from `package.json` with a CI guard against drift. Plus tooling bumps: TypeScript 6.0, ESLint 10, Playwright 1.59, and routine dependency hygiene.
+**v0.8.8** &mdash; reliability + correctness release. The `mod` modifier in compact `computer({"action":"key","combo":"mod+s"})` now resolves correctly across platforms (Cmd on macOS, Ctrl on Win/Linux) instead of silently dropping or throwing. Compact `accessibility({"action":"set_value", ...})` now actually works &mdash; previously the delegate target wasn't registered. `smart_click` OCR now prefers matches inside the focused window so it can't silently click into a background app. `invoke-element.ps1` adds a 2s timeout so React/Electron buttons that advertise `InvokePattern` but block on invoke can no longer hang the script. Plus a routine round of dependency hygiene (express v5, commander v14, dotenv v17, sharp 0.34) and lint cleanup.
 
 The substantive work landed earlier in the v0.8.x line:
 
+- **v0.8.7** &mdash; security hardening. Direct tool calls now route through a shared safety gate; accessibility/window/clipboard reads consolidate onto `PlatformAdapter`; the version string is single-sourced from `package.json` with a CI guard against drift. Tooling: TypeScript 6.0, ESLint 10, Playwright 1.59.
 - **v0.8.6** &mdash; polish release. Fixes a stale `McpServer` version string that had been advertising `v0.7.2` in MCP client metadata since the v0.7.x line; adds `SECURITY.md` and a private vulnerability reporting channel; trims the homepage; prunes stale repo artifacts.
 - **v0.8.5** &mdash; `computer({"action":"key","combo":"..."})` now actually works (compact-tool keyboard remap was missing); 16 documentation accuracy fixes; cost-tier ladder added to SKILL.md.
 - **v0.8.4** &mdash; security maintenance: patches every fixable CVE in the dependency tree (vite, path-to-regexp, picomatch, hono, follow-redirects); README rewritten to frame clawdcursor as a *skill* rather than a standalone server.
@@ -153,7 +154,7 @@ Most-used actions per compound below. The full enum is at `GET /tools?mode=compa
 | `browser` | `connect`, `page_context`, `read_text`, `click`, `type`, `select_option`, `evaluate`, `wait_for`, `list_tabs`, `switch_tab`, `scroll` |
 | `task` | (no `action` enum &mdash; takes `{instruction: string}` and routes through the full pipeline) |
 
-### Granular &mdash; 74 individual tools
+### Granular &mdash; 75 individual tools
 
 Full catalog for agents that prefer one tool per verb. Sample of categories below; the full list is at `GET /tools` or `list_tools` over MCP.
 
@@ -280,7 +281,7 @@ clawdcursor task <t>     Send a task to that agent (testing)
 
 Options:
   --port <port>          Default: 3847 (start, serve, stop, task)
-  --compact              MCP only: expose 6 compound tools instead of 74 granular.
+  --compact              MCP only: expose 6 compound tools instead of 75 granular.
                          For REST/serve, use the `?mode=compact` query parameter
                          on `GET /tools` instead.
   --provider <name>      `start` only: anthropic | openai | gemini | ollama | ...

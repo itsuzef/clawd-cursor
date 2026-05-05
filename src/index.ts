@@ -1010,7 +1010,7 @@ async function createToolContext() {
 program
   .command('mcp')
   .description('Run as MCP tool server over stdio (for Claude Code, Cursor, Windsurf, Zed)')
-  .option('--compact', 'Expose 6 compound tools instead of 74 granular ones (Anthropic Computer-Use style — recommended for most agents)')
+  .option('--compact', 'Expose 6 compound tools instead of 75 granular ones (Anthropic Computer-Use style — recommended for most agents)')
   .action(async (opts: { compact?: boolean }) => {
     // Single-instance guard (MCP servers can accumulate when editors restart them)
     const existingMcpPid = claimPidFile('mcp');

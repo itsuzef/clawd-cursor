@@ -3,10 +3,10 @@
  * primitive, Anthropic-Computer-Use-style.
  *
  * Why this exists:
- *   An agent driving clawdcursor via MCP otherwise sees 74 granular
+ *   An agent driving clawdcursor via MCP otherwise sees 75 granular
  *   tool schemas (~18,000 tokens of tool catalog). Most models
  *   over-think the choice, pick near-duplicates, and burn context.
- *   This file collapses the 74 tools into 6 action-discriminated
+ *   This file collapses the 75 tools into 6 action-discriminated
  *   compound tools — the same "1 tool with N sub-actions" shape that
  *   Anthropic uses for computer_20250124.
  *
@@ -22,7 +22,7 @@
  * pick which shape to consume.
  *
  * Selection:
- *   `clawdcursor mcp`             → 74 granular tools (back-compat)
+ *   `clawdcursor mcp`             → 75 granular tools (back-compat)
  *   `clawdcursor mcp --compact`   → 6 compound tools (this file)
  *   GET /tools?mode=compact      → REST gets the same compact schemas
  *
