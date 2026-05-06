@@ -262,6 +262,19 @@
     footer p { color: var(--text3); font-size: 0.75rem; }
     footer a { color: var(--text2); }
 
+    /* AI cursor */
+    .ai-cursor-container { position: fixed; inset: 0; pointer-events: none; z-index: 1; overflow: hidden; }
+    .ai-cursor { position: absolute; width: 28px; height: 28px; opacity: 0; transition: opacity 0.3s; will-change: transform; }
+    .ai-cursor svg { width: 100%; height: 100%; filter: drop-shadow(0 0 8px rgba(34,197,94,0.6)); }
+    .ai-trail {
+      position: absolute; width: 6px; height: 6px; background: var(--accent); border-radius: 50%;
+      opacity: 0; transform: translate(-50%,-50%); will-change: transform,opacity;
+    }
+    .ai-ripple {
+      position: absolute; width: 40px; height: 40px; border: 2px solid var(--accent);
+      border-radius: 50%; opacity: 0; transform: translate(-50%,-50%); pointer-events: none;
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
@@ -272,6 +285,23 @@
   </style>
 </head>
 <body>
+
+<!-- AI Cursor -->
+<div class="ai-cursor-container">
+  <div class="ai-cursor">
+    <svg viewBox="0 0 32 32" fill="none">
+      <path d="M4 4L14 28L17 18L28 14L4 4Z" fill="url(#cg)" stroke="#22c55e" stroke-width="1.5" stroke-linejoin="round"/>
+      <path d="M20 8L26 2" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+      <path d="M22 12L30 6" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+      <path d="M18 6L22 0" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+      <defs><linearGradient id="cg" x1="4" y1="4" x2="28" y2="28"><stop stop-color="#22c55e"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs>
+    </svg>
+  </div>
+  <div class="ai-trail"></div>
+  <div class="ai-trail"></div>
+  <div class="ai-trail"></div>
+  <div class="ai-ripple"></div>
+</div>
 
 <div class="wrap">
 
@@ -534,6 +564,59 @@
       })
       .catch(() => { /* keep button clean */ });
   })();
+
+  // AI cursor animation — green pointer follows the mouse with a soft trail,
+  // ripple on click. Idles out after 3s of no motion. Pure cosmetic; pointer
+  // events are disabled so it never intercepts a real click.
+  const cursor = document.querySelector('.ai-cursor');
+  const trails = document.querySelectorAll('.ai-trail');
+  const ripple = document.querySelector('.ai-ripple');
+  let mouseX = 0, mouseY = 0;
+  let trailPositions = Array(trails.length).fill().map(() => ({ x: 0, y: 0 }));
+  let animFrame;
+  let isActive = false;
+  let idleTimer;
+
+  document.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX; mouseY = e.clientY;
+    if (!isActive) {
+      isActive = true;
+      cursor.style.opacity = '1';
+      animate();
+    }
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      isActive = false;
+      cursor.style.opacity = '0';
+      trails.forEach(t => t.style.opacity = '0');
+      cancelAnimationFrame(animFrame);
+    }, 3000);
+  });
+
+  document.addEventListener('click', () => {
+    ripple.style.left = mouseX + 'px';
+    ripple.style.top = mouseY + 'px';
+    ripple.style.opacity = '0.6';
+    ripple.style.transform = 'translate(-50%, -50%) scale(0)';
+    ripple.style.transition = 'none';
+    requestAnimationFrame(() => {
+      ripple.style.transition = 'all 0.5s ease-out';
+      ripple.style.opacity = '0';
+      ripple.style.transform = 'translate(-50%, -50%) scale(2)';
+    });
+  });
+
+  function animate() {
+    cursor.style.transform = `translate(${mouseX - 4}px, ${mouseY - 4}px)`;
+    trailPositions.forEach((pos, i) => {
+      const target = i === 0 ? { x: mouseX, y: mouseY } : trailPositions[i - 1];
+      pos.x += (target.x - pos.x) * (0.15 + i * 0.05);
+      pos.y += (target.y - pos.y) * (0.15 + i * 0.05);
+      trails[i].style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+      trails[i].style.opacity = String(0.35 - i * 0.1);
+    });
+    if (isActive) animFrame = requestAnimationFrame(animate);
+  }
 
   // OS tab switcher
   function switchOS(id) {
