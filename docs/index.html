@@ -350,6 +350,7 @@
           <span class="tag b">Claude Code</span>
           <span class="tag b">Cursor</span>
           <span class="tag b">Windsurf</span>
+          <span class="tag b">OpenClaw</span>
           <span class="tag">Zed</span>
         </div>
       </div>
@@ -363,7 +364,7 @@
     <p class="sub">Same tools underneath.</p>
     <div class="modes-grid">
       <div class="mode-card b">
-        <h3>MCP (Claude Code / Cursor / Windsurf)</h3>
+        <h3>MCP (Claude Code / Cursor / Windsurf / OpenClaw)</h3>
         <ol>
           <li>Run <code style="font-size:0.75rem;color:var(--accent2)">clawdcursor consent</code></li>
           <li>Add JSON block to your AI client's config</li>
@@ -565,37 +566,37 @@
       .catch(() => { /* keep button clean */ });
   })();
 
-  // AI cursor animation — green pointer follows the mouse with a soft trail,
-  // ripple on click. Idles out after 3s of no motion. Pure cosmetic; pointer
-  // events are disabled so it never intercepts a real click.
+  // AI cursor — autonomous wander. The green pointer drifts to a random
+  // viewport target, eases into it with a small jitter, occasionally clicks
+  // (firing a ripple), then picks a new target. Trails follow with the same
+  // exponential-smoothing pattern as before. Pure cosmetic; pointer-events
+  // are disabled in CSS so it never intercepts a real click. Pauses while
+  // the tab is hidden so it doesn't churn the GPU in background tabs.
   const cursor = document.querySelector('.ai-cursor');
   const trails = document.querySelectorAll('.ai-trail');
   const ripple = document.querySelector('.ai-ripple');
-  let mouseX = 0, mouseY = 0;
-  let trailPositions = Array(trails.length).fill().map(() => ({ x: 0, y: 0 }));
-  let animFrame;
-  let isActive = false;
-  let idleTimer;
 
-  document.addEventListener('mousemove', (e) => {
-    mouseX = e.clientX; mouseY = e.clientY;
-    if (!isActive) {
-      isActive = true;
-      cursor.style.opacity = '1';
-      animate();
-    }
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      isActive = false;
-      cursor.style.opacity = '0';
-      trails.forEach(t => t.style.opacity = '0');
-      cancelAnimationFrame(animFrame);
-    }, 3000);
-  });
+  let cx = 0, cy = 0;          // current cursor position
+  let tx = 0, ty = 0;          // current target
+  let nextHopAt = 0;           // when to pick a new target
+  let nextClickAt = 0;         // when to fire the next ripple
+  const trailPositions = Array(trails.length).fill().map(() => ({ x: 0, y: 0 }));
 
-  document.addEventListener('click', () => {
-    ripple.style.left = mouseX + 'px';
-    ripple.style.top = mouseY + 'px';
+  function viewportPad() {
+    return { w: Math.max(window.innerWidth - 80, 200), h: Math.max(window.innerHeight - 80, 200) };
+  }
+
+  function pickTarget() {
+    const v = viewportPad();
+    tx = 40 + Math.random() * v.w;
+    ty = 40 + Math.random() * v.h;
+    // Hop interval: 1.5–4.5s of drift to next target.
+    nextHopAt = performance.now() + 1500 + Math.random() * 3000;
+  }
+
+  function fireRipple() {
+    ripple.style.left = cx + 'px';
+    ripple.style.top = cy + 'px';
     ripple.style.opacity = '0.6';
     ripple.style.transform = 'translate(-50%, -50%) scale(0)';
     ripple.style.transition = 'none';
@@ -604,19 +605,48 @@
       ripple.style.opacity = '0';
       ripple.style.transform = 'translate(-50%, -50%) scale(2)';
     });
-  });
+    // Next click in 4–10s.
+    nextClickAt = performance.now() + 4000 + Math.random() * 6000;
+  }
 
-  function animate() {
-    cursor.style.transform = `translate(${mouseX - 4}px, ${mouseY - 4}px)`;
+  // Start near the centre, ease in.
+  cx = window.innerWidth / 2;
+  cy = window.innerHeight / 2;
+  pickTarget();
+  nextClickAt = performance.now() + 3000 + Math.random() * 4000;
+  cursor.style.opacity = '1';
+
+  function tick(now) {
+    if (now >= nextHopAt) pickTarget();
+    if (now >= nextClickAt) fireRipple();
+
+    // Ease toward target with a tiny jitter so motion isn't perfectly linear.
+    cx += (tx - cx) * 0.025 + (Math.random() - 0.5) * 0.4;
+    cy += (ty - cy) * 0.025 + (Math.random() - 0.5) * 0.4;
+    cursor.style.transform = `translate(${cx - 4}px, ${cy - 4}px)`;
+
+    // Trails: each dot eases toward the dot in front of it.
     trailPositions.forEach((pos, i) => {
-      const target = i === 0 ? { x: mouseX, y: mouseY } : trailPositions[i - 1];
+      const target = i === 0 ? { x: cx, y: cy } : trailPositions[i - 1];
       pos.x += (target.x - pos.x) * (0.15 + i * 0.05);
       pos.y += (target.y - pos.y) * (0.15 + i * 0.05);
       trails[i].style.transform = `translate(${pos.x}px, ${pos.y}px)`;
       trails[i].style.opacity = String(0.35 - i * 0.1);
     });
-    if (isActive) animFrame = requestAnimationFrame(animate);
+
+    requestAnimationFrame(tick);
   }
+  // Pause while the tab is hidden — saves GPU and avoids accumulated drift.
+  let rafHandle = requestAnimationFrame(tick);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      cancelAnimationFrame(rafHandle);
+    } else {
+      // Re-anchor target so the cursor doesn't snap unexpectedly.
+      pickTarget();
+      rafHandle = requestAnimationFrame(tick);
+    }
+  });
 
   // OS tab switcher
   function switchOS(id) {
