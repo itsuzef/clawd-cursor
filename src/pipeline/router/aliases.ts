@@ -9,6 +9,8 @@
  * should reference raw process names — they go through this table.
  */
 
+import { normalizeAppName } from './normalize';
+
 export interface AppAlias {
   /** Process names to look for when checking "is this app running?". */
   processNames: string[];
@@ -102,13 +104,30 @@ export const APP_ALIASES: Record<string, AppAlias> = {
 };
 
 /**
- * Resolve a user-facing app name to its alias row. Case-insensitive,
- * whitespace-tolerant. Returns null for unknown apps — caller should fall
- * back to `launchApp(name)` with the raw string.
+ * Resolve a user-facing app name to its alias row. Goes through
+ * `normalizeAppName` first so phrasings like "the Outlook app",
+ * "Edge browser", or '"chrome"' all match the same canonical key as
+ * the bare app name. Returns null for unknown apps — caller should
+ * fall back to `launchApp(name)` with the raw string.
+ *
+ * This is the single choke point for "name → alias row". Every caller
+ * (router, agent's `open_app`, MCP `mcp__clawdcursor__window`, REST
+ * `/execute`) hits this function, so adding normalization here means
+ * we don't have to push the same logic into every entry point.
  */
 export function resolveAlias(name: string): (AppAlias & { key: string }) | null {
-  const k = name.trim().toLowerCase();
-  const hit = APP_ALIASES[k];
+  const k = normalizeAppName(name);
+  if (!k) return null;
+  // Try the normalized form first.
+  let hit = APP_ALIASES[k];
+  // Fallback: if the user's literal phrase was multi-word with a filler
+  // suffix that took it back below an alias key (e.g. "music app" → "music"
+  // → no alias), try the un-normalized form too. Cheap and only fires
+  // when normalization didn't help.
+  if (!hit) {
+    const literal = name.trim().toLowerCase().replace(/['"`‘’“”]/g, '');
+    if (literal !== k) hit = APP_ALIASES[literal];
+  }
   if (!hit) return null;
   return { key: k, ...hit };
 }

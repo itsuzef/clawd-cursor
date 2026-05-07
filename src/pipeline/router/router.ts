@@ -23,6 +23,7 @@
 import type { PlatformAdapter, WindowInfo } from '../../v2/platform/types';
 import { logger } from '../observability/logger';
 import { APP_ALIASES, resolveAlias, type AppAlias } from './aliases';
+import { normalizeAppName } from './normalize';
 import { needsWebView2Settle, settleIfWebView2 } from './webview2';
 
 export { APP_ALIASES, resolveAlias, needsWebView2Settle, settleIfWebView2 };
@@ -144,9 +145,18 @@ export class Router {
       };
     }
 
-    const normalized = appName.toLowerCase().replace(/['"]/g, '');
-    const alias = resolveAlias(normalized);
-    const searchTerm = alias?.searchTerm ?? appName;
+    // Normalize once — strip filler words ("the outlook app" → "outlook"),
+    // quotes, and case. `resolveAlias` does this internally too, but the
+    // post-launch matching code below uses `normalized` as a process-name
+    // hint, so we want the cleaned form there too.
+    const normalized = normalizeAppName(appName);
+    const alias = resolveAlias(appName);
+    // Search term used by Start-Menu / Spotlight fallback. Prefer the
+    // alias's curated `searchTerm` ("Edge", "File Explorer"); fall back
+    // to the normalized name (not the raw `appName`) so a phrase like
+    // "the outlook app" doesn't end up typed verbatim into the Start
+    // Menu when the alias misses for some reason.
+    const searchTerm = alias?.searchTerm ?? (normalized || appName);
 
     // Snapshot windows BEFORE. We'll diff against this to know what's new.
     const windowsBefore = await this.safeListWindows();
@@ -276,8 +286,8 @@ export class Router {
   }
 
   private async handleFocus(appName: string): Promise<RouteResult> {
-    const normalized = appName.trim().toLowerCase();
-    const alias = resolveAlias(normalized);
+    const normalized = normalizeAppName(appName);
+    const alias = resolveAlias(appName);
     const processNames = alias?.processNames ?? [appName];
     for (const pn of processNames) {
       const ok = await this.adapter.focusWindow({ processName: pn });
