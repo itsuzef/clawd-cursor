@@ -52,7 +52,25 @@ import type {
 } from './types';
 
 const DEFAULT_MAX_TURNS = 20;
+/**
+ * Number of consecutive identical fingerprints that triggers a stagnation
+ * WARNING in the next turn's prompt. Below this we trust the agent to
+ * recover on its own (a single side-effect-free tool call like
+ * `read_screen` legitimately leaves the fingerprint unchanged).
+ */
 const STAGNATION_WINDOW = 3;
+/**
+ * Number of consecutive turns where stagnation kept firing before we abort
+ * the rung with `exit: 'stagnation'`. Triggers the pipeline ladder to
+ * escalate to the next strategy (blind → hybrid → vision). The previous
+ * behavior was warn-only, which let the agent keep typing into a stale
+ * screen for the rest of its turn budget — exactly the "agent kept going
+ * blind, called done() with hedged evidence" pattern observed live.
+ *
+ * Tuned conservatively (5) so a couple of legitimate stagnant turns —
+ * waiting on a slow window, an a11y blip — don't trip it.
+ */
+const STAGNATION_HARD_LIMIT = 5;
 const MAX_HISTORY_SCREENSHOTS = 2;
 
 export interface AgentDeps {
@@ -111,6 +129,14 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
   const steps: AgentStep[] = [];
   let llmCalls = 0;
   let activeApp: string | undefined;
+  /**
+   * Counts consecutive turns where stagnation fired. Reset to 0 when the
+   * fingerprint changes. When this hits `STAGNATION_HARD_LIMIT` the rung
+   * exits with `'stagnation'` so the pipeline ladder can climb. Without
+   * this, the agent kept looping on stale screens until max_turns and
+   * then fabricated `done()` evidence.
+   */
+  let consecutiveStagnantTurns = 0;
 
   // Turn-1 perception — always an a11y snapshot. In vision mode, also a
   // screenshot. The blind mode gets text-only snapshot.
@@ -421,18 +447,55 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         }
       }
 
-      // 6c. Stagnation check — force the agent to change approach if the
-      //     same fingerprint has repeated. We do this AFTER the history
-      //     is updated so the model can see it.
-      if (fph.isStagnant(STAGNATION_WINDOW)) {
+      // 6c. Stagnation check — two-stage:
+      //
+      //  Stage 1 (warn): the last STAGNATION_WINDOW (3) fingerprints are
+      //    identical. Tell the agent to change approach — most of the time
+      //    a single nudge is enough and we trust it to recover.
+      //
+      //  Stage 2 (abort): stagnation has fired for STAGNATION_HARD_LIMIT
+      //    consecutive turns. The agent is stuck — abort the rung with
+      //    `exit: 'stagnation'` so the pipeline ladder climbs to hybrid
+      //    or vision. Without this, the agent kept tying actions to a
+      //    stale screen until max_turns and then fabricated `done()`
+      //    evidence ("the email should have been sent...").
+      //
+      //  The counter is reset to 0 every turn the fingerprint moves, so
+      //  legitimate stagnant patches (slow window opening, transient a11y
+      //  hiccup) don't trip the hard limit.
+      const stagnant = fph.isStagnant(STAGNATION_WINDOW);
+      if (stagnant) {
+        consecutiveStagnantTurns += 1;
+      } else {
+        consecutiveStagnantTurns = 0;
+      }
+
+      if (consecutiveStagnantTurns >= STAGNATION_HARD_LIMIT) {
         log.warn(EVENTS.AGENT_STAGNATION, {
           turn,
           window: STAGNATION_WINDOW,
+          consecutiveStagnantTurns,
+          hardLimit: STAGNATION_HARD_LIMIT,
+          aborting: true,
+          fingerprint: fph.getHistory().slice(-1)[0],
+        });
+        return finish(
+          'stagnation',
+          `aborted: ${consecutiveStagnantTurns} consecutive turns with no screen change — escalating strategy`,
+          steps, llmCalls, screenshotsCaptured.n, startedAt,
+        );
+      }
+
+      if (stagnant) {
+        log.warn(EVENTS.AGENT_STAGNATION, {
+          turn,
+          window: STAGNATION_WINDOW,
+          consecutiveStagnantTurns,
           fingerprint: fph.getHistory().slice(-1)[0],
         });
         nextBlocks.push({
           type: 'text',
-          text: `\n⚠ STAGNATION: the last ${STAGNATION_WINDOW} actions did not change the screen. Try a DIFFERENT approach (keyboard shortcut, different target, wait, list_windows to check focus) or give_up with a reason.`,
+          text: `\n⚠ STAGNATION (${consecutiveStagnantTurns}/${STAGNATION_HARD_LIMIT}): the last ${STAGNATION_WINDOW} actions did not change the screen. Try a DIFFERENT approach (keyboard shortcut, different target, wait, list_windows to check focus) or give_up with a reason. Two more stagnant turns and this rung will abort and escalate.`,
         });
       }
 

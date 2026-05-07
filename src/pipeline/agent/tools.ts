@@ -25,6 +25,46 @@ import { paletteFor } from './palettes';
 import { getCompoundTools, COMPOUND_REPLACES } from './compound';
 
 /**
+ * Hedging-language phrases that indicate the agent is GUESSING about
+ * the task outcome instead of observing the actual screen state. Used
+ * by the `done` tool to reject speculative evidence claims like
+ * "the email should have been sent" — a real symptom from a Kimi run
+ * where the agent typed in a stale window and never noticed.
+ *
+ * Patterns are word-boundary anchored where possible so we don't
+ * false-positive on substrings (e.g., "shoulder" must not match
+ * "should"). Multi-word phrases match contiguous whitespace.
+ *
+ * The list is short on purpose — only the unambiguous "I'm guessing"
+ * phrases. Words like "looks", "shown", "displayed" are LEGITIMATE
+ * concrete-observation language and stay allowed.
+ */
+const HEDGING_PATTERN = new RegExp(
+  [
+    // Modal verbs of uncertainty
+    '\\bshould\\s+(?:have|be|now)\\b',
+    '\\bshould\\s+(?:have\\s+been|be|now)\\b',
+    '\\bshould\\b(?=\\s+\\w)',
+    '\\bmight\\s+(?:have|be)\\b',
+    '\\bmay\\s+have\\b',
+    '\\bcould\\s+have\\b',
+    '\\bprobably\\b',
+    '\\blikely\\s+(?:has|have|is|was)\\b',
+    // Speaker-uncertainty phrasings
+    '\\bI\\s+think\\b',
+    '\\bI\\s+believe\\b',
+    '\\bI\\s+assume\\b',
+    '\\bassuming\\b',
+    '\\bif\\s+(?:successful|it\\s+worked|the\\s+\\w+\\s+worked)\\b',
+    // Approximate observation
+    '\\bappears?\\s+to\\b',
+    '\\bseems?\\s+to\\b',
+    '\\bpresumably\\b',
+  ].join('|'),
+  'i',
+);
+
+/**
  * Build the unified tool catalog per mode + capability.
  *
  * Modes:
@@ -931,7 +971,7 @@ export function buildUnifiedTools(
     // ─── TERMINAL ACTIONS ──────────────────────────────────────
     {
       name: 'done',
-      description: 'Declare the task complete. Provide SPECIFIC screen evidence.',
+      description: 'Declare the task complete. Provide SPECIFIC screen evidence — a window title, a value visible in the document, a status bar message. Do NOT use hedging words ("should", "might", "probably", "I think", "I believe") — that means you are guessing. If you can\'t see concrete evidence, take a screenshot or read_screen first.',
       inputSchema: {
         type: 'object',
         properties: { evidence: { type: 'string' } },
@@ -941,7 +981,36 @@ export function buildUnifiedTools(
       changesScreen: false,
       terminal: true,
       async execute(args) {
-        const evidence = String(args.evidence ?? 'ok');
+        const evidence = String(args.evidence ?? '').trim();
+
+        // Guard 1: evidence must be present and non-trivial. An empty string
+        // or "ok" / "done" gives the verifier nothing to work with.
+        if (evidence.length < 8) {
+          return {
+            success: false,
+            text: 'done rejected: evidence is empty or too short. Look at the screen and report a SPECIFIC concrete observation (window title, on-screen text, focused element) before declaring done.',
+            isError: true,
+          };
+        }
+
+        // Guard 2: hedging-language detection. Phrases like "should have
+        // been sent", "might be open", "I think it worked" are speculative
+        // — they signal the agent guessed instead of verifying. Force a
+        // re-check by rejecting the call. The agent's next turn will see
+        // this rejection and either take a screenshot/read_screen or
+        // rephrase with concrete observations.
+        //
+        // Pattern is intentionally narrow: words must appear as standalone
+        // tokens (or first-letter-of-token), not as part of larger words
+        // like "shoulder" or "mighty". Word-boundary anchored.
+        if (HEDGING_PATTERN.test(evidence)) {
+          return {
+            success: false,
+            text: `done rejected: evidence contains hedging language ("should", "might", "probably", "I think", "I believe", "appears to", "seems to", "if successful"…). That means you are GUESSING, not observing. Take a screenshot or call read_screen, then describe what you actually see — concrete strings, not predictions.`,
+            isError: true,
+          };
+        }
+
         return { success: true, text: `done: ${evidence}`, stop: true, terminalExit: 'done' };
       },
     },

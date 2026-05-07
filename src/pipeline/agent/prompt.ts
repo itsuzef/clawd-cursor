@@ -77,7 +77,15 @@ KEY COMBO SYNTAX
   • Examples: "mod+s", "mod+shift+t", "Return", "Tab", "Escape", "F5".
 
 TERMINATION
-  • done(evidence: string)     — task finished; include the screen evidence.
+  • done(evidence: string)     — task finished; include CONCRETE screen
+                                 evidence ONLY. Never use "should have",
+                                 "might have", "probably", "I think",
+                                 "appears to", "if successful". Those mean
+                                 you are guessing. If you can't observe the
+                                 result, take a screenshot or call
+                                 read_screen first, THEN call done with
+                                 the literal title / value / message you
+                                 see. The tool will reject hedged evidence.
   • give_up(reason: string)    — impossible from here (permissions, captcha,
                                  missing credentials, stuck after retries).
   • cannot_read(reason: string) — only in blind mode; escalates to vision.
