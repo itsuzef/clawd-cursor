@@ -37,6 +37,84 @@ function throwOnHttpError(status: number, model: string, errBody: string): void 
   throw new LLMError(`API error (${status}): ${errBody.substring(0, 200)}`);
 }
 
+// ─── Per-model param quirks ──────────────────────────────────────────────────
+//
+// Real LLM endpoints reject perfectly valid OpenAI-shape parameters when the
+// underlying model has its own constraints. Examples observed in the wild:
+//
+//   - Kimi `kimi-k2.5` rejects any `temperature` other than `1` with HTTP 400
+//     "invalid temperature: only 1 is allowed for this model".
+//   - OpenAI `o1` / `o1-mini` reject `max_tokens` (require `max_completion_tokens`)
+//     and reject `temperature` other than `1`.
+//   - GPT-5 family (gpt-5-*) only accepts `temperature: 1`.
+//
+// Each rule is matched by a substring of the model id (case-insensitive) and
+// describes ONE fix: rename a key, drop a key, or coerce a value. Multiple
+// rules can apply to the same model. Adding a new model takes one line.
+//
+// Pattern-matching by model-id substring rather than provider name keeps this
+// model-agnostic in shape — any provider that ships the same model id picks
+// up the same quirks. New families: append a row.
+
+interface ModelQuirk {
+  /** Lowercase substring tested against the model id. */
+  matches: string;
+  /** Apply the quirk to the request body in place. */
+  apply: (body: Record<string, unknown>) => void;
+  /** One-line description for diagnostics / future maintainers. */
+  reason: string;
+}
+
+const MODEL_QUIRKS: ModelQuirk[] = [
+  {
+    matches: 'kimi-k2',
+    reason: 'Kimi k2 vision/text models require temperature: 1 (rejects 0 with HTTP 400).',
+    apply: (b) => { if ('temperature' in b) b.temperature = 1; },
+  },
+  {
+    matches: 'o1',
+    reason: 'OpenAI o1 models reject max_tokens (use max_completion_tokens) and temperature != 1.',
+    apply: (b) => {
+      if ('max_tokens' in b && !('max_completion_tokens' in b)) {
+        b.max_completion_tokens = b.max_tokens;
+        delete b.max_tokens;
+      }
+      if ('temperature' in b && b.temperature !== 1) b.temperature = 1;
+    },
+  },
+  {
+    matches: 'o3',
+    reason: 'OpenAI o3 family follows the same constraints as o1.',
+    apply: (b) => {
+      if ('max_tokens' in b && !('max_completion_tokens' in b)) {
+        b.max_completion_tokens = b.max_tokens;
+        delete b.max_tokens;
+      }
+      if ('temperature' in b && b.temperature !== 1) b.temperature = 1;
+    },
+  },
+  {
+    matches: 'gpt-5',
+    reason: 'GPT-5 family only accepts temperature: 1.',
+    apply: (b) => { if ('temperature' in b && b.temperature !== 1) b.temperature = 1; },
+  },
+];
+
+/**
+ * Apply any model-specific quirks to a request body in place.
+ *
+ * Lookup is by lowercase substring match on the model id. Every matching
+ * quirk runs (multiple rules can apply to the same model). Safe to call
+ * with any model id; unknown models pass through unchanged.
+ */
+export function applyModelQuirks(model: string, body: Record<string, unknown>): void {
+  if (!model) return;
+  const id = model.toLowerCase();
+  for (const quirk of MODEL_QUIRKS) {
+    if (id.includes(quirk.matches)) quirk.apply(body);
+  }
+}
+
 // ─── Public option types ──────────────────────────────────────────────────────
 
 export interface TextLLMOptions {
@@ -279,6 +357,7 @@ async function _callAnthropic(p: {
     messages,
     temperature: 0,
   };
+  applyModelQuirks(p.model, body);
 
   const fetchOpts: RequestInit = {
     method: 'POST',
@@ -502,6 +581,7 @@ async function _callVisionAnthropic(p: DirectVisionLLMOptions & { authHeaders: R
     temperature: 0,
     ...(p.stream ? { stream: true } : {}),
   };
+  applyModelQuirks(p.model, body);
 
   const fetchOpts: RequestInit = {
     method: 'POST',
@@ -723,6 +803,7 @@ async function callAnthropicTools(
     temperature: 0,
   };
   if (toolChoice) body.tool_choice = toolChoice;
+  applyModelQuirks(p.model, body);
 
   const fetchOpts: RequestInit = {
     method: 'POST',
@@ -859,6 +940,7 @@ async function callOpenAITools(
     max_tokens: p.maxTokens ?? 1024,
     temperature: 0,
   };
+  applyModelQuirks(p.model, body);
 
   const fetchOpts: RequestInit = {
     method: 'POST',
@@ -911,22 +993,101 @@ async function callOpenAITools(
 
 /**
  * Fallback prose→tool-call parser for providers that don't emit native tool_calls.
- * Looks for the first `{ ... }` object with `tool`/`name` + `args`/`input`
- * keys. Deliberately lenient. Returns null if the prose doesn't look like
- * a tool call.
+ *
+ * Recognizes three families:
+ *
+ *   1. **Prefix-style** (Kimi `moonshot-v1-*`, some DeepSeek / Qwen text models):
+ *      `functions.<TOOL>:<id>$\n{ "arg": "value" }`
+ *      The function NAME lives in the prefix; the JSON body is the args.
+ *
+ *   2. **Llama-style** (some Llama/Mistral fine-tunes):
+ *      `<function=NAME>{...args JSON...}</function>`
+ *      Or: `<|tool_call|>NAME\n{...}`
+ *
+ *   3. **JSON-only** (older Ollama, generic text fallbacks):
+ *      A bare JSON object with `tool|name|action` + `args|input|parameters` keys.
+ *
+ * The parser tries each in order and returns the first match. Returns null
+ * when nothing parses — the caller treats that as a legitimate text-only reply.
+ *
+ * Pattern-matched, NOT model-name-matched, so any provider that emits one
+ * of these formats works without an explicit allowlist entry.
  */
 export function tryParseProseToolCall(prose: string): { name: string; args: Record<string, unknown> } | null {
-  // Strip code fences.
-  const stripped = prose.replace(/```(?:json)?\s*|```\s*$/g, '').trim();
-  // Find first balanced JSON object.
-  const start = stripped.indexOf('{');
+  // Strip code fences once up-front; every family below benefits.
+  const cleaned = prose.replace(/```(?:json|tool|function)?\s*|```\s*$/g, '').trim();
+
+  // ── Family 1: prefix-style — `functions.<NAME>:<id>$\n<JSON>` ──
+  // This is the Kimi `moonshot-v1-*` shape that v0.8.8 silently mis-parsed
+  // (the JSON body's "name" field was being read as the tool name).
+  // Pattern: `functions.<name>` then optional `:id`, then `$` separator,
+  // then any whitespace/newlines, then a balanced JSON object.
+  const prefixMatch = cleaned.match(/(?:^|\n)\s*functions\.([A-Za-z_][\w]*)(?::\d+)?\s*\$\s*([\s\S]*)$/);
+  if (prefixMatch) {
+    const name = prefixMatch[1];
+    const body = prefixMatch[2];
+    const args = extractFirstJsonObject(body);
+    if (name && args !== null) {
+      return { name, args };
+    }
+  }
+
+  // ── Family 2a: Llama `<function=NAME>{...}</function>` ──
+  const llamaMatch = cleaned.match(/<function=([A-Za-z_][\w]*)>([\s\S]*?)<\/function>/);
+  if (llamaMatch) {
+    const args = extractFirstJsonObject(llamaMatch[2]);
+    if (args !== null) return { name: llamaMatch[1], args };
+  }
+
+  // ── Family 2b: `<|tool_call|>NAME\n{...}` ──
+  const tagMatch = cleaned.match(/<\|tool_call\|>\s*([A-Za-z_][\w]*)\s*([\s\S]*)$/);
+  if (tagMatch) {
+    const args = extractFirstJsonObject(tagMatch[2]);
+    if (args !== null) return { name: tagMatch[1], args };
+  }
+
+  // ── Family 3: JSON-only with self-describing keys ──
+  const obj = extractFirstJsonObject(cleaned);
+  if (obj && typeof obj === 'object') {
+    // Treat shape {tool|name|action: "...", args|input|parameters: {...}} as a tool call.
+    // Crucially: only accept this when there's an explicit args/input/parameters
+    // object — otherwise a payload like {"name":"Outlook"} (which is the *value*
+    // for an open_app call) gets mistaken for a call to a tool literally named
+    // "Outlook". This was the v0.8.8 mis-parse.
+    const explicitName = typeof (obj as any).tool === 'string' ? (obj as any).tool
+      : typeof (obj as any).action === 'string' ? (obj as any).action
+      : '';
+    const argsObj = ((obj as any).args && typeof (obj as any).args === 'object') ? (obj as any).args
+      : ((obj as any).input && typeof (obj as any).input === 'object') ? (obj as any).input
+      : ((obj as any).parameters && typeof (obj as any).parameters === 'object') ? (obj as any).parameters
+      : null;
+    if (explicitName && argsObj !== null) {
+      return { name: explicitName, args: argsObj as Record<string, unknown> };
+    }
+    // Legacy lenient fallback: {name: "...", ...} — only when there's an `args`
+    // object peer, so we don't misread a parameter dictionary as a tool call.
+    if (typeof (obj as any).name === 'string' && argsObj !== null) {
+      return { name: (obj as any).name, args: argsObj as Record<string, unknown> };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract the first balanced JSON object from a string. Returns the parsed
+ * object on success, or null if no balanced object exists or it doesn't parse.
+ * Handles strings with escapes correctly.
+ */
+function extractFirstJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf('{');
   if (start === -1) return null;
   let depth = 0;
   let inStr = false;
   let esc = false;
   let end = -1;
-  for (let i = start; i < stripped.length; i++) {
-    const c = stripped[i];
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
     if (esc) { esc = false; continue; }
     if (c === '\\') { esc = true; continue; }
     if (c === '"') inStr = !inStr;
@@ -938,18 +1099,10 @@ export function tryParseProseToolCall(prose: string): { name: string; args: Reco
     }
   }
   if (end === -1) return null;
-  const candidate = stripped.slice(start, end);
-  let obj: any;
-  try { obj = JSON.parse(candidate); } catch { return null; }
-  if (!obj || typeof obj !== 'object') return null;
-  const name = typeof obj.tool === 'string' ? obj.tool
-    : typeof obj.name === 'string' ? obj.name
-    : typeof obj.action === 'string' ? obj.action
-    : '';
-  if (!name) return null;
-  const args = (obj.args && typeof obj.args === 'object') ? obj.args
-    : (obj.input && typeof obj.input === 'object') ? obj.input
-    : (obj.parameters && typeof obj.parameters === 'object') ? obj.parameters
-    : {};
-  return { name, args: args as Record<string, unknown> };
+  try {
+    const parsed = JSON.parse(text.slice(start, end));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
 }

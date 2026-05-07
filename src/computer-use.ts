@@ -1552,11 +1552,28 @@ Fix the specific missed step. Do NOT repeat steps that already succeeded.`,
     return '';
   }
 
-  /** Scale LLM coordinates to real screen coordinates */
+  /**
+   * Scale LLM image-space coordinates to logical mouse coordinates.
+   *
+   * The LLM sees a 1280-wide screenshot. `scaleFactor = physicalWidth / 1280`
+   * maps that to physical pixels. But on Windows with DPI scaling > 100%,
+   * `nut-js` mouse APIs accept LOGICAL pixels, not physical — so passing
+   * physical coords ends up double-scaled (a click meant for 1800 lands at
+   * 3600, far off-screen).
+   *
+   * Divide by `dpiRatio` (physical / logical) to get the logical position.
+   * On standard-DPI displays `dpiRatio === 1` and this is a no-op, so the
+   * fix is safe across every config that worked before.
+   */
   private scale(coords: [number, number]): [number, number] {
+    const dpi = this.desktop.getDpiRatio() || 1;
+    const logicalWidth = Math.round(this.screenWidth / dpi);
+    const logicalHeight = Math.round(this.screenHeight / dpi);
+    const xPhysical = Math.min(Math.max(coords[0], 0), this.llmWidth - 1) * this.scaleFactor;
+    const yPhysical = Math.min(Math.max(coords[1], 0), this.llmHeight - 1) * this.scaleFactor;
     return [
-      Math.min(Math.round(Math.min(Math.max(coords[0], 0), this.llmWidth - 1) * this.scaleFactor), this.screenWidth - 1),
-      Math.min(Math.round(Math.min(Math.max(coords[1], 0), this.llmHeight - 1) * this.scaleFactor), this.screenHeight - 1),
+      Math.min(Math.round(xPhysical / dpi), logicalWidth - 1),
+      Math.min(Math.round(yPhysical / dpi), logicalHeight - 1),
     ];
   }
 

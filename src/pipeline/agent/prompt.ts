@@ -80,7 +80,14 @@ TERMINATION
   • done(evidence: string)     — task finished; include the screen evidence.
   • give_up(reason: string)    — impossible from here (permissions, captcha,
                                  missing credentials, stuck after retries).
-  • cannot_read(reason: string) — only in blind mode; escalates to vision.
+  • cannot_read(reason: string) — ONLY when the snapshot is empty/garbled
+                                 (CAPTCHA, blank canvas, true OCR failure)
+                                 AND no element resolution succeeded this run.
+                                 NEVER call cannot_read when an interactive
+                                 target was just located — click it instead.
+                                 "I want to confirm before clicking" is NOT
+                                 a valid cannot_read reason; act and let the
+                                 verifier check.
 
 You MUST emit exactly one tool call per turn — no free-form prose responses.`;
 }
