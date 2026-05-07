@@ -1040,10 +1040,69 @@ export function tryParseProseToolCall(prose: string): { name: string; args: Reco
   }
 
   // ── Family 2b: `<|tool_call|>NAME\n{...}` ──
-  const tagMatch = cleaned.match(/<\|tool_call\|>\s*([A-Za-z_][\w]*)\s*([\s\S]*)$/);
+  const tagMatch = cleaned.match(/<\|tool_call|>\s*([A-Za-z_][\w]*)\s*([\s\S]*)$/);
   if (tagMatch) {
     const args = extractFirstJsonObject(tagMatch[2]);
     if (args !== null) return { name: tagMatch[1], args };
+  }
+
+  // ── Family 2c: Python-call syntax — `<NAME>(<key>: <value>, ...)` ──
+  // Kimi `kimi-k2.5` (vision) emits this on every terminal action.
+  // Examples observed in the wild:
+  //   done(evidence: "Screenshot shows Outlook draft email")
+  //   give_up(reason: "missing credentials")
+  //   mouse_click(x: 100, y: 200)
+  //   wait(seconds=2.5)
+  // Both `:` and `=` are accepted as kwarg separators. Handles balanced
+  // parens inside string literals so values like `"text (with parens)"` work.
+  const pyMatch = cleaned.match(/^\s*([A-Za-z_]\w*)\s*\(/);
+  if (pyMatch) {
+    const start = cleaned.indexOf('(', cleaned.indexOf(pyMatch[1])) + 1;
+    let depth = 1;
+    let inStr = false;
+    let strChar = '';
+    let esc = false;
+    let end = -1;
+    for (let i = start; i < cleaned.length; i++) {
+      const c = cleaned[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (inStr) {
+        if (c === strChar) inStr = false;
+        continue;
+      }
+      if (c === '"' || c === "'") { inStr = true; strChar = c; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end !== -1) {
+      const argsBody = cleaned.slice(start, end).trim();
+      if (!argsBody) return { name: pyMatch[1], args: {} };
+      // Coerce kwargs to JSON object literal: quote unquoted keys, normalise
+      // `=` to `:`, normalise single-quoted strings to double-quoted.
+      // Single-quote conversion is best-effort: it skips quotes inside
+      // already-double-quoted strings to avoid corrupting them.
+      let asJson = argsBody;
+      // Convert single-quoted strings to double-quoted (only outside of
+      // existing double-quoted regions).
+      asJson = convertSingleQuotedStrings(asJson);
+      // Quote unquoted keys before `:` or `=`, then normalise `=` to `:`.
+      asJson = asJson.replace(/(^|[\s,{])([A-Za-z_]\w*)\s*[:=]/g, '$1"$2":');
+      try {
+        const parsed = JSON.parse('{' + asJson + '}');
+        if (parsed && typeof parsed === 'object') {
+          return { name: pyMatch[1], args: parsed as Record<string, unknown> };
+        }
+      } catch {
+        // Coercion failed (unusual nesting, unparseable value). Fall back
+        // to returning the call with empty args — the tool dispatcher will
+        // surface a clean error so the model can retry with a different shape.
+        return { name: pyMatch[1], args: {} };
+      }
+    }
   }
 
   // ── Family 3: JSON-only with self-describing keys ──
@@ -1072,6 +1131,35 @@ export function tryParseProseToolCall(prose: string): { name: string; args: Reco
   }
 
   return null;
+}
+
+/**
+ * Convert single-quoted string literals to double-quoted. Conservative:
+ * only swaps `'` runs that aren't already inside a double-quoted span.
+ * Used by the Python-call parser before JSON.parse — JSON only accepts
+ * double quotes, but Kimi-style emissions sometimes mix the two.
+ */
+function convertSingleQuotedStrings(text: string): string {
+  let out = '';
+  let inDouble = false;
+  let inSingle = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (esc) { out += c; esc = false; continue; }
+    if (c === '\\') { out += c; esc = true; continue; }
+    if (!inSingle && c === '"') { inDouble = !inDouble; out += c; continue; }
+    if (!inDouble && c === "'") {
+      inSingle = !inSingle;
+      out += '"'; // swap to double-quote
+      continue;
+    }
+    // Inside a single-quoted string, escape any literal double-quotes so the
+    // JSON parser sees a valid string body.
+    if (inSingle && c === '"') { out += '\\"'; continue; }
+    out += c;
+  }
+  return out;
 }
 
 /**
