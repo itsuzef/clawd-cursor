@@ -30,6 +30,8 @@ import type {
   WaitForElementQuery,
   WindowState,
 } from './types';
+import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
+import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(__dirname, '..', '..', '..', 'scripts', 'mac');
@@ -696,13 +698,35 @@ export class MacOSAdapter implements PlatformAdapter {
 
   // ─── APPS ─────────────────────────────────────────────────────────
 
+  /**
+   * Agent-facing entry point. Resolves the user-supplied app name through
+   * `APP_ALIASES` so a Windows-style call like `open_app("Notepad")` lands
+   * on macOS's "TextEdit" via `open -a`. Without alias resolution, `open -a
+   * Notepad` fails on macOS even though TextEdit is the natural counterpart.
+   *
+   * The alias data lives in `aliases.ts` — adding apps doesn't touch the
+   * platform layer.
+   */
   async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    return this.launchApp(name);
+    const alias = resolveAlias(name);
+    return this.launchApp(alias?.macOSAppName ?? name, {
+      alwaysNewInstance: alias?.alwaysNewInstance,
+      // Spotlight ranks bundle names well, but the alias's curated
+      // searchTerm wins when present — `Microsoft Edge` lands more
+      // reliably than `msedge`.
+      searchTerm: alias?.searchTerm ?? alias?.macOSAppName,
+    });
   }
 
   async launchApp(
     name: string,
-    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string; uwpAppId?: string },
+    opts?: {
+      alwaysNewInstance?: boolean;
+      url?: string;
+      cwd?: string;
+      uwpAppId?: string;
+      searchTerm?: string;
+    },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
     // uwpAppId is Windows-only — ignore on macOS.
     void opts?.uwpAppId;
@@ -712,25 +736,32 @@ export class MacOSAdapter implements PlatformAdapter {
       throw new Error('launchApp: illegal characters in app name');
     }
 
+    // Snapshot windows BEFORE any spawn so the post-launch diff-and-poll
+    // helper can ignore them. Reused for the idempotency check below to
+    // save a redundant Apple Events round-trip.
+    let windowsBefore: readonly WindowInfo[] = [];
+    try {
+      windowsBefore = await this.listWindows();
+    } catch {
+      // Non-fatal — empty before-set is a safe default.
+    }
+
     // v0.8.3 — idempotency. On macOS `open -a AppName` is generally smart
     // about not spawning duplicates (it activates the existing app), but
     // we want a stable cross-OS contract: check first, focus-if-running,
     // launch only when needed. Prevents the "Outlook keeps opening" class
     // of bug from any retry loop in the pipeline.
     if (!opts?.alwaysNewInstance && !opts?.url) {
-      try {
-        const target = name.toLowerCase();
-        const windows = await this.listWindows();
-        const existing = windows.find(w =>
-          w.processName.toLowerCase() === target ||
-          w.processName.toLowerCase().includes(target) ||
-          w.title.toLowerCase().includes(target),
-        );
-        if (existing) {
-          await this.focusWindow({ processId: existing.processId }).catch(() => {});
-          return { pid: existing.processId, title: existing.title, handle: existing.handle };
-        }
-      } catch { /* fall through to launch */ }
+      const target = name.toLowerCase();
+      const existing = windowsBefore.find(w =>
+        w.processName.toLowerCase() === target ||
+        w.processName.toLowerCase().includes(target) ||
+        w.title.toLowerCase().includes(target),
+      );
+      if (existing) {
+        await this.focusWindow({ processId: existing.processId }).catch(() => {});
+        return { pid: existing.processId, title: existing.title, handle: existing.handle };
+      }
     }
 
     try {
@@ -741,15 +772,72 @@ export class MacOSAdapter implements PlatformAdapter {
         timeout: 5_000,
         cwd: opts?.cwd,
       });
-      await this.delay(opts?.alwaysNewInstance ? 1200 : 800);
-      const win = (await this.listWindows()).find(w =>
-        w.processName.toLowerCase() === name.toLowerCase() ||
-        w.title.toLowerCase().includes(name.toLowerCase()),
+      // Diff-and-poll the window list with a tighter primary budget, so the
+      // Spotlight fallback below has time if `open -a` didn't surface a
+      // window (e.g., bundle name typo, name-not-found at App registry).
+      const win = await waitForLaunchedWindow(
+        windowsBefore,
+        () => this.listWindows(),
+        buildAppPredicate(name),
+        { timeoutMs: 4_000 },
       );
-      return win ? { pid: win.processId, title: win.title } : {};
+      if (win) return { pid: win.processId, title: win.title, handle: win.handle };
     } catch {
-      return {};
+      // open -a failed outright — Spotlight fallback below is still worth
+      // trying for apps the user can find by name.
     }
+
+    // Spotlight fallback — universal launcher for anything macOS can find.
+    // Mirrors the pattern Windows uses with the Start Menu and the same
+    // shape the router's zero-LLM fast path already proves. Keyboard goes
+    // through the platform's internal primitives; not gated by the safety
+    // layer because this is an internal launch detail.
+    return this.launchViaSpotlight(name, opts?.searchTerm, windowsBefore);
+  }
+
+  /**
+   * Spotlight-driven launch fallback. Cmd+Space, type, Return, then poll.
+   * The Cmd+Space combo is on the safety blocklist for agent-emitted keys,
+   * but here the platform is calling its own keyboard primitives directly
+   * to fulfill its own `launchApp` contract — the safety layer is for
+   * agent actions, not internal platform plumbing.
+   */
+  private async launchViaSpotlight(
+    name: string,
+    searchTermHint: string | undefined,
+    windowsBefore: readonly WindowInfo[],
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // Prefer the alias's curated `searchTerm` (or `macOSAppName`); fall back
+    // to the stripped bundle name. Keeps the launcher app-agnostic — adding
+    // apps still means a row in `aliases.ts`, not platform code.
+    const searchText = (searchTermHint && searchTermHint.trim())
+      ? searchTermHint.trim()
+      : name.replace(/\.app$/i, '');
+
+    try {
+      await this.keyPress('Escape').catch(() => {});
+      await this.delay(120);
+      await this.keyPress('cmd+Space');
+      await this.delay(300);
+      // Strip a trailing `.app` so Spotlight ranks the bundle correctly —
+      // typing `Calculator.app` matches a Finder hit, `Calculator` matches
+      // the app itself. Already handled in `searchText` above.
+      await this.typeText(searchText);
+      await this.delay(500);
+      await this.keyPress('Return');
+    } catch {
+      // Keyboard layer flaky — fall through to the empty result.
+    }
+
+    const win = await waitForLaunchedWindow(
+      windowsBefore,
+      () => this.listWindows(),
+      buildAppPredicate(name),
+      { timeoutMs: 4_000 },
+    );
+    return win
+      ? { pid: win.processId, title: win.title, handle: win.handle }
+      : {};
   }
 
   // ─── INTERNAL HELPERS ─────────────────────────────────────────────

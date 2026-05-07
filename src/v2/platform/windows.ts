@@ -41,6 +41,8 @@ import type {
   WaitForElementQuery,
   WindowState,
 } from './types';
+import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
+import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 
@@ -781,8 +783,39 @@ export class WindowsAdapter implements PlatformAdapter {
 
   // ─── APPS ─────────────────────────────────────────────────────────
 
+  /**
+   * Agent-facing entry point. Resolves the user-supplied app name through the
+   * shared `APP_ALIASES` table and forwards the right launch hints to
+   * `launchApp`:
+   *
+   *   - `uwpAppId` makes UWP / Microsoft Store apps (Calculator, Notepad-
+   *     Win11, Photos, Settings) launch reliably via
+   *     `explorer.exe shell:AppsFolder\<id>`. Without it, `Start-Process
+   *     -FilePath "Calculator"` silently fails and the caller sees
+   *     "no window surfaced yet" even though the app is installed.
+   *   - The alias's `executable` field replaces the human-friendly name
+   *     when the alias provides one — `Start-Process -FilePath "msedge.exe"`
+   *     succeeds where `Start-Process -FilePath "Microsoft Edge"` fails
+   *     (no such binary on PATH). The UWP route still wins when both
+   *     `uwpAppId` and `executable` are present, because launchApp checks
+   *     `uwpAppId` first.
+   *
+   * The alias table itself is app-data, not code: adding a new app means
+   * one row in `aliases.ts`, no platform changes. The launch path stays
+   * app-agnostic.
+   */
   async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    return this.launchApp(name);
+    const alias = resolveAlias(name);
+    const launchName = alias?.executable ?? name;
+    return this.launchApp(launchName, {
+      uwpAppId: alias?.uwpAppId,
+      alwaysNewInstance: alias?.alwaysNewInstance,
+      // Pass the alias's curated searchTerm down so the Start-Menu fallback
+      // types the human-friendly name (e.g. "Edge") instead of the binary
+      // name (e.g. "msedge"), which Windows Search can't always resolve to
+      // the correct app.
+      searchTerm: alias?.searchTerm,
+    });
   }
 
   async launchApp(
@@ -798,12 +831,28 @@ export class WindowsAdapter implements PlatformAdapter {
        * Takes precedence over `name` when provided.
        */
       uwpAppId?: string;
+      /**
+       * Human-friendly term for the Start-Menu-search fallback. See the
+       * `PlatformAdapter` interface doc for why this matters — typing the
+       * binary name in Start Menu can surface the wrong app.
+       */
+      searchTerm?: string;
     },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
     // Reject control chars / backticks / $() that can escape PowerShell quoting
     // regardless of how we serialize.
     if (/[\r\n\t\x00-\x1f]/.test(name) || /[`$]/.test(name)) {
       throw new Error('launchApp: illegal characters in app name');
+    }
+
+    // Snapshot existing windows ONCE before any spawn so the diff-and-poll
+    // helper can ignore them. Reused by the idempotency check below — saves
+    // a redundant `listWindows()` round-trip through the PS bridge.
+    let windowsBefore: readonly WindowInfo[] = [];
+    try {
+      windowsBefore = await this.listWindows();
+    } catch {
+      // Non-fatal — empty before-set means everything looks "new".
     }
 
     // v0.8.3 — idempotency: if the app is already running AND caller didn't
@@ -813,7 +862,7 @@ export class WindowsAdapter implements PlatformAdapter {
     // (Start-Process -FilePath outlook with Outlook already running launches
     // a fresh window).
     if (!opts?.alwaysNewInstance && !opts?.url) {
-      const existing = await this.findExistingAppWindow(name, opts?.uwpAppId);
+      const existing = this.findExistingAppWindowIn(windowsBefore, name, opts?.uwpAppId);
       if (existing) {
         // Focus it so it surfaces like a launch would, then return its identity.
         await this.focusWindow({ processId: existing.processId }).catch(() => {});
@@ -840,7 +889,12 @@ export class WindowsAdapter implements PlatformAdapter {
       } catch {
         // Non-fatal — continue and look for the window anyway.
       }
-      return this.findLaunchedWindow(name, opts.alwaysNewInstance ? 1200 : 800);
+      // Shorter primary budget so we have headroom for the Start-Menu
+      // fallback if shell:AppsFolder didn't surface a window — matches
+      // the router's strategy ladder.
+      const uwpResult = await this.findLaunchedWindow(name, windowsBefore, 4_000);
+      if (uwpResult.title) return uwpResult;
+      return this.launchViaStartMenuSearch(name, opts?.searchTerm, windowsBefore);
     }
 
     // Route 2: classic Start-Process via PowerShell with safely quoted args.
@@ -864,29 +918,103 @@ export class WindowsAdapter implements PlatformAdapter {
       // Fall through to the lookup — the app may already be running.
     }
 
-    return this.findLaunchedWindow(name, opts?.alwaysNewInstance ? 1200 : 800);
+    // Try the primary Start-Process result with a shorter budget so we have
+    // time for the Start-Menu fallback if it returns empty. Edge / VS Code /
+    // any binary not on PATH but Start-Menu-indexed will recover here.
+    const direct = await this.findLaunchedWindow(name, windowsBefore, 4_000);
+    if (direct.title) return direct;
+
+    // Route 3: Start Menu search fallback — universal for any app indexed by
+    // Windows. Press the Win key, type the app name, press Enter. This is
+    // the same pattern the router's zero-LLM fast path uses; ported here so
+    // every caller of launchApp (agent's open_app, MCP, REST) gets the
+    // reliability without duplicating router logic.
+    return this.launchViaStartMenuSearch(name, opts?.searchTerm, windowsBefore);
   }
 
   /**
-   * After a launch, look for the window that appeared. Small settle + single
-   * listWindows scan. Returns `{}` when nothing matched — the caller is
-   * responsible for polling longer if it cares about the result.
+   * Last-resort launch via Windows' own Start Menu search. Works for any
+   * app the user can find by name in the Start Menu (apps, settings panes,
+   * UWP without a known AppsFolder ID, third-party Win32 binaries with an
+   * App Paths entry). The keyboard primitives we use here go through the
+   * adapter directly, NOT through the safety layer — this is internal
+   * platform logic, not an agent action.
+   *
+   * Tuned to the same cadence as the router's startMenuSearch helper.
+   */
+  private async launchViaStartMenuSearch(
+    name: string,
+    searchTermHint: string | undefined,
+    windowsBefore: readonly WindowInfo[],
+  ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
+    // Pick the term Windows Search will actually rank correctly. The alias's
+    // `searchTerm` (when provided) is the human-friendly name an end user
+    // would type — "Edge", "VS Code", "File Explorer". For names without an
+    // alias, fall back to stripping the file-system suffix off `name`:
+    // `msedge.exe` → `msedge`, `notepad.exe` → `notepad`, etc. Without this
+    // distinction, typing the binary name in Start Menu can surface the
+    // wrong app (e.g. "msedge" → Microsoft Store as the closest match).
+    const searchText = (searchTermHint && searchTermHint.trim())
+      ? searchTermHint.trim()
+      : name.replace(/\.(exe|com)$/i, '');
+
+    try {
+      // Close any in-progress Start Menu / search overlay so the Win key
+      // reliably opens a fresh one.
+      await this.keyPress('Escape').catch(() => {});
+      await this.delay(120);
+      await this.keyPress('Super');
+      await this.delay(600);
+      await this.typeText(searchText);
+      await this.delay(700);
+      await this.keyPress('Return');
+    } catch {
+      // Keyboard layer flaky — caller will see empty result and decide.
+    }
+
+    // The post-launch predicate still uses the launched binary `name`
+    // because that's what the new window's processName will look like
+    // (msedge.exe → process "msedge"); the searchText only drives what
+    // Windows Search resolves to.
+    const win = await waitForLaunchedWindow(
+      windowsBefore,
+      () => this.listWindows(),
+      buildAppPredicate(name),
+      { timeoutMs: 4_000 },
+    );
+    return win
+      ? { pid: win.processId, title: win.title, handle: win.handle }
+      : {};
+  }
+
+  /**
+   * After a launch, wait for the new window to surface. Uses the shared
+   * `waitForLaunchedWindow` diff-and-poll helper so the budget is spent
+   * doing useful work (polling every 300ms) rather than a single fixed
+   * settle. Returns `{}` when the deadline elapses with no match — caller
+   * can interpret that as a real "this strategy didn't work" signal and
+   * try the next strategy.
+   *
+   * On Windows, neither the UWP shell:AppsFolder spawn nor the classic
+   * Start-Process spawn returns the eventual app's PID (we spawn explorer /
+   * powershell, not the target binary), so we don't pass `spawnPid`.
+   * The predicate matches by process name + title, same as the old
+   * single-shot logic — just polled.
    */
   private async findLaunchedWindow(
     name: string,
-    settleMs: number,
+    windowsBefore: readonly WindowInfo[],
+    timeoutMs?: number,
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
-    await this.delay(settleMs);
-    try {
-      const windows = await this.listWindows();
-      const target = name.toLowerCase();
-      const win = windows.find(w => w.processName.toLowerCase() === target)
-        ?? windows.find(w => w.processName.toLowerCase().includes(target))
-        ?? windows.find(w => w.title.toLowerCase().includes(target));
-      return win ? { pid: win.processId, title: win.title } : {};
-    } catch {
-      return {};
-    }
+    const win = await waitForLaunchedWindow(
+      windowsBefore,
+      () => this.listWindows(),
+      buildAppPredicate(name),
+      timeoutMs ? { timeoutMs } : undefined,
+    );
+    return win
+      ? { pid: win.processId, title: win.title, handle: win.handle }
+      : {};
   }
 
   /**
@@ -909,32 +1037,45 @@ export class WindowsAdapter implements PlatformAdapter {
   ): Promise<WindowInfo | null> {
     try {
       const windows = await this.listWindows();
-      if (windows.length === 0) return null;
-      const target = name.trim().toLowerCase();
-      // Strip any trailing `.exe` so `outlook.exe` still matches `outlook`.
-      const targetStem = target.replace(/\.(exe|com|app)$/, '');
-
-      // Tier 1: exact processName match.
-      let hit = windows.find(w => w.processName.toLowerCase() === targetStem);
-      // Tier 2: processName substring (handles olk ↔ outlook etc.).
-      if (!hit) hit = windows.find(w => w.processName.toLowerCase().includes(targetStem));
-      // Tier 3: reverse — targetStem contains processName (e.g. name="msedge.exe", proc="msedge").
-      if (!hit) hit = windows.find(w => targetStem.includes(w.processName.toLowerCase()) && w.processName.length >= 3);
-      // Tier 4: title substring.
-      if (!hit) hit = windows.find(w => w.title.toLowerCase().includes(targetStem));
-
-      // UWP fallback — check the AppsFolder id's last segment against titles.
-      if (!hit && uwpAppId) {
-        const uwpTail = uwpAppId.split('!').pop()?.toLowerCase() ?? '';
-        if (uwpTail) hit = windows.find(w => w.title.toLowerCase().includes(uwpTail));
-      }
-
-      // Skip minimized windows — if the user hid it, they probably want a
-      // "fresh" focus, but we still return it so focusWindow can restore.
-      return hit ?? null;
+      return this.findExistingAppWindowIn(windows, name, uwpAppId);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Same matching logic as `findExistingAppWindow` but takes an already-fetched
+   * window list. Lets `launchApp` reuse the snapshot it captures for the
+   * post-spawn diff-and-poll, avoiding a redundant PS-bridge round-trip.
+   */
+  private findExistingAppWindowIn(
+    windows: readonly WindowInfo[],
+    name: string,
+    uwpAppId?: string,
+  ): WindowInfo | null {
+    if (windows.length === 0) return null;
+    const target = name.trim().toLowerCase();
+    // Strip any trailing `.exe` so `outlook.exe` still matches `outlook`.
+    const targetStem = target.replace(/\.(exe|com|app)$/, '');
+
+    // Tier 1: exact processName match.
+    let hit = windows.find(w => w.processName.toLowerCase() === targetStem);
+    // Tier 2: processName substring (handles olk ↔ outlook etc.).
+    if (!hit) hit = windows.find(w => w.processName.toLowerCase().includes(targetStem));
+    // Tier 3: reverse — targetStem contains processName (e.g. name="msedge.exe", proc="msedge").
+    if (!hit) hit = windows.find(w => targetStem.includes(w.processName.toLowerCase()) && w.processName.length >= 3);
+    // Tier 4: title substring.
+    if (!hit) hit = windows.find(w => w.title.toLowerCase().includes(targetStem));
+
+    // UWP fallback — check the AppsFolder id's last segment against titles.
+    if (!hit && uwpAppId) {
+      const uwpTail = uwpAppId.split('!').pop()?.toLowerCase() ?? '';
+      if (uwpTail) hit = windows.find(w => w.title.toLowerCase().includes(uwpTail));
+    }
+
+    // Skip minimized windows — if the user hid it, they probably want a
+    // "fresh" focus, but we still return it so focusWindow can restore.
+    return hit ?? null;
   }
 
   /**

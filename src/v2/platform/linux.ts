@@ -42,6 +42,8 @@ import type {
   WaitForElementQuery,
   WindowState,
 } from './types';
+import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
+import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 
@@ -1018,20 +1020,49 @@ export class LinuxAdapter implements PlatformAdapter {
 
   // ─── APPS ─────────────────────────────────────────────────────────
 
+  /**
+   * Agent-facing entry point. Resolves the user-supplied app name through
+   * `APP_ALIASES` so cross-OS names like "Notepad" / "Calculator" / "Edge"
+   * map to the right Linux executable when an alias provides one. Trims any
+   * `.exe` suffix the alias might list (it's there for the Windows path).
+   *
+   * The alias data lives in `aliases.ts` — adding apps doesn't touch the
+   * platform layer.
+   */
   async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    return this.launchApp(name);
+    const alias = resolveAlias(name);
+    const exe = alias?.executable?.replace(/\.exe$/i, '') ?? name;
+    return this.launchApp(exe, {
+      alwaysNewInstance: alias?.alwaysNewInstance,
+    });
   }
 
   async launchApp(
     name: string,
-    opts?: { alwaysNewInstance?: boolean; url?: string; cwd?: string; uwpAppId?: string },
+    opts?: {
+      alwaysNewInstance?: boolean;
+      url?: string;
+      cwd?: string;
+      uwpAppId?: string;
+      searchTerm?: string;
+    },
   ): Promise<{ pid?: number; title?: string; handle?: number | string }> {
-    // uwpAppId is Windows-only — ignore on Linux.
+    // uwpAppId is Windows-only — ignore on Linux. searchTerm currently has no
+    // universal Linux launcher to drive (krunner / Activities / wmenu vary
+    // by DE), so we simply accept it for interface parity.
     void opts?.uwpAppId;
+    void opts?.searchTerm;
     if (/[\r\n\t\x00-\x1f]/.test(name)) {
       throw new Error('launchApp: illegal characters in app name');
     }
-    const settleMs = opts?.alwaysNewInstance ? 1200 : 800;
+    // Snapshot windows BEFORE any spawn so the post-launch diff-and-poll
+    // helper can ignore them. Reused for the idempotency check.
+    let windowsBefore: readonly WindowInfo[] = [];
+    try {
+      windowsBefore = await this.listWindows();
+    } catch {
+      // Non-fatal — empty before-set is a safe default.
+    }
 
     // v0.8.3 — idempotency. Check for an existing window before spawning.
     // Linux doesn't have macOS's "open -a" activation semantics, so a
@@ -1039,8 +1070,7 @@ export class LinuxAdapter implements PlatformAdapter {
     // instance. Focus the existing one and return its pid instead.
     if (!opts?.alwaysNewInstance && !opts?.url) {
       const target = name.trim().toLowerCase();
-      const windows = await this.listWindows();
-      const existing = windows.find(w =>
+      const existing = windowsBefore.find(w =>
         w.processName.toLowerCase() === target ||
         w.processName.toLowerCase().includes(target) ||
         w.title.toLowerCase().includes(target),
@@ -1056,8 +1086,7 @@ export class LinuxAdapter implements PlatformAdapter {
     if (opts?.url) directArgs.push(opts.url);
     const direct = await this.spawnDetached(name, directArgs, opts?.cwd);
     if (direct.ok) {
-      await this.delay(settleMs);
-      const match = await this.findSpawnedWindow(name, direct.pid);
+      const match = await this.findSpawnedWindow(name, windowsBefore, direct.pid);
       return match ?? { pid: direct.pid };
     }
 
@@ -1066,8 +1095,9 @@ export class LinuxAdapter implements PlatformAdapter {
     if (await this.hasBinary('xdg-open')) {
       const fallback = await this.spawnDetached('xdg-open', [target], opts?.cwd);
       if (fallback.ok) {
-        await this.delay(settleMs);
-        const match = await this.findSpawnedWindow(name);
+        // xdg-open's PID isn't the eventual app's PID — drop the spawn pid
+        // and rely on the predicate.
+        const match = await this.findSpawnedWindow(name, windowsBefore);
         return match ?? {};
       }
     }
@@ -1075,17 +1105,31 @@ export class LinuxAdapter implements PlatformAdapter {
     return {};
   }
 
-  private async findSpawnedWindow(name: string, pid?: number): Promise<{ pid?: number; title?: string } | null> {
-    const windows = await this.listWindows();
-    const byPid = pid ? windows.find(w => w.processId === pid) : undefined;
-    if (byPid) return { pid: byPid.processId, title: byPid.title };
-
-    const lower = name.toLowerCase();
-    const byName = windows.find(w =>
-      w.processName.toLowerCase() === lower ||
-      w.title.toLowerCase().includes(lower),
+  /**
+   * After a launch, wait for the new window to surface using diff-and-poll.
+   * Replaces the previous fixed-delay-then-single-scan, which lost slow-
+   * starting apps (Electron-based apps, Java apps, Wine apps) and made the
+   * agent fall back to keyboard shortcuts that are blocked by safety.
+   *
+   * Linux's `spawn(name, …)` directly produces the target app's PID (unlike
+   * Windows / macOS where the spawn target is a launcher), so when `pid` is
+   * supplied the helper will preferentially match it — fastest and most
+   * reliable when the binary spawns its own window.
+   */
+  private async findSpawnedWindow(
+    name: string,
+    windowsBefore: readonly WindowInfo[],
+    pid?: number,
+  ): Promise<{ pid?: number; title?: string; handle?: number | string } | null> {
+    const win = await waitForLaunchedWindow(
+      windowsBefore,
+      () => this.listWindows(),
+      buildAppPredicate(name),
+      { spawnPid: pid },
     );
-    return byName ? { pid: byName.processId, title: byName.title } : null;
+    return win
+      ? { pid: win.processId, title: win.title, handle: win.handle }
+      : null;
   }
 
   private spawnDetached(cmd: string, args: string[], cwd?: string): Promise<{ ok: boolean; pid?: number }> {

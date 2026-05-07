@@ -310,6 +310,16 @@ export interface PlatformAdapter {
     cwd?: string;
     /** Windows UWP AppsFolder ID. Ignored on macOS and Linux. */
     uwpAppId?: string;
+    /**
+     * Human-friendly term used when the platform falls back to its native
+     * search launcher (Windows Start Menu, macOS Spotlight). When omitted,
+     * the launcher uses `name` with the `.exe` / `.app` suffix stripped —
+     * which works for most apps but fails for cases like `msedge.exe`
+     * where the binary name isn't indexed (Windows Search would surface
+     * Microsoft Store as the closest match instead of Microsoft Edge).
+     * `APP_ALIASES` provides a curated `searchTerm` per app for this.
+     */
+    searchTerm?: string;
   }): Promise<{ pid?: number; title?: string; handle?: number | string }>;
 }
 
