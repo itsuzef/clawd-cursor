@@ -578,6 +578,11 @@ public class WinAPI {
           vision: visionConfig,
         },
         disableVision: process.env.OPENCLAW_DISABLE_VISION === '1',
+        // Ground-truth verifier is on by default — every successful agent
+        // rung is post-checked against actual screen state, and failed
+        // verification demotes the rung so the ladder climbs. Opt-out
+        // mirrors the vision-disable pattern.
+        disableVerifier: process.env.OPENCLAW_DISABLE_VERIFIER === '1',
       });
 
       if (!hasTextModel && !hasVisionModel) {

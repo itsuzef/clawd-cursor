@@ -47,6 +47,8 @@ import { Router, type RouteResult } from './router/router';
 import { SkillCache } from './skills/skill-cache';
 import { runAgent } from './agent/agent';
 import type { AgentLlmConfig, AgentLlmDeps, AgentMode, AgentResult } from './agent/types';
+import type { Verifier, StateSnapshot } from '../v2/verifier/types';
+import { GroundTruthVerifier } from '../v2/verifier/ground-truth';
 
 // ─── Dependency injection contract ──────────────────────────────────
 
@@ -71,12 +73,37 @@ export interface PipelineDeps {
   maxTurnsPerRung?: number;
   /** Maximum strategy escalations per task. Default 3. */
   maxEscalations?: number;
+  /**
+   * Independent ground-truth verifier. When supplied, every successful
+   * agent rung (blind / hybrid / vision) is post-checked against actual
+   * screen state — if the verifier rejects (e.g. compose still open
+   * after the agent claimed `done`), the rung is demoted to
+   * `failureReason: 'verifier_rejected'` and the ladder climbs to the
+   * next rung.
+   *
+   * Skipped for `router` rungs (those already use a deterministic
+   * before/after window-list diff).
+   *
+   * Caller can pass a real `GroundTruthVerifier(adapter)` or any test
+   * double satisfying the `Verifier` interface. When omitted, the
+   * pipeline auto-creates a `GroundTruthVerifier` unless
+   * `disableVerifier` is true.
+   */
+  verifier?: Verifier;
+  /**
+   * Disable the verifier entirely. The agent's `done()` claim is taken
+   * at face value (the pre-verifier behavior). Use for tests that mock
+   * the agent without setting up screen state, or for users that
+   * explicitly opted out.
+   */
+  disableVerifier?: boolean;
 }
 
-export const PIPELINE_DEFAULTS: Required<Pick<PipelineDeps, 'disableVision' | 'maxTurnsPerRung' | 'maxEscalations'>> = {
+export const PIPELINE_DEFAULTS: Required<Pick<PipelineDeps, 'disableVision' | 'maxTurnsPerRung' | 'maxEscalations' | 'disableVerifier'>> = {
   disableVision: false,
   maxTurnsPerRung: 20,
   maxEscalations: 3,
+  disableVerifier: false,
 };
 
 export interface PipelineRunInput {
@@ -92,6 +119,7 @@ export class Pipeline {
   private readonly disableVision: boolean;
   private readonly maxTurnsPerRung: number;
   private readonly maxEscalations: number;
+  private readonly verifier: Verifier | null;
 
   constructor(private readonly deps: PipelineDeps) {
     this.router = new Router(deps.adapter);
@@ -99,6 +127,16 @@ export class Pipeline {
     this.disableVision = deps.disableVision ?? PIPELINE_DEFAULTS.disableVision;
     this.maxTurnsPerRung = deps.maxTurnsPerRung ?? PIPELINE_DEFAULTS.maxTurnsPerRung;
     this.maxEscalations = deps.maxEscalations ?? PIPELINE_DEFAULTS.maxEscalations;
+    // Verifier wiring:
+    //   • explicit `disableVerifier: true` → null (skip post-check entirely)
+    //   • caller-supplied `verifier`      → use as-is (lets tests inject)
+    //   • neither                         → instantiate the default
+    //                                       GroundTruthVerifier from the adapter
+    if (deps.disableVerifier) {
+      this.verifier = null;
+    } else {
+      this.verifier = deps.verifier ?? new GroundTruthVerifier(deps.adapter);
+    }
   }
 
   async run(input: PipelineRunInput): Promise<PipelineTaskResult> {
@@ -203,6 +241,23 @@ export class Pipeline {
 
   /**
    * Run one subtask through the escalation ladder.
+   *
+   * Verifier integration:
+   *   - Capture a `before` state ONCE before the ladder runs (not per-rung).
+   *     The verifier's job is "did the WHOLE work for this subtask result
+   *     in the desired screen state?" — so we want to compare against the
+   *     state at the start of the subtask, not the state at the start of
+   *     each rung (which is what blind has potentially-already-changed to).
+   *   - After each AGENT rung (blind / hybrid / vision) reports success,
+   *     capture an `after` state and run `verifier.verify(...)`. If the
+   *     verifier rejects, demote `success: false` with
+   *     `failureReason: 'verifier_rejected'` and let the ladder climb.
+   *   - The `router` rung is exempt — it already does its own deterministic
+   *     window-list diff and emitting a screenshot for verification on
+   *     every router success would be expensive (router is the fast path).
+   *   - If the verifier itself throws (platform hiccup, etc.), log and
+   *     accept the agent's claim — the verifier is supplementary, not
+   *     authoritative. Adopt-don't-override on error.
    */
   private async runOneSubtask(
     task: string,
@@ -211,6 +266,12 @@ export class Pipeline {
   ): Promise<StrategyResult> {
     const ladder = this.buildLadder(decision.strategy);
     env.log.debug('pipeline.ladder', { ladder, strategy: decision.strategy });
+
+    // Snapshot the "before" state ONCE per subtask, only if a verifier is
+    // active. Skipped for tasks that can't escalate to an agent rung
+    // (router-only ladder is the only such case, but those are quickly
+    // followed by agent rungs anyway, so we still capture).
+    const before = await this.captureVerifierState(env, 'before');
 
     let last: StrategyResult = {
       success: false, path: 'text-agent',
@@ -229,6 +290,46 @@ export class Pipeline {
 
       const attempt = await this.executeStrategy(rung, task, decision, env);
       last = attempt;
+
+      // Verifier post-check. Only runs when:
+      //   • a verifier is active (not disabled)
+      //   • the rung claims success
+      //   • the rung was an AGENT rung (router is exempt — it has its own
+      //     deterministic window-diff verification baked in)
+      //   • we managed to capture a `before` state earlier
+      if (
+        attempt.success
+        && this.verifier
+        && rung !== 'router'
+        && before
+      ) {
+        const verdict = await this.runVerifier(task, rung, before, env);
+        if (verdict.kind === 'rejected') {
+          env.log.warn('pipeline.verifier.rejected', {
+            strategy: rung,
+            attempt: rungsTried,
+            confidence: verdict.confidence,
+            reason: verdict.reason,
+          });
+          // Demote this rung to a failure so the ladder climbs.
+          attempt.success = false;
+          attempt.failureReason = 'verifier_rejected';
+          attempt.text = `${attempt.text} (verifier rejected: ${verdict.reason})`;
+          last = attempt;
+          // Continue the loop — try the next rung.
+          continue;
+        }
+        if (verdict.kind === 'verified') {
+          env.log.info('pipeline.verifier.verified', {
+            strategy: rung,
+            attempt: rungsTried,
+            confidence: verdict.confidence,
+          });
+        }
+        // verdict.kind === 'skipped' (verifier threw / unavailable) →
+        // adopt the agent's claim as-is and fall through to return.
+      }
+
       if (attempt.success) return attempt;
 
       env.log.info('pipeline.rung.failed', {
@@ -245,6 +346,73 @@ export class Pipeline {
     }
 
     return last;
+  }
+
+  // ─── Verifier helpers ──────────────────────────────────────────────
+
+  /**
+   * Capture a `StateSnapshot` for the verifier, or null when the verifier
+   * is disabled / capture fails. OCR text is left empty — the verifier's
+   * window/focus/pixel signals work regardless, and OCR-dependent
+   * assertions degrade gracefully (they just don't add weight to the
+   * verdict). Adding OCR here would more than double the latency per
+   * subtask; the cost trade-off is documented inline.
+   */
+  private async captureVerifierState(
+    env: StrategyEnv,
+    label: 'before' | 'after',
+  ): Promise<StateSnapshot | null> {
+    if (!this.verifier) return null;
+    try {
+      return await this.verifier.captureState('');
+    } catch (err) {
+      env.log.warn('pipeline.verifier.capture_failed', {
+        label, error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Run the verifier and classify the verdict into one of three actionable
+   * outcomes:
+   *   - 'verified'   → confidence ≥ 0.6, accept the agent's claim
+   *   - 'rejected'   → low confidence, demote and escalate
+   *   - 'skipped'    → after-state capture failed / verifier threw —
+   *                    adopt the agent's claim as-is (defensive: don't
+   *                    block the user on a verifier infra hiccup)
+   */
+  private async runVerifier(
+    task: string,
+    rung: Strategy,
+    before: StateSnapshot,
+    env: StrategyEnv,
+  ): Promise<
+    | { kind: 'verified'; confidence: number; reason: string }
+    | { kind: 'rejected'; confidence: number; reason: string }
+    | { kind: 'skipped'; reason: string }
+  > {
+    if (!this.verifier) return { kind: 'skipped', reason: 'verifier disabled' };
+    const after = await this.captureVerifierState(env, 'after');
+    if (!after) return { kind: 'skipped', reason: 'after-state capture failed' };
+    try {
+      const verdict = await this.verifier.verify({ task, before, after });
+      env.log.debug('pipeline.verifier.verdict', {
+        strategy: rung,
+        pass: verdict.pass,
+        confidence: verdict.confidence,
+        reason: verdict.reason,
+        signals: verdict.signals.map(s => ({ name: s.name, value: s.value, weight: s.weight })),
+      });
+      return verdict.pass
+        ? { kind: 'verified', confidence: verdict.confidence, reason: verdict.reason }
+        : { kind: 'rejected', confidence: verdict.confidence, reason: verdict.reason };
+    } catch (err) {
+      env.log.warn('pipeline.verifier.threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { kind: 'skipped', reason: 'verifier threw' };
+    }
   }
 
   // ─── Strategy dispatch ──────────────────────────────────────────

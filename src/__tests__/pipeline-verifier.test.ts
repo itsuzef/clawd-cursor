@@ -1,0 +1,256 @@
+/**
+ * Tests for the unified pipeline's ground-truth verifier integration.
+ *
+ * The pipeline used to trust `agentResult.success` directly — the agent
+ * could call `done(evidence: "should have been sent")` and the pipeline
+ * would return success. After the v0.8.12 wiring, every agent rung is
+ * post-checked against actual screen state via a `Verifier`, and a
+ * rejected verdict demotes the rung so the strategy ladder climbs.
+ *
+ * These tests pin that behavior down without needing a live LLM:
+ *   - A mock `Verifier` injected via `PipelineDeps.verifier` controls
+ *     pass / fail / throw on demand.
+ *   - A mock `PlatformAdapter` + a stubbed agent loop simulate rungs
+ *     without bringing up the real one.
+ *
+ * What we're verifying (no pun intended):
+ *   1. Agent success + verifier pass     → pipeline reports success.
+ *   2. Agent success + verifier reject   → ladder climbs, next rung runs.
+ *   3. Verifier throws                   → adopt agent claim (no false
+ *                                         negatives from infra hiccups).
+ *   4. `disableVerifier: true`           → behavior matches pre-v0.8.12.
+ *   5. Router-only rung                  → verifier NOT invoked
+ *                                         (router has its own diff).
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import { Pipeline } from '../pipeline';
+import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../v2/platform/types';
+import type { Verifier, VerifyOptions, VerifyResult, StateSnapshot } from '../v2/verifier/types';
+
+// ─── Mock helpers ───────────────────────────────────────────────────
+
+function emptyShot(): ScreenshotResult {
+  return { buffer: Buffer.alloc(0), width: 0, height: 0, scaleFactor: 1 };
+}
+
+function emptyState(): StateSnapshot {
+  return {
+    timestamp: Date.now(),
+    screenshot: emptyShot(),
+    windows: [],
+    activeWindow: null,
+    focusedElement: null,
+    ocrText: '',
+    clipboard: '',
+  };
+}
+
+function makeAdapter(): PlatformAdapter {
+  return {
+    platform: 'win32',
+    init: () => Promise.resolve(),
+    shutdown: () => Promise.resolve(),
+    checkPermissions: () => Promise.resolve({ input: true, accessibility: true, screenRecording: true }),
+    requestPermissions: () => Promise.resolve({ input: true, accessibility: true, screenRecording: true }),
+    getScreenSize: () => Promise.resolve({ physicalWidth: 1920, physicalHeight: 1080, logicalWidth: 1920, logicalHeight: 1080, dpiRatio: 1 }),
+    screenshot: () => Promise.resolve(emptyShot()),
+    screenshotRegion: () => Promise.resolve(emptyShot()),
+    listWindows: () => Promise.resolve<WindowInfo[]>([]),
+    getActiveWindow: () => Promise.resolve(null),
+    focusWindow: () => Promise.resolve(true),
+    maximizeWindow: () => Promise.resolve(),
+    getUiTree: () => Promise.resolve([]),
+    findElements: () => Promise.resolve([]),
+    getFocusedElement: () => Promise.resolve(null),
+    invokeElement: () => Promise.resolve({ success: true }),
+    mouseClick: () => Promise.resolve(),
+    mouseMove: () => Promise.resolve(),
+    mouseDrag: () => Promise.resolve(),
+    mouseScroll: () => Promise.resolve(),
+    typeText: () => Promise.resolve(),
+    keyPress: () => Promise.resolve(),
+    readClipboard: () => Promise.resolve(''),
+    writeClipboard: () => Promise.resolve(),
+    openApp: () => Promise.resolve({}),
+    launchApp: () => Promise.resolve({}),
+  } as unknown as PlatformAdapter;
+}
+
+/** Mock verifier whose verdict you control via `setVerdict`. */
+function makeMockVerifier(initial: 'pass' | 'reject' | 'throw' = 'pass') {
+  let verdict: 'pass' | 'reject' | 'throw' = initial;
+  const verify = vi.fn(async (_opts: VerifyOptions): Promise<VerifyResult> => {
+    if (verdict === 'throw') throw new Error('verifier infra hiccup');
+    if (verdict === 'pass') {
+      return {
+        pass: true, confidence: 0.9, reason: 'Verified: pixel_diff, window_change',
+        signals: [],
+      };
+    }
+    return {
+      pass: false, confidence: 0.2, reason: 'Failed: task_assertions ([send_email] compose_closed=✗ in_inbox_or_sent=✗ (0/2))',
+      signals: [],
+    };
+  });
+  const captureState = vi.fn(async (_ocr: string) => emptyState());
+  const verifier: Verifier = { verify, captureState };
+  return {
+    verifier,
+    verify,
+    captureState,
+    setVerdict: (v: 'pass' | 'reject' | 'throw') => { verdict = v; },
+  };
+}
+
+// ─── Stub the agent loop ────────────────────────────────────────────
+//
+// The real `runAgent` brings up an LLM. For these tests we want to drive
+// the rung's outcome directly. `vi.mock` replaces the import in the
+// pipeline module's binding.
+
+const agentResultByRung = new Map<string, { success: boolean; exit: string }>();
+
+vi.mock('../pipeline/agent/agent', async () => {
+  return {
+    runAgent: vi.fn(async (input: { task: string; mode: string }) => {
+      const o = agentResultByRung.get(input.mode) ?? { success: false, exit: 'give_up' };
+      return {
+        success: o.success,
+        text: o.success ? `done: ${input.mode} claims success` : `${o.exit}: ${input.mode}`,
+        exit: o.exit,
+        steps: [],
+        screenshotsCaptured: 0,
+        durationMs: 5,
+      };
+    }),
+  };
+});
+
+// Force every task into the blind→hybrid→vision ladder, no router pattern match.
+vi.mock('../pipeline/preprocessor/preprocessor', async () => {
+  return {
+    preprocess: () => ({
+      strategy: 'blind' as const,
+      subtasks: [],
+      hints: { reason: 'test', appKey: undefined, capability: undefined, guide: undefined },
+    }),
+  };
+});
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+describe('Pipeline ground-truth verifier wiring', () => {
+  it('agent success + verifier PASS → pipeline reports success', async () => {
+    agentResultByRung.clear();
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    const m = makeMockVerifier('pass');
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: { text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false } },
+      verifier: m.verifier,
+    });
+
+    const result = await pipeline.run({ task: 'test task' });
+    expect(result.success).toBe(true);
+    expect(m.verify).toHaveBeenCalledTimes(1);
+    expect(m.captureState).toHaveBeenCalledTimes(2); // before + after
+  });
+
+  it('agent success + verifier REJECT → ladder climbs to hybrid', async () => {
+    agentResultByRung.clear();
+    // Blind claims done, but the verifier will reject it.
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    // Hybrid also claims done, and we'll let it pass.
+    agentResultByRung.set('hybrid', { success: true, exit: 'done' });
+    const m = makeMockVerifier('reject');
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: {
+        text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false },
+        vision: { baseUrl: 'x', model: 'v', apiKey: 'k', isAnthropic: false },
+      },
+      verifier: m.verifier,
+    });
+
+    // First two verify() calls reject. Third one pass.
+    let calls = 0;
+    m.verify.mockImplementation(async () => {
+      calls += 1;
+      if (calls < 3) {
+        return { pass: false, confidence: 0.2, reason: 'rejected', signals: [] };
+      }
+      return { pass: true, confidence: 0.9, reason: 'verified', signals: [] };
+    });
+
+    // Set hybrid → vision both successful in the agent stub.
+    agentResultByRung.set('vision', { success: true, exit: 'done' });
+
+    const result = await pipeline.run({ task: 'test task' });
+    expect(result.success).toBe(true);
+    // Verifier was called 3 times (blind reject, hybrid reject, vision pass).
+    expect(m.verify).toHaveBeenCalledTimes(3);
+  });
+
+  it('verifier THROWS → pipeline adopts the agent claim (no false negative)', async () => {
+    agentResultByRung.clear();
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    const m = makeMockVerifier('throw');
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: { text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false } },
+      verifier: m.verifier,
+    });
+
+    const result = await pipeline.run({ task: 'test task' });
+    // Verifier threw → we adopt the agent's claim, pipeline succeeds.
+    expect(result.success).toBe(true);
+    expect(m.verify).toHaveBeenCalled();
+  });
+
+  it('disableVerifier: true → verifier NOT consulted (pre-0.8.12 behavior)', async () => {
+    agentResultByRung.clear();
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    const m = makeMockVerifier('reject'); // would reject if asked
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: { text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false } },
+      verifier: m.verifier,
+      disableVerifier: true,
+    });
+
+    const result = await pipeline.run({ task: 'test task' });
+    // Agent claimed done; verifier was never consulted.
+    expect(result.success).toBe(true);
+    expect(m.verify).not.toHaveBeenCalled();
+    expect(m.captureState).not.toHaveBeenCalled();
+  });
+
+  it('all rungs verifier-rejected → pipeline reports failure with verifier_rejected', async () => {
+    agentResultByRung.clear();
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    agentResultByRung.set('hybrid', { success: true, exit: 'done' });
+    agentResultByRung.set('vision', { success: true, exit: 'done' });
+    const m = makeMockVerifier('reject');
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: {
+        text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false },
+        vision: { baseUrl: 'x', model: 'v', apiKey: 'k', isAnthropic: false },
+      },
+      verifier: m.verifier,
+    });
+
+    const result = await pipeline.run({ task: 'test task' });
+    expect(result.success).toBe(false);
+    // Three rungs, three verifier calls.
+    expect(m.verify).toHaveBeenCalledTimes(3);
+    // The trailing failure reason should mention verifier rejection somewhere.
+    expect(result.text.toLowerCase()).toContain('verifier');
+  });
+});
