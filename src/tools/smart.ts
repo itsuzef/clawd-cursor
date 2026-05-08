@@ -485,10 +485,12 @@ export function getSmartTools(): ToolDefinition[] {
           }
         }
 
-        // Type via clipboard paste
+        // Type via clipboard paste. `mod+v` resolves to Cmd+V on macOS and
+        // Ctrl+V everywhere else — the platform-portable key combo handles
+        // the OS difference without raw `process.platform` branching here.
         await ctx.a11y.writeClipboard(text);
         await new Promise(r => setTimeout(r, 50));
-        await ctx.desktop.keyPress(process.platform === 'darwin' ? 'cmd+v' : 'ctrl+v');
+        await ctx.desktop.keyPress('mod+v');
         await new Promise(r => setTimeout(r, 100));
         ctx.a11y.invalidateCache();
 

@@ -259,8 +259,10 @@ describe('Smart Tools', () => {
       const ctx = createCtx();
       const result = await smartType.handler({ text: 'Hello world' }, ctx);
       expect(mockWriteClipboard).toHaveBeenCalledWith('Hello world');
-      const expectedPasteKey = process.platform === 'darwin' ? 'cmd+v' : 'ctrl+v';
-      expect(mockKeyPress).toHaveBeenCalledWith(expectedPasteKey);
+      // Portable key combo — `mod+v` resolves to Cmd+V on macOS and Ctrl+V
+      // elsewhere via the platform adapter, so smart_type stays
+      // OS-agnostic without `process.platform` branching.
+      expect(mockKeyPress).toHaveBeenCalledWith('mod+v');
       expect(result.text).toContain('11 chars');
     });
 
