@@ -215,7 +215,6 @@ program
   .option('--api-key <key>', 'AI provider API key')
   .option('--debug', 'Save screenshots to debug/ folder (off by default)')
   .option('--accept', 'Accept desktop control consent non-interactively and start')
-  .option('--legacy', 'Use the v0.7 legacy cascade (escape hatch for v0.8.1 regressions; removed in v0.9.0)')
   .option('--no-vision', 'Refuse vision fallback — blind-first only (high-security mode)')
   .action(async (opts) => {
     // Single-instance guard
@@ -303,19 +302,13 @@ program
 
     // ── Agent ──────────────────────────────────────────────────────────────
     //
-    // Default = the unified pipeline (blind-first by construction: a11y/OCR
-    // tried first, vision as fallback, decomposer splits compound tasks so
-    // each one runs its own full cycle). --legacy is the single escape hatch
-    // for the v0.7 cascade; scheduled for removal in v0.9.0.
+    // Every task flows through the unified pipeline (blind-first by
+    // construction: a11y/OCR tried first, vision as fallback, decomposer
+    // splits compound tasks so each one runs its own full cycle). The v0.7
+    // cascade was deleted in v0.9.0.
     const agent = new Agent(config);
 
     if (opts.noVision) process.env.OPENCLAW_DISABLE_VISION = '1';
-
-    if (!opts.legacy) {
-      agent.enableUnifiedPipeline();
-    } else {
-      console.log(`${e('🕰️', '[legacy]')} Using v0.7 legacy cascade (--legacy flag; slated for removal in v0.9.0)`);
-    }
 
     try {
       await agent.connect();

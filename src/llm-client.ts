@@ -2,8 +2,8 @@
  * Shared LLM calling module — text AND vision.
  *
  * Text entry points:
- *   callTextLLM()       — accepts PipelineConfig (used by reasoners)
- *   callTextLLMDirect() — accepts explicit provider params (used by AIBrain)
+ *   callTextLLM()       — accepts PipelineConfig (used by pipeline reasoners)
+ *   callTextLLMDirect() — accepts explicit provider params (used by pipeline preprocessor)
  *
  * Vision entry points:
  *   callVisionLLM()       — accepts PipelineConfig
@@ -175,7 +175,7 @@ export async function callTextLLM(
 }
 
 /**
- * Call a text LLM using explicit provider params (used by AIBrain).
+ * Call a text LLM using explicit provider params (used by pipeline preprocessor).
  */
 export async function callTextLLMDirect(opts: DirectLLMOptions): Promise<string> {
   const authHeaders: Record<string, string> = opts.isAnthropic

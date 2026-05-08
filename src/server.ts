@@ -5,7 +5,6 @@
  *   GET  /           — Web dashboard
  *   POST /task       — submit a new task
  *   GET  /status     — get agent state
- *   POST /confirm    — approve/reject a pending action
  *   POST /abort      — abort current task
  *   GET  /screenshot — get current screen
  *   GET  /logs       — recent log entries as JSON
@@ -254,10 +253,6 @@ const taskSchema = z.object({
   task: z.string().trim().min(1).max(2000),
 });
 
-const confirmSchema = z.object({
-  approved: z.boolean(),
-});
-
 export function createServer(agent: Agent, config: ClawdConfig): express.Express {
   // NOTE: initServerToken() is NOT called here — it's called from the listen
   // callback in index.ts AFTER the port binds successfully. This prevents
@@ -456,28 +451,6 @@ export function createServer(agent: Agent, config: ClawdConfig): express.Express
       const entries = content.trim().split('\n').map((l: string) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
       res.json(entries);
     } catch { res.status(500).json({ error: 'Failed to read log' }); }
-  });
-
-  // Approve or reject a pending confirmation
-  app.post('/confirm', requireAuth, (req, res) => {
-    const parsed = confirmSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Missing "approved" boolean in body' });
-    }
-
-    const { approved } = parsed.data;
-    const safety = agent.getSafety();
-    if (!safety.hasPendingConfirmation()) {
-      return res.status(404).json({ error: 'No pending confirmation' });
-    }
-
-    const pending = safety.getPendingAction();
-    safety.respondToConfirmation(approved);
-
-    res.json({
-      confirmed: approved,
-      action: pending?.description,
-    });
   });
 
   // Abort current task

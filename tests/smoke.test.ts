@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import { createServer, initServerToken } from '../src/server';
 import { DEFAULT_CONFIG, SafetyTier } from '../src/types';
-import { SafetyLayer } from '../src/safety';
 import { VERSION } from '../src/version';
 
 // Initialize auth token for tests
@@ -17,17 +16,15 @@ function withAuth(req: request.Test): request.Test {
 }
 
 function makeAgent(overrides: Partial<any> = {}) {
-  const safety = new SafetyLayer(DEFAULT_CONFIG);
   const agent = {
     getState: () => ({ status: 'idle', stepsCompleted: 0, stepsTotal: 0 }),
     executeTask: vi.fn().mockResolvedValue({ success: true }),
-    getSafety: () => safety,
     abort: vi.fn(),
     disconnect: vi.fn(),
     ...overrides,
   } as any;
 
-  return { agent, safety };
+  return { agent };
 }
 
 describe('config defaults', () => {
@@ -76,26 +73,5 @@ describe('server smoke tests', () => {
     const res = await withAuth(request(app).post('/task')).send({ task: 'do something' });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('Agent is busy');
-  });
-
-  it('confirms pending action', async () => {
-    const { agent, safety } = makeAgent();
-    const confirmPromise = safety.requestConfirmation(
-      { kind: 'click', x: 10, y: 10 },
-      'send message'
-    );
-
-    const app = createServer(agent, DEFAULT_CONFIG);
-    const res = await withAuth(request(app).post('/confirm')).send({ approved: true });
-    expect(res.status).toBe(200);
-    expect(res.body.confirmed).toBe(true);
-    await expect(confirmPromise).resolves.toBe(true);
-  });
-
-  it('returns 404 when no pending confirmation', async () => {
-    const { agent } = makeAgent();
-    const app = createServer(agent, DEFAULT_CONFIG);
-    const res = await withAuth(request(app).post('/confirm')).send({ approved: true });
-    expect(res.status).toBe(404);
   });
 });

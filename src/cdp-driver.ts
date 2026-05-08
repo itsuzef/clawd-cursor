@@ -15,11 +15,11 @@
  *
  * Architecture:
  *   ┌─────────────────────────────┐
- *   │   UIDriver (native UI)     │  ← Windows UI Automation
+ *   │   UIDriver (native UI)      │  ← Windows UI Automation
  *   ├─────────────────────────────┤
- *   │   CDPDriver (browser DOM)  │  ← This module (CDP)
+ *   │   CDPDriver (browser DOM)   │  ← This module (CDP)
  *   ├─────────────────────────────┤
- *   │   BrowserLayer (Playwright) │  ← Navigation, page-level tasks
+ *   │   Browser tools (CDP)       │  ← Pipeline browser MCP surface
  *   └─────────────────────────────┘
  *
  * Connection:
@@ -93,9 +93,9 @@ export interface CDPInteractionResult {
 /**
  * CDPDriver — interact with web page DOM elements via Chrome DevTools Protocol.
  *
- * Uses Playwright's CDP connection under the hood, so it works with the same
- * browser instance that BrowserLayer connects to. You can also share a Page
- * object directly.
+ * Uses Playwright's CDP connection under the hood, so it works with any
+ * Chromium-based browser launched with --remote-debugging-port. You can
+ * also share a Page object directly.
  */
 export class CDPDriver {
   private browser: Browser | null = null;
@@ -175,7 +175,7 @@ export class CDPDriver {
 
   /**
    * Attach to an existing Playwright Page object.
-   * Use this when BrowserLayer already has a connection — avoid duplicate CDP connections.
+   * Use this when an outer caller already holds a CDP connection — avoid duplicate CDP connections.
    */
   attachToPage(page: Page): void {
     this.activePage = page;

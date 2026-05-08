@@ -60,8 +60,8 @@ export interface SnapshotElement {
 
 /**
  * A merged perception snapshot — one call, parallel OCR + a11y + optional CDP.
- * Ported from v0.7.5 SnapshotBuilder design; extended with fingerprint for
- * stagnation detection (ported from same file).
+ * Modeled on the per-turn perception snapshot; extended with fingerprint for
+ * stagnation detection.
  */
 export interface Snapshot {
   /** Source platform. */

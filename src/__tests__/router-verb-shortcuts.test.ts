@@ -3,7 +3,7 @@
  *
  * Background: the LLM decomposer produces atomic verb-level subtasks
  * ("copy", "paste", "save", "press Enter", "type John"). v0.7.x had
- * deterministic handlers for these in ActionRouter; v0.8.1 unification
+ * deterministic handlers for these in the legacy router; v0.8.1 unification
  * dropped them, forcing every verb to run a full blind→hybrid→vision
  * agent climb (~30s+, 1+ LLM call) for what should be a single
  * `keyPress('mod+c')`. These tests pin down the restored dispatch.
