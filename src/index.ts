@@ -52,6 +52,7 @@ import type { ClawdConfig } from './types';
 import { VERSION } from './version';
 import dotenv from 'dotenv';
 import { resolveApiConfig } from './credentials';
+import { resolveConfig } from './llm-config';
 import * as fs from 'fs';
 import * as path from 'path';
 import { migrateFromLegacyDir } from './paths';
@@ -269,30 +270,40 @@ program
       }
     }
 
-    const resolvedApi = resolveApiConfig({
-      apiKey: opts.apiKey,
-      provider: opts.provider,
-      baseUrl: opts.baseUrl,
+    // Single config-resolution call — walks the canonical precedence ladder:
+    //   CLI flags > project config > user config > env vars > auto-detect > default
+    const resolved = resolveConfig({
+      cliFlags: {
+        apiKey:      opts.apiKey,
+        baseUrl:     opts.baseUrl,
+        textModel:   opts.textModel,
+        visionModel: opts.visionModel,
+        model:       opts.model,
+        provider:    opts.provider,
+        port:        opts.port,
+        debug:       opts.debug,
+        noVision:    opts.noVision,
+      },
     });
 
     const config: ClawdConfig = {
       ...DEFAULT_CONFIG,
       server: {
         ...DEFAULT_CONFIG.server,
-        port: parseInt(opts.port),
+        port: resolved.port,
       },
       ai: {
-        provider: resolvedApi.provider || opts.provider || DEFAULT_CONFIG.ai.provider,
-        apiKey: resolvedApi.apiKey,
-        baseUrl: opts.baseUrl || resolvedApi.baseUrl,
-        textBaseUrl: resolvedApi.textBaseUrl,
-        textApiKey: resolvedApi.textApiKey,
-        visionBaseUrl: resolvedApi.visionBaseUrl,
-        visionApiKey: resolvedApi.visionApiKey,
-        model: opts.textModel || resolvedApi.textModel || opts.model || DEFAULT_CONFIG.ai.model,
-        visionModel: opts.visionModel || resolvedApi.visionModel || opts.model || DEFAULT_CONFIG.ai.visionModel,
+        provider: resolved.provider || DEFAULT_CONFIG.ai.provider,
+        apiKey: resolved.apiKey,
+        baseUrl: resolved.baseUrl,
+        textBaseUrl: resolved.textBaseUrl,
+        textApiKey: resolved.textApiKey,
+        visionBaseUrl: resolved.visionBaseUrl,
+        visionApiKey: resolved.visionApiKey,
+        model: resolved.model,
+        visionModel: resolved.visionModel,
       },
-      debug: opts.debug || false,
+      debug: resolved.debug,
     };
 
     console.log(`\x1b[32m\u2713\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m\u2014 desktop control active on ${config.server.host}:${config.server.port}\x1b[0m`);
@@ -306,9 +317,9 @@ program
     // construction: a11y/OCR tried first, vision as fallback, decomposer
     // splits compound tasks so each one runs its own full cycle). The v0.7
     // cascade was deleted in v0.9.0.
-    const agent = new Agent(config);
-
-    if (opts.noVision) process.env.OPENCLAW_DISABLE_VISION = '1';
+    // Pass resolved config so Agent reads disableVision/disableVerifier from
+    // the funnel instead of process.env directly.
+    const agent = new Agent(config, resolved);
 
     try {
       await agent.connect();

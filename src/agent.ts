@@ -13,6 +13,7 @@ import { AccessibilityBridge } from './accessibility';
 import { OcrEngine } from './ocr-engine';
 import { loadPipelineConfig } from './doctor';
 import type { ClawdConfig, AgentState, TaskResult, StepResult } from './types';
+import type { ResolvedConfig } from './llm-config';
 
 /**
  * Provider-agnostic Anthropic-endpoint detector. Anthropic native endpoints
@@ -33,6 +34,7 @@ export class Agent {
   private a11y: AccessibilityBridge;
   private ocrEngine: OcrEngine;
   private config: ClawdConfig;
+  private resolvedConfig: ResolvedConfig | null = null;
   private hasApiKey: boolean;
   private state: AgentState = {
     status: 'idle',
@@ -44,8 +46,9 @@ export class Agent {
 
   private pipelineUnified: import('./pipeline').Pipeline | null = null;
 
-  constructor(config: ClawdConfig) {
+  constructor(config: ClawdConfig, resolvedConfig?: ResolvedConfig) {
     this.config = config;
+    this.resolvedConfig = resolvedConfig ?? null;
     this.desktop = new NativeDesktop(config);
     this.a11y = new AccessibilityBridge();
     this.ocrEngine = new OcrEngine();
@@ -168,18 +171,25 @@ export class Agent {
           }
         : undefined;
 
+      // Prefer resolved config values; fall back to env vars for backward compat
+      // when agent is constructed without a ResolvedConfig (e.g. tool server).
+      const disableVision   = this.resolvedConfig?.disableVision
+                           ?? (process.env.OPENCLAW_DISABLE_VISION   === '1' || process.env.CLAWD_DISABLE_VISION   === '1');
+      const disableVerifier = this.resolvedConfig?.disableVerifier
+                           ?? (process.env.OPENCLAW_DISABLE_VERIFIER === '1' || process.env.CLAWD_DISABLE_VERIFIER === '1');
+
       this.pipelineUnified = new Pipeline({
         adapter,
         llm: {
           text: textConfig,
           vision: visionConfig,
         },
-        disableVision: process.env.OPENCLAW_DISABLE_VISION === '1',
+        disableVision,
         // Ground-truth verifier is on by default — every successful agent
         // rung is post-checked against actual screen state, and failed
         // verification demotes the rung so the ladder climbs. Opt-out
         // mirrors the vision-disable pattern.
-        disableVerifier: process.env.OPENCLAW_DISABLE_VERIFIER === '1',
+        disableVerifier,
       });
 
       if (!hasTextModel && !hasVisionModel) {
