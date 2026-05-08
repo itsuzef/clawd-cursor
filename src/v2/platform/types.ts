@@ -303,7 +303,15 @@ export interface PlatformAdapter {
   writeClipboard(text: string): Promise<void>;
 
   // ─── APPS ───────────────────────────────────────────────────────
-  openApp(name: string): Promise<{ pid?: number; title?: string }>;
+  /**
+   * Convenience wrapper around `launchApp`. Platform adapters keep this
+   * alias-data-agnostic — they DO NOT consult `APP_ALIASES`. Cross-OS
+   * name mapping (e.g. Windows "Notepad" → mac "TextEdit") and UWP /
+   * executable / searchTerm hints belong in the caller (the agent's
+   * `open_app` tool, the router's `handleOpenApp`), which resolves the
+   * alias and forwards the data through `launchApp` opts.
+   */
+  openApp(name: string, opts?: { alwaysNewInstance?: boolean }): Promise<{ pid?: number; title?: string }>;
   launchApp(name: string, opts?: {
     alwaysNewInstance?: boolean;
     url?: string;

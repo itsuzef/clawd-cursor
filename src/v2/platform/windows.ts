@@ -42,7 +42,6 @@ import type {
   WindowState,
 } from './types';
 import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
-import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 
@@ -784,38 +783,14 @@ export class WindowsAdapter implements PlatformAdapter {
   // ─── APPS ─────────────────────────────────────────────────────────
 
   /**
-   * Agent-facing entry point. Resolves the user-supplied app name through the
-   * shared `APP_ALIASES` table and forwards the right launch hints to
-   * `launchApp`:
-   *
-   *   - `uwpAppId` makes UWP / Microsoft Store apps (Calculator, Notepad-
-   *     Win11, Photos, Settings) launch reliably via
-   *     `explorer.exe shell:AppsFolder\<id>`. Without it, `Start-Process
-   *     -FilePath "Calculator"` silently fails and the caller sees
-   *     "no window surfaced yet" even though the app is installed.
-   *   - The alias's `executable` field replaces the human-friendly name
-   *     when the alias provides one — `Start-Process -FilePath "msedge.exe"`
-   *     succeeds where `Start-Process -FilePath "Microsoft Edge"` fails
-   *     (no such binary on PATH). The UWP route still wins when both
-   *     `uwpAppId` and `executable` are present, because launchApp checks
-   *     `uwpAppId` first.
-   *
-   * The alias table itself is app-data, not code: adding a new app means
-   * one row in `aliases.ts`, no platform changes. The launch path stays
-   * app-agnostic.
+   * Thin shim — delegates straight to `launchApp` with no alias resolution.
+   * The platform layer is alias-data-agnostic; alias resolution lives in
+   * the caller (the agent's `open_app` tool, the router's `handleOpenApp`).
+   * Callers that want UWP / executable / searchTerm hints must pass them
+   * via `launchApp` directly.
    */
-  async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    const alias = resolveAlias(name);
-    const launchName = alias?.executable ?? name;
-    return this.launchApp(launchName, {
-      uwpAppId: alias?.uwpAppId,
-      alwaysNewInstance: alias?.alwaysNewInstance,
-      // Pass the alias's curated searchTerm down so the Start-Menu fallback
-      // types the human-friendly name (e.g. "Edge") instead of the binary
-      // name (e.g. "msedge"), which Windows Search can't always resolve to
-      // the correct app.
-      searchTerm: alias?.searchTerm,
-    });
+  async openApp(name: string, opts?: { alwaysNewInstance?: boolean }): Promise<{ pid?: number; title?: string }> {
+    return this.launchApp(name, opts);
   }
 
   async launchApp(

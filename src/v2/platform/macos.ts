@@ -31,7 +31,6 @@ import type {
   WindowState,
 } from './types';
 import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
-import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 const SCRIPTS_DIR = path.join(__dirname, '..', '..', '..', 'scripts', 'mac');
@@ -699,23 +698,14 @@ export class MacOSAdapter implements PlatformAdapter {
   // ─── APPS ─────────────────────────────────────────────────────────
 
   /**
-   * Agent-facing entry point. Resolves the user-supplied app name through
-   * `APP_ALIASES` so a Windows-style call like `open_app("Notepad")` lands
-   * on macOS's "TextEdit" via `open -a`. Without alias resolution, `open -a
-   * Notepad` fails on macOS even though TextEdit is the natural counterpart.
-   *
-   * The alias data lives in `aliases.ts` — adding apps doesn't touch the
-   * platform layer.
+   * Thin shim — delegates straight to `launchApp` with no alias resolution.
+   * The platform layer is alias-data-agnostic; cross-OS name mapping (e.g.
+   * Windows "Notepad" → mac "TextEdit") happens in the caller above (the
+   * agent's `open_app` tool, the router's `handleOpenApp`). Callers that
+   * want bundle-name / searchTerm hints must pass them via `launchApp`.
    */
-  async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    const alias = resolveAlias(name);
-    return this.launchApp(alias?.macOSAppName ?? name, {
-      alwaysNewInstance: alias?.alwaysNewInstance,
-      // Spotlight ranks bundle names well, but the alias's curated
-      // searchTerm wins when present — `Microsoft Edge` lands more
-      // reliably than `msedge`.
-      searchTerm: alias?.searchTerm ?? alias?.macOSAppName,
-    });
+  async openApp(name: string, opts?: { alwaysNewInstance?: boolean }): Promise<{ pid?: number; title?: string }> {
+    return this.launchApp(name, opts);
   }
 
   async launchApp(

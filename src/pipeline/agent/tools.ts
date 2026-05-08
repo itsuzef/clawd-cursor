@@ -23,6 +23,7 @@ import type { UnifiedTool, UnifiedToolResult, AgentToolContext } from './types';
 import type { Capability } from '../classify/capability';
 import { paletteFor } from './palettes';
 import { getCompoundTools, COMPOUND_REPLACES } from './compound';
+import { resolveAlias } from '../router/aliases';
 
 /**
  * Hedging-language phrases that indicate the agent is GUESSING about
@@ -505,7 +506,40 @@ export function buildUnifiedTools(
       changesScreen: true,
       async execute(args, ctx) {
         const name = String(args.name ?? '');
-        const res = await ctx.platform.openApp(name);
+        // Alias resolution lives at the agent-tool layer (PR1 of v0.9):
+        // the platform adapter is alias-data-agnostic, so we look up the
+        // canonical row here and forward the launch hints through
+        // `launchApp` opts. Cross-OS name mapping (Windows "Notepad" → mac
+        // "TextEdit") and UWP / executable / searchTerm details all flow
+        // through this single resolution point.
+        const alias = resolveAlias(name);
+        const platform = ctx.platform.platform;
+
+        // Pick the right name to hand to the platform launcher per OS.
+        // Falls back to the raw `name` when no alias matches.
+        let launchName = name;
+        if (alias) {
+          if (platform === 'darwin') {
+            launchName = alias.macOSAppName ?? name;
+          } else if (platform === 'win32') {
+            launchName = alias.executable ?? name;
+          } else {
+            // Linux: use the alias's executable but strip any `.exe`
+            // suffix that's there for the Windows path.
+            launchName = alias.executable?.replace(/\.exe$/i, '') ?? name;
+          }
+        }
+
+        const res = await ctx.platform.launchApp(launchName, {
+          alwaysNewInstance: alias?.alwaysNewInstance,
+          uwpAppId: alias?.uwpAppId,
+          // Pick the searchTerm that gives the OS native launcher (Start
+          // Menu / Spotlight) the best chance of resolving to the right
+          // app — alias.searchTerm wins when present, mac falls back to
+          // the bundle name.
+          searchTerm: alias?.searchTerm
+            ?? (platform === 'darwin' ? alias?.macOSAppName : undefined),
+        });
         await sleep(800);
         return {
           success: true,

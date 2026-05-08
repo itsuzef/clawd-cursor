@@ -43,7 +43,6 @@ import type {
   WindowState,
 } from './types';
 import { waitForLaunchedWindow, buildAppPredicate } from './launch-poll';
-import { resolveAlias } from '../../pipeline/router/aliases';
 
 const execFileAsync = promisify(execFile);
 
@@ -1021,20 +1020,13 @@ export class LinuxAdapter implements PlatformAdapter {
   // ─── APPS ─────────────────────────────────────────────────────────
 
   /**
-   * Agent-facing entry point. Resolves the user-supplied app name through
-   * `APP_ALIASES` so cross-OS names like "Notepad" / "Calculator" / "Edge"
-   * map to the right Linux executable when an alias provides one. Trims any
-   * `.exe` suffix the alias might list (it's there for the Windows path).
-   *
-   * The alias data lives in `aliases.ts` — adding apps doesn't touch the
-   * platform layer.
+   * Thin shim — delegates straight to `launchApp` with no alias resolution.
+   * The platform layer is alias-data-agnostic; cross-OS name mapping (e.g.
+   * Windows-style "Notepad" → Linux "gedit") happens in the caller above
+   * (the agent's `open_app` tool, the router's `handleOpenApp`).
    */
-  async openApp(name: string): Promise<{ pid?: number; title?: string }> {
-    const alias = resolveAlias(name);
-    const exe = alias?.executable?.replace(/\.exe$/i, '') ?? name;
-    return this.launchApp(exe, {
-      alwaysNewInstance: alias?.alwaysNewInstance,
-    });
+  async openApp(name: string, opts?: { alwaysNewInstance?: boolean }): Promise<{ pid?: number; title?: string }> {
+    return this.launchApp(name, opts);
   }
 
   async launchApp(
