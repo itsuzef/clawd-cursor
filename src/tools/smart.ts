@@ -540,6 +540,7 @@ export function getSmartTools(): ToolDefinition[] {
         },
       },
       category: 'window',
+      compactGroup: 'accessibility',
       handler: async (params, ctx) => {
         await ctx.ensureInitialized();
 

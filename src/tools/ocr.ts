@@ -24,6 +24,7 @@ export function getOcrTools(): ToolDefinition[] {
         'Read all text on screen using OS-level OCR. Returns text elements with pixel coordinates (bounding boxes). Much cheaper than a screenshot — use this to find text, buttons, labels, and their positions. Coordinates are in real screen pixels.',
       parameters: {},
       category: 'perception',
+      compactGroup: 'system',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         const engine = getOcrEngine();

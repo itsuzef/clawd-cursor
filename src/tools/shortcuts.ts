@@ -59,6 +59,7 @@ export function getShortcutTools(): ToolDefinition[] {
         },
       },
       category: 'keyboard',
+      compactGroup: 'system',
       handler: async ({ category, context }) => {
         const platform = os.platform();
         let filtered = SHORTCUTS;
@@ -118,6 +119,7 @@ export function getShortcutTools(): ToolDefinition[] {
         },
       },
       category: 'keyboard',
+      compactGroup: 'system',
       handler: async ({ intent, context }, ctx) => {
         await ctx.ensureInitialized();
 

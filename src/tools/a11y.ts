@@ -37,6 +37,7 @@ export function getA11yTools(): ToolDefinition[] {
         processId: { type: 'number', description: 'Focus on a specific process ID (optional — reads foreground window by default)', required: false },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ processId }, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -70,6 +71,7 @@ export function getA11yTools(): ToolDefinition[] {
       description: 'List all visible windows with their title, process name, PID, and bounds.',
       parameters: {},
       category: 'window',
+      compactGroup: 'window',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -89,6 +91,7 @@ export function getA11yTools(): ToolDefinition[] {
       description: 'Get the currently focused/foreground window.',
       parameters: {},
       category: 'window',
+      compactGroup: 'window',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -112,6 +115,7 @@ export function getA11yTools(): ToolDefinition[] {
       description: 'Get the currently focused UI element (keyboard focus). Returns name, control type, value, bounds, and process ID.',
       parameters: {},
       category: 'window',
+      compactGroup: 'accessibility',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -134,6 +138,7 @@ export function getA11yTools(): ToolDefinition[] {
         title: { type: 'string', description: 'Window title substring to match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
 
@@ -255,6 +260,7 @@ export function getA11yTools(): ToolDefinition[] {
         processId: { type: 'number', description: 'Process ID to search within', required: false },
       },
       category: 'window',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, automationId, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -283,6 +289,7 @@ export function getA11yTools(): ToolDefinition[] {
       description: 'Read the current text content of the OS clipboard.',
       parameters: {},
       category: 'clipboard',
+      compactGroup: 'system',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {
@@ -301,6 +308,7 @@ export function getA11yTools(): ToolDefinition[] {
         text: { type: 'string', description: 'Text to write to clipboard', required: true },
       },
       category: 'clipboard',
+      compactGroup: 'system',
       handler: async ({ text }, ctx) => {
         await ctx.ensureInitialized();
         if (ctx.platform) {

@@ -15,6 +15,7 @@ export function getCdpTools(): ToolDefinition[] {
       description: `Connect to Edge/Chrome browser via Chrome DevTools Protocol (port ${DEFAULT_CDP_PORT}). Must be called before other cdp_* tools. Use navigate_browser to launch Edge with CDP enabled.`,
       parameters: {},
       category: 'browser',
+      compactGroup: 'browser',
       handler: async (_params, ctx) => {
         try { await ctx.cdp.disconnect(); } catch { /* ignore */ }
         const ok = await ctx.cdp.connect();
@@ -32,6 +33,7 @@ export function getCdpTools(): ToolDefinition[] {
       description: 'Get a structured list of interactive elements on the current browser page (inputs, buttons, links with selectors and positions).',
       parameters: {},
       category: 'browser',
+      compactGroup: 'browser',
       handler: async (_params, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const context = await ctx.cdp.getPageContext();
@@ -47,6 +49,7 @@ export function getCdpTools(): ToolDefinition[] {
         maxLength: { type: 'number', description: 'Max characters to return (default: 3000)', required: false },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ selector, maxLength }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const text = await ctx.cdp.readText(selector ?? 'body', maxLength ?? 3000);
@@ -62,6 +65,7 @@ export function getCdpTools(): ToolDefinition[] {
         text: { type: 'string', description: 'Visible text of the element to click (alternative to selector)', required: false },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ selector, text }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         if (!selector && !text) return { text: 'Provide either selector or text parameter.', isError: true };
@@ -82,6 +86,7 @@ export function getCdpTools(): ToolDefinition[] {
         text: { type: 'string', description: 'Text to type into the field', required: true },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ selector, label, text }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         if (!selector && !label) return { text: 'Provide either selector or label parameter.', isError: true };
@@ -101,6 +106,7 @@ export function getCdpTools(): ToolDefinition[] {
         value: { type: 'string', description: 'Option value or visible text to select', required: true },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ selector, value }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const result = await ctx.cdp.selectOption(selector, value);
@@ -115,6 +121,7 @@ export function getCdpTools(): ToolDefinition[] {
         javascript: { type: 'string', description: 'JavaScript code to evaluate in the page', required: true },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ javascript }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         try {
@@ -135,6 +142,7 @@ export function getCdpTools(): ToolDefinition[] {
         timeout: { type: 'number', description: 'Timeout in milliseconds (default: 10000)', required: false },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ selector, timeout }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const result = await ctx.cdp.waitForSelector(selector, timeout ?? 10000);
@@ -147,6 +155,7 @@ export function getCdpTools(): ToolDefinition[] {
       description: 'List all open browser tabs with their URLs and titles.',
       parameters: {},
       category: 'browser',
+      compactGroup: 'browser',
       handler: async () => {
         try {
           const resp = await fetch(`http://127.0.0.1:${DEFAULT_CDP_PORT}/json`);
@@ -168,6 +177,7 @@ export function getCdpTools(): ToolDefinition[] {
         target: { type: 'string', description: 'URL or title substring to match', required: true },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ target }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const ok = await ctx.cdp.switchTab(target);
@@ -188,6 +198,7 @@ export function getCdpTools(): ToolDefinition[] {
         amount: { type: 'number', description: 'Pixels to scroll (default: 500)', required: false },
       },
       category: 'browser',
+      compactGroup: 'browser',
       handler: async ({ direction, amount }, ctx) => {
         if (!(await ctx.cdp.isConnected())) return { text: 'Not connected to CDP. Call cdp_connect first.', isError: true };
         const pixels = (amount ?? 500) * (direction === 'down' ? 1 : -1);

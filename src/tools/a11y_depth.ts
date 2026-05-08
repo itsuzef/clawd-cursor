@@ -68,6 +68,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', description: 'Scope to a process', required: false },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_expand');
@@ -94,6 +95,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_collapse');
@@ -125,6 +127,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', description: 'Scope to a process', required: false },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, value, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('set_field_value');
@@ -159,6 +162,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_toggle');
@@ -187,6 +191,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_select');
@@ -217,6 +222,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_get_element');
@@ -244,6 +250,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_get_value');
@@ -272,6 +279,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         processId:   { type: 'number', required: false, description: 'Scope to a process' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('get_element_state');
@@ -328,6 +336,7 @@ export function getA11yDepthTools(): ToolDefinition[] {
         maxChildren: { type: 'number', required: false, default: 50, description: 'Cap on children returned' },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ parentName, controlType, processId, maxChildren }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('a11y_list_children');

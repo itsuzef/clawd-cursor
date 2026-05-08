@@ -50,6 +50,7 @@ export function getExtraTools(): ToolDefinition[] {
         dy: { type: 'number', description: 'Y offset in image-space pixels', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ dx, dy }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_move_relative');
@@ -67,6 +68,7 @@ export function getExtraTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_middle_click');
@@ -84,6 +86,7 @@ export function getExtraTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_triple_click');
@@ -105,6 +108,7 @@ export function getExtraTools(): ToolDefinition[] {
         },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ button }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_down');
@@ -124,6 +128,7 @@ export function getExtraTools(): ToolDefinition[] {
         },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ button }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_up');
@@ -145,6 +150,7 @@ export function getExtraTools(): ToolDefinition[] {
         amount: { type: 'number', description: 'Wheel ticks (default: 3)', required: false, default: 3 },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y, direction, amount }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_scroll_horizontal');
@@ -172,6 +178,7 @@ export function getExtraTools(): ToolDefinition[] {
         },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ path }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('mouse_drag_stepped');
@@ -211,6 +218,7 @@ export function getExtraTools(): ToolDefinition[] {
         key: { type: 'string', description: 'Key token (e.g. "shift", "ctrl", "a", "Return")', required: true },
       },
       category: 'keyboard',
+      compactGroup: 'computer',
       handler: async ({ key }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('key_down');
@@ -226,6 +234,7 @@ export function getExtraTools(): ToolDefinition[] {
         key: { type: 'string', description: 'Key token', required: true },
       },
       category: 'keyboard',
+      compactGroup: 'computer',
       handler: async ({ key }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('key_up');
@@ -247,6 +256,7 @@ export function getExtraTools(): ToolDefinition[] {
         title:       { type: 'string', description: 'Optional title-substring match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('maximize_window');
@@ -269,6 +279,7 @@ export function getExtraTools(): ToolDefinition[] {
         title:       { type: 'string', description: 'Optional title-substring match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('minimize_window_to_taskbar');
@@ -291,6 +302,7 @@ export function getExtraTools(): ToolDefinition[] {
         title:       { type: 'string', description: 'Optional title-substring match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('restore_window');
@@ -314,6 +326,7 @@ export function getExtraTools(): ToolDefinition[] {
         title:       { type: 'string', description: 'Optional title-substring match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('close_window');
@@ -340,6 +353,7 @@ export function getExtraTools(): ToolDefinition[] {
         title:       { type: 'string', description: 'Optional title-substring match', required: false },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ x, y, width, height, processName, processId, title }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('resize_window');
@@ -363,6 +377,7 @@ export function getExtraTools(): ToolDefinition[] {
         'Use this before desktop_screenshot with displayIndex to target a specific monitor.',
       parameters: {},
       category: 'window',
+      compactGroup: 'window',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('list_displays');
@@ -385,6 +400,7 @@ export function getExtraTools(): ToolDefinition[] {
         processId:   { type: 'number', description: 'Optional process id to scope the search', required: false },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('focus_element');
@@ -413,6 +429,7 @@ export function getExtraTools(): ToolDefinition[] {
         intervalMs:  { type: 'number', description: 'Poll interval in ms (default 250)', required: false, default: 250 },
       },
       category: 'perception',
+      compactGroup: 'accessibility',
       handler: async ({ name, controlType, processId, timeoutMs, intervalMs }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('wait_for_element');
@@ -440,6 +457,7 @@ export function getExtraTools(): ToolDefinition[] {
         path: { type: 'string', description: 'Absolute filesystem path', required: true },
       },
       category: 'orchestration',
+      compactGroup: 'window',
       handler: async ({ path: filePath }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('open_file');
@@ -473,6 +491,7 @@ export function getExtraTools(): ToolDefinition[] {
         url: { type: 'string', description: 'https:// or http:// URL', required: true },
       },
       category: 'orchestration',
+      compactGroup: 'window',
       handler: async ({ url }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('open_url');
@@ -503,6 +522,7 @@ export function getExtraTools(): ToolDefinition[] {
       description: 'Return the current system time as ISO 8601 UTC + local components. Zero I/O.',
       parameters: {},
       category: 'perception',
+      compactGroup: 'system',
       handler: async () => {
         const now = new Date();
         return {
@@ -534,6 +554,7 @@ export function getExtraTools(): ToolDefinition[] {
         },
       },
       category: 'window',
+      compactGroup: 'window',
       handler: async ({ index, direction }, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('switch_tab_os');
@@ -556,6 +577,7 @@ export function getExtraTools(): ToolDefinition[] {
       description: 'Emit the OS-specific Undo shortcut (Ctrl+Z on Win/Linux, Cmd+Z on macOS) into the focused window.',
       parameters: {},
       category: 'keyboard',
+      compactGroup: 'system',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         if (!ctx.platform) return needPlatform('undo_last');

@@ -54,6 +54,9 @@ export interface ToolContext {
   ensureInitialized: () => Promise<void>;
 }
 
+/** The 6 compact compound tool names */
+export type CompactGroup = 'computer' | 'accessibility' | 'window' | 'system' | 'browser' | 'task';
+
 /** A single tool definition — transport agnostic */
 export interface ToolDefinition {
   /** Unique tool name (e.g. "mouse_click", "read_screen") */
@@ -64,6 +67,13 @@ export interface ToolDefinition {
   parameters: Record<string, ParameterDef>;
   /** Tool category for organization */
   category: 'perception' | 'mouse' | 'keyboard' | 'window' | 'clipboard' | 'browser' | 'orchestration';
+  /**
+   * The compact compound this granular tool belongs to.
+   * Derived by reverse-engineering the ACTION_MAP in compact.ts.
+   * Undefined for granular tools that are not exposed via any compound
+   * (e.g. smart_read, smart_click, smart_type, minimize_window).
+   */
+  compactGroup?: CompactGroup;
   /** The handler function */
   handler: (params: Record<string, any>, ctx: ToolContext) => Promise<ToolResult>;
 }

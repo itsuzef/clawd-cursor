@@ -22,6 +22,7 @@ export function getDesktopTools(): ToolDefinition[] {
       description: 'Take a screenshot of the entire screen, resized to 1280px wide. Returns the image and scale metadata. Use read_screen (accessibility tree) first — only screenshot when you need visual confirmation.',
       parameters: {},
       category: 'perception',
+      compactGroup: 'computer',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         const frame = await ctx.desktop.captureForLLM();
@@ -43,6 +44,7 @@ export function getDesktopTools(): ToolDefinition[] {
         height: { type: 'number', description: 'Height in image-space pixels', required: true },
       },
       category: 'perception',
+      compactGroup: 'computer',
       handler: async ({ x, y, width, height }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getScreenshotScaleFactor();
@@ -63,6 +65,7 @@ export function getDesktopTools(): ToolDefinition[] {
       description: 'Get the screen dimensions and scale factor.',
       parameters: {},
       category: 'perception',
+      compactGroup: 'window',
       handler: async (_params, ctx) => {
         await ctx.ensureInitialized();
         const size = ctx.desktop.getScreenSize();
@@ -91,6 +94,7 @@ export function getDesktopTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getMouseScaleFactor();
@@ -109,6 +113,7 @@ export function getDesktopTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getMouseScaleFactor();
@@ -126,6 +131,7 @@ export function getDesktopTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getMouseScaleFactor();
@@ -143,6 +149,7 @@ export function getDesktopTools(): ToolDefinition[] {
         y: { type: 'number', description: 'Y coordinate in image-space', required: true },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getMouseScaleFactor();
@@ -161,6 +168,7 @@ export function getDesktopTools(): ToolDefinition[] {
         amount: { type: 'number', description: 'Scroll amount in wheel ticks (default: 3)', required: false, default: 3 },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ x, y, direction, amount }, ctx) => {
         await ctx.ensureInitialized();
         const sf = ctx.getMouseScaleFactor();
@@ -185,6 +193,7 @@ export function getDesktopTools(): ToolDefinition[] {
         y2: { type: 'number', description: 'Alias for endY', required: false },
       },
       category: 'mouse',
+      compactGroup: 'computer',
       handler: async ({ startX, startY, endX, endY, x1, y1, x2, y2 }, ctx) => {
         await ctx.ensureInitialized();
         const sx = startX ?? x1;
@@ -210,6 +219,7 @@ export function getDesktopTools(): ToolDefinition[] {
         text: { type: 'string', description: 'The text to type', required: true },
       },
       category: 'keyboard',
+      compactGroup: 'computer',
       handler: async ({ text }, ctx) => {
         await ctx.ensureInitialized();
         const active = await ctx.a11y.getActiveWindow();
@@ -231,6 +241,7 @@ export function getDesktopTools(): ToolDefinition[] {
         key: { type: 'string', description: 'Key or combo to press (e.g. "Return", "ctrl+a", "F5", "Escape")', required: true },
       },
       category: 'keyboard',
+      compactGroup: 'computer',
       handler: async ({ key }, ctx) => {
         await ctx.ensureInitialized();
         const lower = (key as string).toLowerCase().replace(/\s+/g, '');

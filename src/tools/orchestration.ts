@@ -68,6 +68,7 @@ export function getOrchestrationTools(): ToolDefinition[] {
         timeout: { type: 'number', description: 'Timeout in seconds (default: 300)', required: false },
       },
       category: 'orchestration',
+      compactGroup: 'task',
       handler: async ({ task, timeout }) => {
         const timeoutMs = (timeout ?? 300) * 1000;
         const start = Date.now();
@@ -115,6 +116,7 @@ export function getOrchestrationTools(): ToolDefinition[] {
         name: { type: 'string', description: 'Application name (e.g. "notepad", "calc", "mspaint")', required: true },
       },
       category: 'orchestration',
+      compactGroup: 'window',
       handler: async ({ name }, ctx) => {
         await ctx.ensureInitialized();
         try {
@@ -148,6 +150,7 @@ export function getOrchestrationTools(): ToolDefinition[] {
         url: { type: 'string', description: 'URL to navigate to', required: true },
       },
       category: 'orchestration',
+      compactGroup: 'window',
       handler: async ({ url }, ctx) => {
         await ctx.ensureInitialized();
         if (await ctx.cdp.isConnected()) {
@@ -202,6 +205,7 @@ export function getOrchestrationTools(): ToolDefinition[] {
         seconds: { type: 'number', description: 'Duration to wait (0.1 to 30)', required: true, minimum: 0.1, maximum: 30 },
       },
       category: 'orchestration',
+      compactGroup: 'computer',
       handler: async ({ seconds }) => {
         await new Promise(r => setTimeout(r, seconds * 1000));
         return { text: `Waited ${seconds}s` };
