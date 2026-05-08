@@ -542,6 +542,57 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     return h;
   }
 
+  // ── MCP-over-HTTP helper (v0.9 PR7.3) ────────────────────────────
+  // The daemon mounts a streamable-HTTP MCP transport at /mcp. Every
+  // dashboard action is a JSON-RPC tools/call request through this
+  // helper. /health and /stop remain plain HTTP — they're operational
+  // endpoints, not tools.
+  var __mcpRequestId = 1;
+  async function mcpCall(name, args) {
+    var body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: __mcpRequestId++,
+      method: 'tools/call',
+      params: { name: name, arguments: args || {} }
+    });
+    var res = await fetch('/mcp', {
+      method: 'POST',
+      headers: authHeaders({
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'
+      }),
+      body: body
+    });
+    if (!res.ok) throw new Error('MCP HTTP ' + res.status);
+    var ct = res.headers.get('Content-Type') || '';
+    var rpc;
+    if (ct.indexOf('text/event-stream') !== -1) {
+      // SSE response — parse the first data: chunk as the JSON-RPC reply.
+      var raw = await res.text();
+      var lines = raw.split(/\\r?\\n/);
+      var dataLine = lines.find(function(l) { return l.indexOf('data: ') === 0; });
+      if (!dataLine) throw new Error('MCP SSE response missing data line');
+      rpc = JSON.parse(dataLine.slice(6));
+    } else {
+      rpc = await res.json();
+    }
+    if (rpc.error) throw new Error(rpc.error.message || 'MCP error');
+    var result = rpc.result || {};
+    if (result.isError) {
+      var content = result.content || [];
+      var msg = content.map(function(c) { return c.text || ''; }).join(' ').trim();
+      throw new Error(msg || 'MCP tool error');
+    }
+    // Convenience: if the only content piece is text and parses as JSON,
+    // return the parsed object so callers don't have to unwrap manually.
+    var content = result.content || [];
+    var firstText = content.find(function(c) { return c.type === 'text'; });
+    if (firstText && firstText.text) {
+      try { return JSON.parse(firstText.text); } catch (e) { return firstText.text; }
+    }
+    return result;
+  }
+
   // State
   let currentTab = 'task';
   let connected = false;
@@ -583,9 +634,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   // Status polling
   async function pollStatus() {
     try {
-      const res = await fetch('/status');
-      if (!res.ok) throw new Error('bad status');
-      const data = await res.json();
+      // v0.9 PR7.3: status now goes through MCP agent_status.
+      const data = await mcpCall('agent_status', {});
       setConnected(true);
       updateStatus(data);
     } catch(e) {
@@ -648,15 +698,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     emptyTask.style.display = 'none';
 
     try {
-      const res = await fetch('/task', {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ task })
-      });
-      const data = await res.json();
-
+      // v0.9 PR7.3: submit_task replaces POST /task.
+      const data = await mcpCall('submit_task', { task: task });
       responseCard.classList.add('visible');
-      if (data.accepted) {
+      if (data && data.accepted) {
         responseText.textContent = 'Task accepted: ' + task + '\\nWaiting for completion...';
         addHistory(task, 'accepted');
         taskInput.value = '';
@@ -668,8 +713,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     } catch(e) {
       responseCard.classList.add('visible');
-      responseText.textContent = 'Error: Could not connect to server.\\n' + e.message;
-      addHistory(task, 'Connection error');
+      responseText.textContent = 'Error: ' + e.message;
+      addHistory(task, 'Error: ' + e.message);
     }
 
     spinner.classList.remove('visible');
@@ -685,15 +730,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         return;
       }
       try {
-        const res = await fetch('/status');
-        const data = await res.json();
-        if (data.status === 'idle') {
+        // v0.9 PR7.3: agent_status replaces GET /status.
+        const data = await mcpCall('agent_status', {});
+        if (data && data.status === 'idle') {
           responseText.textContent = 'Task completed: ' + task;
           updateHistoryResult(task, 'Completed');
           return;
         }
         // Update current progress
-        if (data.currentStep) {
+        if (data && data.currentStep) {
           responseText.textContent = 'Task: ' + task + '\\nStep: ' + data.currentStep +
             '\\nProgress: ' + (data.stepsCompleted || 0) + '/' + (data.stepsTotal || '?');
         }
@@ -766,9 +811,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   // Favorites
   async function loadFavorites() {
     try {
-      var res = await fetch('/favorites', { headers: authHeaders() });
-      if (res.ok) {
-        favorites = await res.json();
+      // v0.9 PR7.3: favorites_list replaces GET /favorites.
+      var data = await mcpCall('favorites_list', {});
+      if (Array.isArray(data)) {
+        favorites = data;
         renderFavorites();
         renderHistory();
       }
@@ -820,17 +866,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     try {
-      var res = await fetch('/favorites', {
-        method: isFav ? 'DELETE' : 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ task: item.task })
-      });
-      if (res.ok) {
-        var data = await res.json();
-        favorites = data.favorites || [];
-        renderFavorites();
-        renderHistory();
-      }
+      // v0.9 PR7.3: favorites_add / favorites_remove replace POST/DELETE /favorites.
+      var data = await mcpCall(
+        isFav ? 'favorites_remove' : 'favorites_add',
+        { task: item.task }
+      );
+      favorites = (data && data.favorites) || [];
+      renderFavorites();
+      renderHistory();
     } catch(e) {
       console.error('Failed to toggle star:', e);
     }
@@ -846,17 +889,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     var chip = el.parentElement;
     var text = chip.querySelector('.fav-text').textContent;
     try {
-      var res = await fetch('/favorites', {
-        method: 'DELETE',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ task: text })
-      });
-      if (res.ok) {
-        var data = await res.json();
-        favorites = data.favorites || [];
-        renderFavorites();
-        renderHistory();
-      }
+      // v0.9 PR7.3: favorites_remove replaces DELETE /favorites.
+      var data = await mcpCall('favorites_remove', { task: text });
+      favorites = (data && data.favorites) || [];
+      renderFavorites();
+      renderHistory();
     } catch(e) {
       console.error('Failed to remove favorite:', e);
     }
@@ -865,10 +902,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   // Logs polling
   async function pollLogs() {
     try {
-      const res = await fetch('/logs', { headers: authHeaders() });
-      if (!res.ok) return;
-      const logs = await res.json();
-      if (logs.length === 0) return;
+      // v0.9 PR7.3: logs_recent replaces GET /logs.
+      const logs = await mcpCall('logs_recent', {});
+      if (!Array.isArray(logs) || logs.length === 0) return;
 
       if (logs.length !== lastLogCount) {
         lastLogCount = logs.length;
