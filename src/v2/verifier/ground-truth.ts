@@ -67,10 +67,22 @@ export class GroundTruthVerifier implements Verifier {
 
     // Hard rules:
     //  - If anti-pattern fired, fail regardless of other signals.
-    //  - If pixel diff = 0, almost certainly nothing happened.
+    //  - At least ONE structural-change signal must have fired. Drawing
+    //    tasks legitimately leave window/focus unchanged (you draw IN a
+    //    canvas inside an open Paint window), so for `'draw'` tasks the
+    //    pixel-diff signal alone is sufficient. For all other task types
+    //    we still require pixel/window/focus to have flipped — typing
+    //    that left no on-screen trace is suspicious.
+    const inferredTaskType = opts.taskType ?? this.inferTaskType(opts.task);
     let pass = confidence >= 0.6;
     if (!antiSig.value) pass = false;
-    if (!pixel.value && !windowSig.value && !focus.value) pass = false;
+    if (inferredTaskType === 'draw') {
+      // Draw: only require ANY pixel change (per the lower threshold in
+      // signalPixelDiff). Window/focus reasonably stay still.
+      if (!pixel.value) pass = false;
+    } else {
+      if (!pixel.value && !windowSig.value && !focus.value) pass = false;
+    }
 
     const reason = pass
       ? `Verified: ${signals.filter(s => s.value).map(s => s.name).join(', ')}`
@@ -81,16 +93,29 @@ export class GroundTruthVerifier implements Verifier {
 
   // ─── SIGNALS ──────────────────────────────────────────────────────
 
-  /** Did the pixels change at all? */
+  /**
+   * Did the pixels change at all?
+   *
+   * Threshold is per-task-type: spatial / drawing tasks change MUCH less
+   * pixels than window opens. A stick figure on a 1280×720 canvas might
+   * paint ~300 pixels (~0.03%); the default 0.5% threshold (tuned for
+   * window opens / dialog pops) rejects that as noise.
+   *
+   * For `'draw'` we use 0.05% (10× lower) — caught by the actual
+   * Paint-stick-figure run that produced 0.08% pixels-changed and was
+   * wrongly rejected by the universal threshold.
+   */
   private async signalPixelDiff(opts: VerifyOptions): Promise<VerifySignal> {
     try {
       const diff = await this.computePixelDiff(opts.before.screenshot.buffer, opts.after.screenshot.buffer);
-      const value = diff > 0.005; // >0.5% of pixels changed
+      const taskType = opts.taskType ?? this.inferTaskType(opts.task);
+      const threshold = taskType === 'draw' ? 0.0005 : 0.005; // 0.05% for drawings, 0.5% otherwise
+      const value = diff > threshold;
       return {
         name: 'pixel_diff',
         weight: 0.15,
         value,
-        detail: `${(diff * 100).toFixed(2)}% pixels changed`,
+        detail: `${(diff * 100).toFixed(2)}% pixels changed (threshold ${(threshold * 100).toFixed(2)}%)`,
       };
     } catch (err: any) {
       return { name: 'pixel_diff', weight: 0, value: false, detail: `error: ${err.message}` };
@@ -245,14 +270,51 @@ export class GroundTruthVerifier implements Verifier {
         break;
       }
 
+      case 'draw': {
+        // Drawing tasks have no text-based proof. The cheapest signal is
+        // "did meaningful pixels actually change?" — same as the pixel-diff
+        // signal, but at the same lower 0.05% threshold (consistent with
+        // signalPixelDiff's per-task-type threshold above). Without this,
+        // 'draw' tasks would have ZERO task assertions and degrade to
+        // weight=0 (no positive contribution to verdict).
+        try {
+          const diff = await this.computePixelDiff(
+            opts.before.screenshot.buffer,
+            opts.after.screenshot.buffer,
+          );
+          // Same threshold as signalPixelDiff for 'draw' — they reinforce
+          // each other rather than double-counting (each has its own weight).
+          checks.push({ name: 'canvas_changed', pass: diff > 0.0005 });
+        } catch {
+          // If the pixel diff itself errored, leave the task assertion
+          // unchecked rather than auto-failing — the pixel signal will
+          // also have zeroed weight, so the verdict relies on other signals.
+        }
+        break;
+      }
+
       case 'generic':
-      default:
+      default: {
         // Generic: at least one keyword from the task appears on screen.
+        // BUT — when no OCR data is available (the unified-pipeline path
+        // currently passes empty `ocrText` for latency reasons), the
+        // keyword check is structurally guaranteed to fail. That isn't a
+        // signal; it's missing data. Return weight=0 so it doesn't drag
+        // the weighted verdict down. Same idiom signalOcrDelta uses.
+        if (!after.ocrText) {
+          return {
+            name: 'task_assertions',
+            weight: 0,
+            value: false,
+            detail: '[generic] skipped — no OCR data available',
+          };
+        }
         const keywords = this.extractTaskKeywords(opts.task);
         const matches = keywords.filter(k => after.ocrText.toLowerCase().includes(k));
         const ratio = keywords.length > 0 ? matches.length / keywords.length : 1;
         checks.push({ name: 'keywords_visible', pass: ratio >= 0.5 });
         break;
+      }
     }
 
     if (checks.length === 0) {
@@ -335,12 +397,32 @@ export class GroundTruthVerifier implements Verifier {
     return totalPixels > 0 ? diffPixels / totalPixels : 0;
   }
 
-  /** Heuristic task type inference from the task string. */
+  /**
+   * Heuristic task type inference from the task string. The pipeline can
+   * also pass `taskType` explicitly via `VerifyOptions.taskType` (set
+   * from the preprocessor's `capability` hint), in which case this is
+   * never called. This is the fallback for direct verifier callers.
+   *
+   * Order matters — first match wins. `open_app` precedes `draw` so
+   * "open paint" classifies as `open_app` (the verb "open" wins over
+   * the noun "paint" — Paint the app vs. paint the action). For tasks
+   * like "open paint and draw …" the pipeline splits subtasks before
+   * verification, so "open paint" and "draw …" are checked separately.
+   */
   private inferTaskType(task: string): TaskType {
     const t = task.toLowerCase();
+    // `open_app` must come before `draw` so "open paint" classifies as
+    // open_app — Paint the application, not paint the verb.
+    if (/(?:^|\s)(?:open|launch|start)\s+(?:the\s+)?[a-z0-9 ]+?(?:\s+(?:app|application))?$/i.test(t)) return 'open_app';
     if (/send.*email|email.*to|reply.*to|forward.*email/.test(t)) return 'send_email';
     if (/compose|draft.*message|write.*message/.test(t)) return 'compose_message';
-    if (/(?:open|launch|start).*(?:app|application)|open\s+\w+$/.test(t)) return 'open_app';
+    // Drawing / spatial — `draw|sketch|annotate|illustrate|trace` are
+    // unambiguous verbs. `paint` is dropped from the regex because it
+    // doubles as the app name ("open paint") — the open_app case above
+    // catches that, and a real "paint a thing" task still falls under
+    // `draw` via the other verbs or via the pipeline's `capability`
+    // hint mapped from `'spatial'`.
+    if (/\b(draw|sketch|annotate|illustrate|trace|color\s+in|drag\s+\w+\s+(?:to|onto))\b/.test(t)) return 'draw';
     if (/navigate|go to.*\.|visit.*\.|open\s+(?:https?:\/\/|www\.|[a-z0-9-]+\.[a-z]{2,})/.test(t)) return 'navigate_url';
     if (/type|enter.*text|write.*"|input/.test(t)) return 'type_text';
     if (/create.*file|save.*as|new\s+document/.test(t)) return 'create_file';

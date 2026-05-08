@@ -56,6 +56,15 @@ export type TaskType =
   | 'type_text'
   | 'create_file'
   | 'search'
+  /**
+   * Spatial / drawing tasks (Paint, Photoshop, Figma, draw-on-canvas in
+   * any app). Uses a much lower pixel-diff threshold because drawings
+   * are inherently small pixel changes — a stick figure on a 1280×720
+   * canvas might paint only ~300 pixels (~0.03%), which the default
+   * 0.5% threshold rejects as noise. The `'generic'` fallback is also
+   * inappropriate (no text appears, OCR-keyword check always fails).
+   */
+  | 'draw'
   | 'generic';
 
 export interface Verifier {

@@ -47,8 +47,86 @@ import { Router, type RouteResult } from './router/router';
 import { SkillCache } from './skills/skill-cache';
 import { runAgent } from './agent/agent';
 import type { AgentLlmConfig, AgentLlmDeps, AgentMode, AgentResult } from './agent/types';
-import type { Verifier, StateSnapshot } from '../v2/verifier/types';
+import type { Verifier, StateSnapshot, TaskType } from '../v2/verifier/types';
 import { GroundTruthVerifier } from '../v2/verifier/ground-truth';
+import type { Capability } from './classify/capability';
+import { decomposeWithLlm, DECOMPOSE_SYSTEM_PROMPT } from './decompose/llm-decomposer';
+import { callLLMWithTools } from '../llm-client';
+
+/**
+ * Tasks the LLM decomposer can safely skip — a single concrete verb + a
+ * single concrete target with no indefinite phrasing. These get the
+ * router's deterministic fast path (or the agent ladder) without paying
+ * for an LLM round-trip.
+ *
+ * Skip LLM:
+ *   • "open notepad"                   → trivial
+ *   • "navigate to https://github.com" → trivial (URL is concrete)
+ *   • "focus outlook"                  → trivial
+ *   • "copy"                           → trivial
+ *
+ * Run LLM:
+ *   • "open any wikipedia page"        → INDEFINITE_INTENT_PATTERN matches
+ *   • "open the latest article"        → INDEFINITE_INTENT_PATTERN matches
+ *   • "open notepad and type hello"    → COMPOUND_TASK_PATTERN matches
+ *   • "find a restaurant near me"      → both
+ *   • "summarize this page"            → no trivial-verb match (LLM by default)
+ *
+ * Triviality requires ALL THREE: verb-prefix match AND no compound
+ * AND no indefinite phrasing. If any of those fails, we run the LLM.
+ */
+const TRIVIAL_TASK_PATTERN =
+  /^\s*(?:open|launch|start|run|focus|switch\s+to|navigate\s+to|go\s+to|visit|browse\s+to|copy|paste|cut|save|undo|redo|press|type)\s+\S[^.]*?$/i;
+
+/** Compound-task hint. Forces LLM decomposition even if the parts look trivial. */
+const COMPOUND_TASK_PATTERN = /\b(?:and|then|,)\b/i;
+
+/**
+ * Indefinite phrasing — "any X", "the latest", "a random", "some Y",
+ * "today's news", "anything", "an example". Any of these forces LLM
+ * decomposition even when the surrounding structure looks trivial.
+ *
+ * Word-boundary anchored. App-agnostic — these are language patterns,
+ * not app-specific rules. English-only (same coupling as the rest of
+ * the pipeline's regex layer).
+ */
+const INDEFINITE_INTENT_PATTERN = new RegExp(
+  [
+    '\\bany\\b',                           // "any wikipedia page"
+    '\\ba\\s+random\\b',                   // "a random article"
+    '\\bsome\\s+(?:random\\s+)?\\w+',      // "some restaurant"
+    '\\bseveral\\b',                       // "several photos"
+    '\\bthe\\s+(?:latest|first|top|most\\s+recent)\\b', // "the latest email"
+    '\\btoday\'?s\\b',                     // "today's news"
+    '\\bsomething\\b',                     // "something funny"
+    '\\banything\\b',                      // "anything trending"
+    '\\ban?\\s+example\\b',                // "an example"
+    '\\bdefault\\s+(?:browser|mail\\s+client|editor)\\b', // "default browser"
+  ].join('|'),
+  'i',
+);
+
+/**
+ * Map the preprocessor's `capability` hint to a verifier `TaskType`.
+ * Returning `undefined` lets the verifier fall back to its own regex
+ * inference — appropriate for capabilities the verifier doesn't
+ * specialize on (e.g. `'window_mgmt'` doesn't have a TaskType).
+ *
+ * App-agnostic + model-agnostic by construction: pure data lookup, no
+ * branching on specific apps or LLM providers.
+ */
+function capabilityToTaskType(cap?: Capability): TaskType | undefined {
+  switch (cap) {
+    case 'app_launch':  return 'open_app';
+    case 'text_input':  return 'type_text';
+    case 'navigation':  return 'navigate_url';
+    case 'spatial':     return 'draw';
+    case 'file_ops':    return 'create_file';
+    // 'form_fill', 'window_mgmt', 'general' have no specialized
+    // TaskType — let the verifier infer from task text.
+    default:            return undefined;
+  }
+}
 
 // ─── Dependency injection contract ──────────────────────────────────
 
@@ -97,6 +175,21 @@ export interface PipelineDeps {
    * explicitly opted out.
    */
   disableVerifier?: boolean;
+  /**
+   * LLM-based task decomposer for compound natural-language tasks
+   * containing indefinite phrasing ("any wikipedia page", "a random
+   * article", "the latest email"). Without this, the regex decomposer
+   * passes the literal phrase through to the router, which then types
+   * "any wikipedia page" into a search bar — the v0.7-vs-v0.8
+   * regression.
+   *
+   * Auto-instantiated from `llm.text` when present. Pass `null` to
+   * disable, or a custom function for tests. Invocation is conditional
+   * on `INDEFINITE_INTENT_PATTERN` matching the original task — most
+   * tasks ("open notepad", "send email to ...") don't trigger it and
+   * pay no extra latency.
+   */
+  decomposer?: ((task: string) => Promise<string[] | null>) | null;
 }
 
 export const PIPELINE_DEFAULTS: Required<Pick<PipelineDeps, 'disableVision' | 'maxTurnsPerRung' | 'maxEscalations' | 'disableVerifier'>> = {
@@ -120,6 +213,7 @@ export class Pipeline {
   private readonly maxTurnsPerRung: number;
   private readonly maxEscalations: number;
   private readonly verifier: Verifier | null;
+  private readonly decomposer: ((task: string) => Promise<string[] | null>) | null;
 
   constructor(private readonly deps: PipelineDeps) {
     this.router = new Router(deps.adapter);
@@ -136,6 +230,37 @@ export class Pipeline {
       this.verifier = null;
     } else {
       this.verifier = deps.verifier ?? new GroundTruthVerifier(deps.adapter);
+    }
+    // Auto-wire the LLM decomposer when a text model is configured. The
+    // decomposer is gated by `INDEFINITE_INTENT_PATTERN` at call time
+    // (see `maybeRefineSubtasks`), so the LLM only fires for tasks that
+    // actually need interpretation.
+    if (deps.decomposer === null) {
+      this.decomposer = null;
+    } else if (deps.decomposer) {
+      this.decomposer = deps.decomposer;
+    } else if (deps.llm.text) {
+      const textConfig = deps.llm.text;
+      this.decomposer = async (task: string) => {
+        const callTextLlm = async (system: string, user: string, opts?: { maxTokens?: number }) => {
+          const result = await callLLMWithTools({
+            baseUrl: textConfig.baseUrl,
+            model: textConfig.model,
+            apiKey: textConfig.apiKey,
+            isAnthropic: textConfig.isAnthropic,
+            system,
+            tools: [],
+            messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+            maxTokens: opts?.maxTokens ?? 512,
+            timeoutMs: 30_000,
+            toolChoice: 'auto',
+          });
+          return result.text ?? '';
+        };
+        return decomposeWithLlm(task, { callTextLlm });
+      };
+    } else {
+      this.decomposer = null;
     }
   }
 
@@ -167,9 +292,53 @@ export class Pipeline {
         subtasks: outerDecision.subtasks.length,
       });
 
-      const subtasks = outerDecision.subtasks.length > 0
+      let subtasks = outerDecision.subtasks.length > 0
         ? outerDecision.subtasks
         : [input.task];
+
+      // ── Tier 0: LLM intent resolution (always-on when text LLM is configured).
+      //
+      // v0.7.x ran an LLM decomposer UNCONDITIONALLY at the front of the
+      // pipeline; v0.8.x demoted it to a regex-gated fallback. That
+      // dropped semantic interpretation for whole classes of input —
+      // "open default browser and search …", "find a restaurant near me",
+      // "the latest email" — none of which the regex preprocessor
+      // recognizes as needing interpretation.
+      //
+      // Restored design: the decomposer ALWAYS runs unless the task is
+      // unambiguously trivial (single concrete verb + concrete target,
+      // no compound) — those skip the LLM call as an optimization. This
+      // restores the "LLM is active at every stage that needs it"
+      // invariant the user remembers from legacy clawdcursor.
+      //
+      // Cost: ~500-1000 ms text-LLM call for non-trivial tasks. Cheap
+      // tier; well worth the consistent canonicalization downstream.
+      const isTrivial =
+        TRIVIAL_TASK_PATTERN.test(input.task)
+        && !COMPOUND_TASK_PATTERN.test(input.task)
+        && !INDEFINITE_INTENT_PATTERN.test(input.task);
+      if (this.decomposer && !isTrivial) {
+        log.info('pipeline.decompose.refine_attempt', { task: input.task });
+        try {
+          const refined = await this.decomposer(input.task);
+          if (refined && refined.length > 0) {
+            log.info('pipeline.decompose.refined', {
+              originalSubtasks: subtasks.length,
+              refinedSubtasks: refined.length,
+              first: refined[0],
+            });
+            subtasks = refined;
+          } else {
+            log.info('pipeline.decompose.refine_skipped', { reason: 'llm returned empty' });
+          }
+        } catch (err) {
+          log.warn('pipeline.decompose.refine_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Fall through with the regex decomposer's original subtasks —
+          // refinement is best-effort, never authoritative.
+        }
+      }
 
       const aggregateTrace: PipelineTaskResult['trace'] = [];
       let lastText = '';
@@ -303,7 +472,13 @@ export class Pipeline {
         && rung !== 'router'
         && before
       ) {
-        const verdict = await this.runVerifier(task, rung, before, env);
+        const verdict = await this.runVerifier(
+          task,
+          rung,
+          before,
+          capabilityToTaskType(decision.hints.capability),
+          env,
+        );
         if (verdict.kind === 'rejected') {
           env.log.warn('pipeline.verifier.rejected', {
             strategy: rung,
@@ -386,6 +561,7 @@ export class Pipeline {
     task: string,
     rung: Strategy,
     before: StateSnapshot,
+    taskType: TaskType | undefined,
     env: StrategyEnv,
   ): Promise<
     | { kind: 'verified'; confidence: number; reason: string }
@@ -396,7 +572,7 @@ export class Pipeline {
     const after = await this.captureVerifierState(env, 'after');
     if (!after) return { kind: 'skipped', reason: 'after-state capture failed' };
     try {
-      const verdict = await this.verifier.verify({ task, before, after });
+      const verdict = await this.verifier.verify({ task, before, after, taskType });
       env.log.debug('pipeline.verifier.verdict', {
         strategy: rung,
         pass: verdict.pass,

@@ -210,13 +210,21 @@ describe('Router.route — URL nav with verification', () => {
     expect(adapter.launchApp.mock.calls[0][1].url).toBe('https://clawdcursor.com');
   });
 
-  it('refuses success when URL launch produces no browser window', async () => {
+  it('trusts launchApp success even when no browser window surfaces (verifier-as-ground-truth)', async () => {
+    // v0.8.17 changed URL-nav from "poll-for-new-window-or-fail" to
+    // "trust the OS launch, let the pipeline's verifier check ground
+    // truth." The previous logic timed out at 8s every time the user's
+    // browser reused an existing tab (no new window appeared) and
+    // forced the pipeline to escalate unnecessarily.
     const adapter = makeStatefulAdapter({ postLaunchWindows: [] });
     const r = new Router(adapter);
     const res = await r.route('visit https://clawdcursor.com');
-    expect(res.handled).toBe(false);
-    expect(r.telemetry.launchUnverified).toBeGreaterThan(0);
-  }, 20_000);
+    expect(res.handled).toBe(true);
+    expect(res.path).toBe('url_nav');
+    // launchApp was invoked exactly once with the right URL — that's
+    // the contract; whether a window surfaces is the verifier's call.
+    expect(adapter.launchApp.mock.calls[0][1].url).toBe('https://clawdcursor.com');
+  });
 });
 
 describe('Router.route — misc paths', () => {

@@ -66,6 +66,53 @@ const OPEN_APP_PATTERN = /^\s*(?:open|launch|start|run)\s+(.+?)\s*$/i;
 const NAV_URL_PATTERN = /^\s*(?:go to|navigate to|visit|browse to|open)\s+(.+?)\s*$/i;
 const FOCUS_APP_PATTERN = /^\s*(?:focus|switch to)\s+(.+?)\s*$/i;
 
+/**
+ * Verb-shortcut table — these are the v0.7-era deterministic verb
+ * handlers the v0.8.1 unification dropped. After LLM decomposition
+ * produces atomic subtasks like "copy", "paste", "press Enter", these
+ * regexes catch them BEFORE the LLM agent ladder runs, saving an
+ * entire blind→hybrid→vision climb per subtask.
+ *
+ * Each entry maps a regex (anchored to a complete subtask) to a
+ * portable key combo. Pure data — adding a verb is one row.
+ *
+ * Properties:
+ *   - OS-agnostic: all combos use `mod` which the platform adapter
+ *     resolves to Cmd on macOS / Ctrl elsewhere.
+ *   - Model-agnostic: zero LLM calls.
+ *   - App-agnostic: shortcuts are universal across text-editing apps.
+ *   - Language-coupled: English verbs only. A localization layer
+ *     could replace the regexes; the dispatch logic itself doesn't
+ *     care what language the table is keyed on.
+ */
+const VERB_SHORTCUTS: Array<{ pattern: RegExp; combo: string; label: string }> = [
+  { pattern: /^\s*copy(?:\s+(?:the\s+|a\s+|an\s+)?(?:selection|text|that|it|line|paragraph|sentence))?\s*$/i,
+    combo: 'mod+c', label: 'copy' },
+  { pattern: /^\s*paste(?:\s+(?:it|that|here|the\s+\w+))?\s*$/i,
+    combo: 'mod+v', label: 'paste' },
+  { pattern: /^\s*cut(?:\s+(?:the\s+|a\s+)?(?:selection|text|that|it))?\s*$/i,
+    combo: 'mod+x', label: 'cut' },
+  { pattern: /^\s*select\s+all(?:\s+(?:text|content))?\s*$/i,
+    combo: 'mod+a', label: 'select all' },
+  { pattern: /^\s*save(?:\s+(?:the\s+)?(?:file|document|page|changes))?\s*$/i,
+    combo: 'mod+s', label: 'save' },
+  { pattern: /^\s*undo(?:\s+(?:that|the\s+last\s+\w+))?\s*$/i,
+    combo: 'mod+z', label: 'undo' },
+  { pattern: /^\s*redo(?:\s+(?:that|the\s+last\s+\w+))?\s*$/i,
+    combo: 'mod+shift+z', label: 'redo' },
+  { pattern: /^\s*find(?:\s+in\s+(?:the\s+)?(?:document|page|file))?\s*$/i,
+    combo: 'mod+f', label: 'find' },
+];
+
+/** "press <Key>" / "press the <Key> key" — args-bearing variant. */
+const PRESS_KEY_PATTERN = /^\s*press\s+(?:the\s+)?([A-Za-z][A-Za-z0-9_]*(?:\+[A-Za-z][A-Za-z0-9_]*)*)\s*(?:key)?\s*$/i;
+
+/** "type <text>" — quoted or unquoted literal text. */
+const TYPE_TEXT_PATTERN = /^\s*type\s+(.+?)\s*$/i;
+
+/** "wait <N> [ms|s|seconds]" — bounded delay. */
+const WAIT_PATTERN = /^\s*wait\s+(\d+)\s*(ms|millisecond|milliseconds|s|sec|second|seconds)?\s*$/i;
+
 export class Router {
   readonly telemetry: RouterTelemetry = {
     openAppHits: 0,
@@ -103,6 +150,35 @@ export class Router {
     // 3. `focus <app>`
     const focusMatch = task.match(FOCUS_APP_PATTERN);
     if (focusMatch) return this.handleFocus(focusMatch[1].trim());
+
+    // 4. Verb shortcuts (copy / paste / cut / save / undo / redo / select all
+    //    / find). Each is a deterministic single-key-combo dispatch — saves a
+    //    full blind→hybrid→vision agent climb for atomic verbs the LLM
+    //    decomposer emits ("copy", "paste"). v0.7.x had this dispatch, the
+    //    v0.8.1 unification dropped it; restored here.
+    for (const entry of VERB_SHORTCUTS) {
+      if (entry.pattern.test(task)) return this.handleShortcut(entry.combo, entry.label);
+    }
+
+    // 5. `press <Key>` — args-bearing key dispatch.
+    const pressMatch = task.match(PRESS_KEY_PATTERN);
+    if (pressMatch) return this.handleShortcut(pressMatch[1], `press ${pressMatch[1]}`);
+
+    // 6. `type <text>` — strip optional surrounding quotes.
+    const typeMatch = task.match(TYPE_TEXT_PATTERN);
+    if (typeMatch) {
+      const stripped = typeMatch[1].replace(/^["'](.*)["']$/, '$1');
+      return this.handleType(stripped);
+    }
+
+    // 7. `wait <N> [ms|s]` — bounded delay (caps at 5s to avoid hung tasks).
+    const waitMatch = task.match(WAIT_PATTERN);
+    if (waitMatch) {
+      const num = parseInt(waitMatch[1], 10);
+      const unit = (waitMatch[2] || 'ms').toLowerCase();
+      const ms = unit.startsWith('s') && !unit.startsWith('m') ? num * 1000 : num;
+      return this.handleWait(Math.min(ms, 5_000));
+    }
 
     // Miss — caller escalates
     this.telemetry.llmFallbacks += 1;
@@ -243,8 +319,35 @@ export class Router {
    * Verified the same way as open_app: we snapshot windows before,
    * issue the launch, then confirm a browser-class window appeared.
    */
+  /**
+   * URL navigation. The previous implementation polled for a NEW browser
+   * window or a title containing the hostname for up to 8 seconds — this
+   * was fragile because:
+   *
+   *   1. Modern browsers reuse an existing window/tab, so no NEW window
+   *      ever appears in the diff.
+   *   2. The browser doesn't update its OS-level window title until the
+   *      page begins rendering — heavy networks / slow pages defeat the
+   *      300ms polling cadence.
+   *   3. Cross-platform title formats differ (Edge vs. Safari vs. Chrome)
+   *      so even when the title updates, the predicate may miss it.
+   *
+   * Result: every URL nav timed out at 8 s and declared `router_miss`,
+   * forcing escalation to the blind agent — which succeeded in ~5 s
+   * doing the SAME thing (`launchApp(..., { url })`) without the polling.
+   *
+   * The fix: trust the launch. If `launchApp` returned without throwing,
+   * the OS accepted the URL — `start <url>` on Windows, `open <url>` on
+   * macOS, `xdg-open <url>` on Linux are all guaranteed to surface the
+   * default browser eventually. The pipeline's verifier (`v0.8.12`) runs
+   * after this rung as ground-truth check; if no browser actually
+   * surfaces with the URL visible, it rejects and the ladder climbs.
+   * That separation of concerns — router fast-paths, verifier ground-
+   * truths — is cleaner than the router doing both.
+   *
+   * Brief 800 ms settle so the next subtask doesn't fire mid-launch.
+   */
   private async handleUrlNav(url: string): Promise<RouteResult> {
-    const windowsBefore = await this.safeListWindows();
     logger.debug('router.url_nav.launching', { url });
 
     try {
@@ -255,33 +358,16 @@ export class Router {
       return { handled: false, path: 'none', description: `launch threw: ${msg}` };
     }
 
-    // Poll for any browser-class window that wasn't there before, OR for
-    // the existing focused browser to have updated its title to include
-    // the hostname.
-    const host = this.hostFromUrl(url);
-    const newWin = await this.waitForMatchingWindow(windowsBefore, (w) => {
-      const proc = w.processName.toLowerCase();
-      const title = w.title.toLowerCase();
-      const isBrowser = /chrome|firefox|edge|safari|opera|brave|msedge/.test(proc);
-      if (!isBrowser) return false;
-      return host ? title.includes(host) : true;
-    }, READY_TIMEOUT_MS);
-
-    if (!newWin) {
-      this.telemetry.launchUnverified += 1;
-      return {
-        handled: false,
-        path: 'none',
-        description: `URL launch attempted for ${url} but no matching browser window appeared within ${READY_TIMEOUT_MS}ms.`,
-      };
-    }
+    // Best-effort settle so subsequent subtasks see a roughly stable
+    // browser state. We deliberately do NOT poll for a window — the
+    // verifier handles "did the page actually load" as ground truth.
+    await this.delay(800);
 
     this.telemetry.urlNavHits += 1;
     return {
       handled: true,
       path: 'url_nav',
-      processId: newWin.processId,
-      description: `Navigated to ${url} (pid ${newWin.processId})`,
+      description: `Navigated to ${url} (verifier confirms)`,
     };
   }
 
@@ -304,6 +390,74 @@ export class Router {
       handled: false,
       path: 'none',
       description: `focus failed: no window for ${appName}`,
+    };
+  }
+
+  /**
+   * Press a single key combo. Used for verb shortcuts (copy=mod+c,
+   * paste=mod+v, save=mod+s, etc.) and the `press <Key>` form. Returns
+   * `handled: true` even on adapter error — the caller should treat the
+   * router as having tried; a downstream verifier check confirms whether
+   * the action actually had effect on the screen.
+   *
+   * Bypasses the agent's safety layer because this is router-internal
+   * deterministic dispatch, not an LLM-emitted action. The CALLER
+   * (router) is responsible for emitting only safe combos — the table
+   * of `VERB_SHORTCUTS` and the `PRESS_KEY_PATTERN` regex constrain
+   * what gets here.
+   */
+  private async handleShortcut(combo: string, label: string): Promise<RouteResult> {
+    try {
+      await this.adapter.keyPress(combo);
+      this.telemetry.shortcutHits += 1;
+      return {
+        handled: true,
+        path: 'shortcut',
+        description: `Pressed ${combo} (${label})`,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('router.shortcut.failed', { combo, label, error: msg });
+      return {
+        handled: false,
+        path: 'none',
+        description: `shortcut failed: ${msg}`,
+      };
+    }
+  }
+
+  /**
+   * Type a literal text string. The LLM decomposer is instructed to put
+   * the literal text in the subtask ("type John Smith"), so the router
+   * can dispatch directly to `adapter.typeText`. Quoting (single or
+   * double) is stripped by the regex layer before this is called.
+   */
+  private async handleType(text: string): Promise<RouteResult> {
+    if (!text) return { handled: false, path: 'none', description: 'type: empty text' };
+    try {
+      await this.adapter.typeText(text);
+      return {
+        handled: true,
+        path: 'shortcut',
+        description: `Typed ${text.length} chars`,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { handled: false, path: 'none', description: `type failed: ${msg}` };
+    }
+  }
+
+  /**
+   * `wait N [ms|s]` — sleep for a bounded duration. The caller has
+   * already capped the value at 5 seconds; this is purely a delay
+   * primitive so subtasks like "wait 1 second" don't burn an LLM turn.
+   */
+  private async handleWait(ms: number): Promise<RouteResult> {
+    await this.delay(ms);
+    return {
+      handled: true,
+      path: 'shortcut',
+      description: `Waited ${ms}ms`,
     };
   }
 
