@@ -166,6 +166,37 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
     }
 
     history.push({ role: 'user', content: initialBlocks });
+
+    // Reflector hint (PR9): if the pipeline is retrying this task after a
+    // verifier rejection, inject the previous rung's failure summary as a
+    // synthetic `tool_result` so the planner sees why the last attempt failed.
+    // This is a synthetic message — there is no real preceding tool_use block,
+    // so we use a sentinel id. The model treats it as an informational result.
+    if (input.reflectorHint) {
+      const REFLECTOR_TOOL_ID = 'reflector_feedback_0';
+      // The Anthropic contract requires an assistant turn with a tool_use
+      // block before a tool_result. We insert a minimal assistant turn so the
+      // history stays well-formed.
+      history.push({
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: REFLECTOR_TOOL_ID,
+          name: 'read_screen',
+          input: {},
+        }],
+      } as LLMToolTurn);
+      history.push({
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: REFLECTOR_TOOL_ID,
+          content: [{ type: 'text', text: `[REFLECTOR] Previous attempt failed: ${input.reflectorHint}` }],
+          is_error: false,
+        }],
+      } as LLMToolTurn);
+      log.info('agent.reflector.hint_injected', { hint: input.reflectorHint });
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn('agent.perception.initial.failed', { error: msg });

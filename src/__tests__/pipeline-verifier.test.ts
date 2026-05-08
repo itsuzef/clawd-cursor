@@ -26,7 +26,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Pipeline } from '../pipeline';
 import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../v2/platform/types';
-import type { Verifier, VerifyOptions, VerifyResult, StateSnapshot } from '../v2/verifier/types';
+import type { Verifier, VerifyOptions, VerifyResult, StateSnapshot, ReflectionFeedback } from '../v2/verifier/types';
 
 // ─── Mock helpers ───────────────────────────────────────────────────
 
@@ -93,11 +93,24 @@ function makeMockVerifier(initial: 'pass' | 'reject' | 'throw' = 'pass') {
       signals: [],
     };
   });
+  const verifyWithFeedback = vi.fn(async (_opts: VerifyOptions): Promise<ReflectionFeedback> => {
+    if (verdict === 'throw') throw new Error('verifier infra hiccup');
+    if (verdict === 'pass') {
+      return { pass: true, confidence: 0.9, causes: [], hint: 'Verification passed.' };
+    }
+    return {
+      pass: false,
+      confidence: 0.2,
+      causes: [{ kind: 'no_pixel_change' }],
+      hint: 'No pixel change after click — target may not have been hit.',
+    };
+  });
   const captureState = vi.fn(async (_ocr: string) => emptyState());
-  const verifier: Verifier = { verify, captureState };
+  const verifier: Verifier = { verify, verifyWithFeedback, captureState };
   return {
     verifier,
     verify,
+    verifyWithFeedback,
     captureState,
     setVerdict: (v: 'pass' | 'reject' | 'throw') => { verdict = v; },
   };
@@ -154,7 +167,7 @@ describe('Pipeline ground-truth verifier wiring', () => {
 
     const result = await pipeline.run({ task: 'test task' });
     expect(result.success).toBe(true);
-    expect(m.verify).toHaveBeenCalledTimes(1);
+    expect(m.verifyWithFeedback).toHaveBeenCalledTimes(1);
     expect(m.captureState).toHaveBeenCalledTimes(2); // before + after
   });
 
@@ -175,14 +188,18 @@ describe('Pipeline ground-truth verifier wiring', () => {
       verifier: m.verifier,
     });
 
-    // First two verify() calls reject. Third one pass.
+    // First two verifyWithFeedback() calls reject. Third one pass.
     let calls = 0;
-    m.verify.mockImplementation(async () => {
+    m.verifyWithFeedback.mockImplementation(async () => {
       calls += 1;
       if (calls < 3) {
-        return { pass: false, confidence: 0.2, reason: 'rejected', signals: [] };
+        return {
+          pass: false, confidence: 0.2,
+          causes: [{ kind: 'no_pixel_change' }],
+          hint: 'No pixel change after click — target may not have been hit.',
+        };
       }
-      return { pass: true, confidence: 0.9, reason: 'verified', signals: [] };
+      return { pass: true, confidence: 0.9, causes: [], hint: 'Verification passed.' };
     });
 
     // Set hybrid → vision both successful in the agent stub.
@@ -191,7 +208,7 @@ describe('Pipeline ground-truth verifier wiring', () => {
     const result = await pipeline.run({ task: 'test task' });
     expect(result.success).toBe(true);
     // Verifier was called 3 times (blind reject, hybrid reject, vision pass).
-    expect(m.verify).toHaveBeenCalledTimes(3);
+    expect(m.verifyWithFeedback).toHaveBeenCalledTimes(3);
   });
 
   it('verifier THROWS → pipeline adopts the agent claim (no false negative)', async () => {
@@ -208,7 +225,7 @@ describe('Pipeline ground-truth verifier wiring', () => {
     const result = await pipeline.run({ task: 'test task' });
     // Verifier threw → we adopt the agent's claim, pipeline succeeds.
     expect(result.success).toBe(true);
-    expect(m.verify).toHaveBeenCalled();
+    expect(m.verifyWithFeedback).toHaveBeenCalled();
   });
 
   it('disableVerifier: true → verifier NOT consulted (pre-0.8.12 behavior)', async () => {
@@ -226,7 +243,7 @@ describe('Pipeline ground-truth verifier wiring', () => {
     const result = await pipeline.run({ task: 'test task' });
     // Agent claimed done; verifier was never consulted.
     expect(result.success).toBe(true);
-    expect(m.verify).not.toHaveBeenCalled();
+    expect(m.verifyWithFeedback).not.toHaveBeenCalled();
     expect(m.captureState).not.toHaveBeenCalled();
   });
 
@@ -249,7 +266,7 @@ describe('Pipeline ground-truth verifier wiring', () => {
     const result = await pipeline.run({ task: 'test task' });
     expect(result.success).toBe(false);
     // Three rungs, three verifier calls.
-    expect(m.verify).toHaveBeenCalledTimes(3);
+    expect(m.verifyWithFeedback).toHaveBeenCalledTimes(3);
     // The trailing failure reason should mention verifier rejection somewhere.
     expect(result.text.toLowerCase()).toContain('verifier');
   });

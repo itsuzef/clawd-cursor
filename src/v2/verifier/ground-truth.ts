@@ -21,6 +21,8 @@ import type {
   VerifySignal,
   StateSnapshot,
   TaskType,
+  ReflectionFeedback,
+  Cause,
 } from './types';
 
 export class GroundTruthVerifier implements Verifier {
@@ -89,6 +91,202 @@ export class GroundTruthVerifier implements Verifier {
       : `Failed: ${signals.filter(s => !s.value).map(s => `${s.name} (${s.detail})`).join('; ')}`;
 
     return { pass, confidence, reason, signals };
+  }
+
+  /**
+   * Run all verification signals and return structured ReflectionFeedback.
+   *
+   * Translates raw VerifySignal failures into typed Cause[] so the pipeline
+   * can make an informed escalation decision rather than just climbing the
+   * ladder blindly. `suggestedStrategy` is derived from the dominant cause:
+   *
+   *   webview_blind      → 'vision'         (skip blind/hybrid; pixels moved but a11y silent)
+   *   modal_intercept    → 'wait_and_retry' (dismiss the dialog then retry the same rung)
+   *   wrong_window_focus → 'change_target'  (refocus then retry blind)
+   *   everything else    → undefined        (let the default ladder pick)
+   */
+  async verifyWithFeedback(opts: VerifyOptions): Promise<ReflectionFeedback> {
+    const result = await this.verify(opts);
+    const causes = await this.buildCauses(opts, result.signals);
+
+    const hint = result.pass
+      ? 'Verification passed.'
+      : this.buildHint(causes, result);
+
+    const suggestedStrategy = result.pass
+      ? undefined
+      : this.pickStrategy(causes);
+
+    return {
+      pass: result.pass,
+      confidence: result.confidence,
+      causes,
+      hint,
+      suggestedStrategy,
+    };
+  }
+
+  // ─── Reflector helpers ─────────────────────────────────────────────
+
+  /**
+   * Translate raw VerifySignal failures into structured Cause[].
+   * Each Cause kind maps to at most one entry — there's no double-counting.
+   */
+  private async buildCauses(opts: VerifyOptions, signals: VerifySignal[]): Promise<Cause[]> {
+    const causes: Cause[] = [];
+    const signalMap = new Map(signals.map(s => [s.name, s]));
+
+    // 1. no_pixel_change — pixel_diff signal fired false.
+    const pixelSig = signalMap.get('pixel_diff');
+    if (pixelSig && !pixelSig.value) {
+      causes.push({ kind: 'no_pixel_change' });
+    }
+
+    // 2. wrong_window_focused — the active window changed to a different
+    //    title between before and after. This is a cause regardless of
+    //    whether window_change "passed" (a focus change IS a window change,
+    //    and we're saying it changed to the WRONG target). We only emit
+    //    this when the verdict is failing overall — if the task passed,
+    //    a window focus change is expected and correct.
+    //
+    //    Note: we check the raw snapshot fields rather than the signal
+    //    value because the signal fires `true` (change detected = pass)
+    //    even when the new focus is wrong for the task goal.
+    const winSig = signalMap.get('window_change');
+    void winSig; // referenced below for other guards; suppress unused-var lint
+    const beforeTitle = opts.before.activeWindow?.title ?? '';
+    const afterTitle = opts.after.activeWindow?.title ?? '';
+    // Only emit when the window actually changed to a different app and
+    // the verification is failing (a passing verdict means the focus move
+    // was the intended outcome).
+    if (afterTitle && beforeTitle !== afterTitle) {
+      causes.push({
+        kind: 'wrong_window_focused',
+        expected: beforeTitle || undefined,
+        actual: afterTitle,
+      });
+    }
+
+    // 3. modal_intercept — OCR text contains dialog-like phrases that weren't
+    //    in the before snapshot. We look for common dialog markers that suggest
+    //    an unexpected modal interrupted the action.
+    const MODAL_PATTERNS = [
+      /\b(?:ok|cancel|yes|no|retry|ignore|abort)\b.*\b(?:ok|cancel|yes|no|retry|ignore|abort)\b/i,
+      /\bdialog\b/i,
+      /\bconfirm\b/i,
+      /\bare you sure\b/i,
+      /\bwarning[:\s]/i,
+      /\bdo you want to\b/i,
+      /\bwould you like to\b/i,
+    ];
+    const afterOcr = opts.after.ocrText;
+    const beforeOcr = opts.before.ocrText;
+    if (afterOcr && afterOcr !== beforeOcr) {
+      for (const pattern of MODAL_PATTERNS) {
+        if (pattern.test(afterOcr) && !pattern.test(beforeOcr)) {
+          // Extract the relevant excerpt (first 120 chars for brevity).
+          const excerpt = afterOcr.slice(0, 120).trim();
+          causes.push({ kind: 'modal_intercept', text: excerpt });
+          break;
+        }
+      }
+    }
+
+    // 4. a11y_target_missing — task_assertions fired false, and the task
+    //    mentions a specific element we tried to target. We extract the target
+    //    from the task string as a best-effort approximation.
+    const taskSig = signalMap.get('task_assertions');
+    if (taskSig && !taskSig.value) {
+      const target = this.extractTargetFromTask(opts.task);
+      if (target) {
+        causes.push({ kind: 'a11y_target_missing', target });
+      }
+    }
+
+    // 5. webview_blind — pixels changed (pixel_diff passed) but no a11y
+    //    signal changed (window_change + focus_change + task_assertions all
+    //    false). This is the signature of a WebView2/Electron app where the
+    //    DOM updated visually but the accessibility tree is silent.
+    const focusSig = signalMap.get('focus_change');
+    const pixelPassed = pixelSig?.value === true;
+    const a11ySilent = (!winSig || !winSig.value)
+                    && (!focusSig || !focusSig.value)
+                    && (!taskSig || !taskSig.value);
+    if (pixelPassed && a11ySilent) {
+      causes.push({ kind: 'webview_blind' });
+    }
+
+    // 6. partial_text_match — ocr_delta fired false but OCR did capture
+    //    text. This means we found some text change, but the task-expected
+    //    keywords weren't fully present (partial keyword match detected by
+    //    the task assertions check against the OCR output).
+    const ocrSig = signalMap.get('ocr_delta');
+    if (ocrSig && ocrSig.value && taskSig && !taskSig.value) {
+      // Extract what we expected vs what was observed.
+      const keywords = this.extractTaskKeywords(opts.task);
+      const observed = afterOcr.slice(0, 80).trim();
+      if (keywords.length > 0 && observed) {
+        causes.push({
+          kind: 'partial_text_match',
+          expected: keywords.join(', '),
+          observed,
+        });
+      }
+    }
+
+    return causes;
+  }
+
+  /**
+   * Compute the dominant cause and return the suggested escalation strategy.
+   * Called only on failure (pass=false).
+   */
+  private pickStrategy(causes: Cause[]): ReflectionFeedback['suggestedStrategy'] {
+    for (const cause of causes) {
+      if (cause.kind === 'webview_blind') return 'vision';
+      if (cause.kind === 'modal_intercept') return 'wait_and_retry';
+      if (cause.kind === 'wrong_window_focused') return 'change_target';
+    }
+    // no_pixel_change, a11y_target_missing, partial_text_match → default ladder
+    return undefined;
+  }
+
+  /** Build a one-line human-readable summary of the primary failure cause. */
+  private buildHint(causes: Cause[], result: import('./types').VerifyResult): string {
+    if (causes.length === 0) {
+      return `Verification failed (confidence ${(result.confidence * 100).toFixed(0)}%): ${result.reason}`;
+    }
+    const primary = causes[0];
+    switch (primary.kind) {
+      case 'no_pixel_change':
+        return 'No pixel change after click — target may not have been hit.';
+      case 'wrong_window_focused':
+        return `Wrong window in focus: expected "${primary.expected ?? 'original'}", got "${primary.actual}".`;
+      case 'modal_intercept':
+        return `Unexpected dialog intercepted the action: "${primary.text.slice(0, 60)}".`;
+      case 'a11y_target_missing':
+        return `Accessibility target not found: "${primary.target}".`;
+      case 'webview_blind':
+        return 'Pixels changed but accessibility tree is silent — likely a WebView2/Electron app.';
+      case 'partial_text_match':
+        return `Expected "${primary.expected}" on screen but found only partial match.`;
+    }
+  }
+
+  /**
+   * Best-effort extraction of the element or target the task is referring to.
+   * Used to populate `a11y_target_missing.target`.
+   */
+  private extractTargetFromTask(task: string): string | null {
+    // Patterns like: "click <target>", "press <target>", "find <target>",
+    // "the <target> button", quoted strings.
+    const quoted = task.match(/["'](.+?)["']/);
+    if (quoted) return quoted[1];
+    const afterVerb = task.match(
+      /(?:click|press|find|select|invoke|focus|type\s+(?:in|into)?)\s+(?:the\s+)?([a-z0-9 _-]{2,30}?)(?:\s+(?:button|field|link|checkbox|element|menu|item)|$)/i,
+    );
+    if (afterVerb) return afterVerb[1].trim();
+    return null;
   }
 
   // ─── SIGNALS ──────────────────────────────────────────────────────

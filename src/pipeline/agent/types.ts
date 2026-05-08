@@ -36,6 +36,16 @@ export interface AgentInput {
   maxTurns?: number;
   /** Cooperative cancel — polled every turn. */
   isAborted?: () => boolean;
+  /**
+   * Reflector hint from PR9 — injected as a synthetic `tool_result` at the
+   * start of the first turn's history when set. Tells the planner why the
+   * previous rung failed so it can choose a different approach rather than
+   * repeating the same mistake.
+   *
+   * Set by the pipeline when the verifier rejected the previous rung and
+   * `ReflectionFeedback.hint` is non-empty.
+   */
+  reflectorHint?: string;
 }
 
 export interface AgentStep {

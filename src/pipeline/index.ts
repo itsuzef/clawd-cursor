@@ -47,7 +47,7 @@ import { Router, type RouteResult } from './router/router';
 import { SkillCache } from './skills/skill-cache';
 import { runAgent } from './agent/agent';
 import type { AgentLlmConfig, AgentLlmDeps, AgentMode, AgentResult } from './agent/types';
-import type { Verifier, StateSnapshot, TaskType } from '../v2/verifier/types';
+import type { Verifier, StateSnapshot, TaskType, ReflectionFeedback } from '../v2/verifier/types';
 import { GroundTruthVerifier } from '../v2/verifier/ground-truth';
 import type { Capability } from './classify/capability';
 import { decomposeWithLlm, DECOMPOSE_SYSTEM_PROMPT } from './decompose/llm-decomposer';
@@ -447,17 +447,57 @@ export class Pipeline {
       text: 'no strategies tried', failureReason: 'no_ladder',
     };
     let rungsTried = 0;
+    /** Last structured feedback from the verifier — carried into the next rung's agent call. */
+    let lastFeedback: ReflectionFeedback | undefined;
 
-    for (const rung of ladder) {
+    // Whether the Reflector override is active (gated env var — see PR9 spec).
+    const reflectorEnabled = process.env.CLAWD_REFLECTOR === '1';
+
+    for (let ladderIdx = 0; ladderIdx < ladder.length; ladderIdx++) {
       if (env.isAborted()) {
         return { success: false, path: last.path, text: 'aborted', failureReason: 'aborted' };
       }
       if (rungsTried >= this.maxEscalations) break;
-      rungsTried++;
 
+      let rung = ladder[ladderIdx];
+
+      // Reflector override: when CLAWD_REFLECTOR=1 and the previous verifier
+      // run returned a `suggestedStrategy`, jump to that rung instead of the
+      // default next-ladder entry. Log the override so we have telemetry for
+      // the 0.9.1 graduation decision.
+      if (reflectorEnabled && lastFeedback?.suggestedStrategy) {
+        const overrideStrategy = lastFeedback.suggestedStrategy;
+        // Only override if the suggestion maps to a real agent rung and we
+        // haven't already tried it (don't loop forever).
+        const agentRungs = new Set<string>(['router', 'blind', 'hybrid', 'vision']);
+        if (agentRungs.has(overrideStrategy)) {
+          const overrideRung = overrideStrategy as Strategy;
+          if (!ladder.slice(0, ladderIdx).includes(overrideRung)) {
+            env.log.info('pipeline.reflector.override', {
+              fromRung: rung,
+              toRung: overrideRung,
+              cause: lastFeedback.causes[0]?.kind,
+              suggestedStrategy: overrideStrategy,
+            });
+            rung = overrideRung;
+          }
+        }
+        // wait_and_retry / change_target don't map to a specific ladder rung —
+        // log them and fall through to the default rung.
+        if (!agentRungs.has(overrideStrategy)) {
+          env.log.info('pipeline.reflector.override', {
+            fromRung: rung,
+            toRung: 'default (non-rung strategy)',
+            cause: lastFeedback.causes[0]?.kind,
+            suggestedStrategy: overrideStrategy,
+          });
+        }
+      }
+
+      rungsTried++;
       env.log.info(EVENTS.PIPELINE_RUNG, { strategy: rung, attempt: rungsTried });
 
-      const attempt = await this.executeStrategy(rung, task, decision, env);
+      const attempt = await this.executeStrategy(rung, task, decision, env, lastFeedback);
       last = attempt;
 
       // Verifier post-check. Only runs when:
@@ -479,6 +519,10 @@ export class Pipeline {
           capabilityToTaskType(decision.hints.capability),
           env,
         );
+        // Always stash feedback for the next rung's hint injection.
+        if (verdict.kind !== 'skipped' && verdict.feedback) {
+          lastFeedback = verdict.feedback;
+        }
         if (verdict.kind === 'rejected') {
           env.log.warn('pipeline.verifier.rejected', {
             strategy: rung,
@@ -556,6 +600,10 @@ export class Pipeline {
    *   - 'skipped'    → after-state capture failed / verifier threw —
    *                    adopt the agent's claim as-is (defensive: don't
    *                    block the user on a verifier infra hiccup)
+   *
+   * Uses `verifyWithFeedback` when available so the pipeline always has
+   * structured ReflectionFeedback for logging and (when CLAWD_REFLECTOR=1)
+   * for ladder-override decisions.
    */
   private async runVerifier(
     task: string,
@@ -564,25 +612,51 @@ export class Pipeline {
     taskType: TaskType | undefined,
     env: StrategyEnv,
   ): Promise<
-    | { kind: 'verified'; confidence: number; reason: string }
-    | { kind: 'rejected'; confidence: number; reason: string }
+    | { kind: 'verified'; confidence: number; reason: string; feedback?: ReflectionFeedback }
+    | { kind: 'rejected'; confidence: number; reason: string; feedback?: ReflectionFeedback }
     | { kind: 'skipped'; reason: string }
   > {
     if (!this.verifier) return { kind: 'skipped', reason: 'verifier disabled' };
     const after = await this.captureVerifierState(env, 'after');
     if (!after) return { kind: 'skipped', reason: 'after-state capture failed' };
     try {
-      const verdict = await this.verifier.verify({ task, before, after, taskType });
-      env.log.debug('pipeline.verifier.verdict', {
-        strategy: rung,
-        pass: verdict.pass,
-        confidence: verdict.confidence,
-        reason: verdict.reason,
-        signals: verdict.signals.map(s => ({ name: s.name, value: s.value, weight: s.weight })),
-      });
-      return verdict.pass
-        ? { kind: 'verified', confidence: verdict.confidence, reason: verdict.reason }
-        : { kind: 'rejected', confidence: verdict.confidence, reason: verdict.reason };
+      // Prefer `verifyWithFeedback` (always present on GroundTruthVerifier and
+      // any conforming test double) for structured Cause[]. Fall back to the
+      // plain `verify` for legacy doubles that only implement the old interface.
+      let feedback: ReflectionFeedback | undefined;
+      if (typeof this.verifier.verifyWithFeedback === 'function') {
+        feedback = await this.verifier.verifyWithFeedback({ task, before, after, taskType });
+      }
+
+      // Always log the structured feedback regardless of CLAWD_REFLECTOR flag —
+      // the flag only gates the ladder-override behaviour, not observability.
+      if (feedback) {
+        env.log.debug('pipeline.verifier.verdict', {
+          strategy: rung,
+          pass: feedback.pass,
+          confidence: feedback.confidence,
+          hint: feedback.hint,
+          causes: feedback.causes.map(c => c.kind),
+          suggestedStrategy: feedback.suggestedStrategy,
+        });
+      } else {
+        // Plain verify path (legacy test doubles).
+        const verdict = await this.verifier.verify({ task, before, after, taskType });
+        env.log.debug('pipeline.verifier.verdict', {
+          strategy: rung,
+          pass: verdict.pass,
+          confidence: verdict.confidence,
+          reason: verdict.reason,
+          signals: verdict.signals.map(s => ({ name: s.name, value: s.value, weight: s.weight })),
+        });
+        return verdict.pass
+          ? { kind: 'verified', confidence: verdict.confidence, reason: verdict.reason }
+          : { kind: 'rejected', confidence: verdict.confidence, reason: verdict.reason };
+      }
+
+      return feedback.pass
+        ? { kind: 'verified', confidence: feedback.confidence, reason: feedback.hint, feedback }
+        : { kind: 'rejected', confidence: feedback.confidence, reason: feedback.hint, feedback };
     } catch (err) {
       env.log.warn('pipeline.verifier.threw', {
         error: err instanceof Error ? err.message : String(err),
@@ -611,12 +685,13 @@ export class Pipeline {
     task: string,
     decision: ReturnType<typeof preprocess>,
     env: StrategyEnv,
+    prevFeedback?: ReflectionFeedback,
   ): Promise<StrategyResult> {
     switch (strategy) {
       case 'router':  return this.runRouter(task, env);
-      case 'blind':   return this.runUnifiedAgent(task, decision, env, 'blind');
-      case 'hybrid':  return this.runUnifiedAgent(task, decision, env, 'hybrid');
-      case 'vision':  return this.runUnifiedAgent(task, decision, env, 'vision');
+      case 'blind':   return this.runUnifiedAgent(task, decision, env, 'blind', prevFeedback);
+      case 'hybrid':  return this.runUnifiedAgent(task, decision, env, 'hybrid', prevFeedback);
+      case 'vision':  return this.runUnifiedAgent(task, decision, env, 'vision', prevFeedback);
     }
   }
 
@@ -638,12 +713,18 @@ export class Pipeline {
    * Run the unified agent in the requested mode. Enforces vision-disable
    * config, wires DI into runAgent, projects the AgentResult into the
    * pipeline trace, and maps the exit code to a StrategyResult.
+   *
+   * When `prevFeedback` is supplied (from the previous rung's verifier
+   * rejection), its `hint` is forwarded to the agent as a `reflectorHint`
+   * so the planner understands why the prior step failed. The agent injects
+   * it as a synthetic `tool_result` at the start of the next turn's history.
    */
   private async runUnifiedAgent(
     task: string,
     decision: ReturnType<typeof preprocess>,
     env: StrategyEnv,
     mode: AgentMode,
+    prevFeedback?: ReflectionFeedback,
   ): Promise<StrategyResult> {
     const path: PipelineTaskResult['path'] = mode === 'vision' || mode === 'hybrid'
       ? 'vision-agent'
@@ -688,6 +769,7 @@ export class Pipeline {
         capability: decision.hints.capability,
         maxTurns: this.maxTurnsPerRung,
         isAborted: env.isAborted,
+        reflectorHint: prevFeedback?.hint,
       },
       { adapter: this.deps.adapter, llm: llmDeps },
     );

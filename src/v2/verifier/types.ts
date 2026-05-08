@@ -8,6 +8,46 @@
 
 import type { ScreenshotResult, UiElement, WindowInfo } from '../platform/types';
 
+// ─── Reflector feedback (PR9 — Mobile-Agent-v3 Manager↔Reflector pattern) ───
+
+/**
+ * Structured cause of a verification failure. Each variant captures just the
+ * fields needed to drive the pipeline's override decision — no free-form prose
+ * inside the discriminant.
+ */
+export type Cause =
+  | { kind: 'no_pixel_change' }
+  | { kind: 'wrong_window_focused'; expected?: string; actual: string }
+  | { kind: 'modal_intercept'; text: string }          // OCR'd unexpected dialog
+  | { kind: 'a11y_target_missing'; target: string }
+  | { kind: 'webview_blind' }                           // pixels changed, no a11y signal
+  | { kind: 'partial_text_match'; expected: string; observed: string };
+
+/**
+ * Structured feedback returned by `verifyWithFeedback`. The pipeline ladder
+ * consumes `suggestedStrategy` (gated on CLAWD_REFLECTOR=1) to override its
+ * default next-rung pick. `hint` is injected as a synthetic `tool_result` at
+ * the start of the next agent turn so the planner understands why the previous
+ * step failed.
+ */
+export interface ReflectionFeedback {
+  pass: boolean;
+  /** 0..1 weighted-vote confidence. */
+  confidence: number;
+  /** Structured failure causes — never prose. */
+  causes: Cause[];
+  /** One-line human-readable summary for the next turn's prompt. */
+  hint: string;
+  /**
+   * Suggested escalation strategy. Set when the dominant cause implies a
+   * specific path is more likely to succeed than the default ladder order.
+   * Undefined → let the ladder pick (default behaviour).
+   */
+  suggestedStrategy?:
+    | 'router' | 'blind' | 'hybrid' | 'vision'
+    | 'wait_and_retry' | 'change_target';
+}
+
 /** A snapshot of relevant screen state at a point in time. */
 export interface StateSnapshot {
   timestamp: number;
@@ -70,6 +110,13 @@ export type TaskType =
 export interface Verifier {
   /** Run all verification signals and return a verdict. */
   verify(opts: VerifyOptions): Promise<VerifyResult>;
+
+  /**
+   * Run all verification signals and return structured ReflectionFeedback.
+   * Always populates `causes` and `hint`; `suggestedStrategy` is set when
+   * the dominant cause implies a specific escalation path.
+   */
+  verifyWithFeedback(opts: VerifyOptions): Promise<ReflectionFeedback>;
 
   /** Capture the current state for use as before/after. */
   captureState(ocrText: string): Promise<StateSnapshot>;
