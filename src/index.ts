@@ -335,6 +335,7 @@ program
 
     // Mount model-agnostic tool server alongside agent API
     // POST /execute/* requires auth; GET /tools and GET /docs are public
+    let startToolCtx: any = null;
     try {
       const { createToolServer } = await import('./tool-server');
       const { requireAuth } = await import('./server');
@@ -353,10 +354,28 @@ program
         getScreenshotScaleFactor: () => agent.getDesktop().getScaleFactor(),
         ensureInitialized: async () => {},  // agent already initialized
       };
+      startToolCtx = toolCtx;
       app.use('/execute', requireAuth);  // auth gate on all tool execution
       app.use(createToolServer(toolCtx));
     } catch (err) {
       console.warn('Tool server not loaded:', (err as Error).message);
+    }
+
+    // v0.9 PR7: mount the streamable HTTP MCP transport at /mcp on the
+    // same Express app. /mcp is auth-gated by the same Bearer token used
+    // for REST mutating endpoints. This is additive — REST routes still
+    // work; PR7.4 will delete them. The dashboard rewires to /mcp in PR7.3.
+    if (startToolCtx) {
+      try {
+        const { createMcpServer, startMcpHttp } = await import('./mcp-server');
+        const { requireAuth } = await import('./server');
+        const { server: mcpServer } = await createMcpServer({ ctx: startToolCtx });
+        // Apply auth ahead of the route; the SDK handles the JSON-RPC envelope.
+        app.use('/mcp', requireAuth);
+        await startMcpHttp(mcpServer, app, '/mcp');
+      } catch (err) {
+        console.warn('MCP HTTP transport not loaded:', (err as Error).message);
+      }
     }
 
     app.listen(config.server.port, config.server.host, async () => {
@@ -1061,61 +1080,14 @@ program
     const mode = opts.compact ? 'compact' : 'granular';
     console.log(`clawdcursor MCP mode starting... (${mode})`);
 
-    const { getAllTools, getCompactSurface } = await import('./tools');
-    const { evaluateToolCall } = await import('./tools/safety-gate');
     const ctx = await createToolContext();
 
-    // Dynamic import MCP SDK (ESM package from CJS)
-    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js' as any);
-    const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js' as any);
-    const { z } = await import('zod');
-
-    const server = new McpServer({ name: 'clawdcursor', version: VERSION });
-
-    // Register tools. `--compact` ships the 6 compound tools that mirror
-    // Anthropic's computer_20250124 shape; default is the 74-tool granular
-    // surface (back-compat for existing MCP wirings).
-    const tools = opts.compact ? getCompactSurface() : getAllTools();
-    for (const tool of tools) {
-      // Convert parameters to Zod schema
-      const zodParams: Record<string, any> = {};
-      for (const [key, def] of Object.entries(tool.parameters)) {
-        let schema: any;
-        if (def.type === 'number') schema = z.number();
-        else if (def.type === 'boolean') schema = z.boolean();
-        else schema = z.string();
-        if (def.enum) schema = z.enum(def.enum as [string, ...string[]]);
-        schema = schema.describe(def.description);
-        if (def.required === false) schema = schema.optional();
-        zodParams[key] = schema;
-      }
-
-      // MCP SDK 1.29 arg parsing breaks if schema is undefined (shifts callback position).
-      // Always pass a schema — use empty object for parameterless tools.
-      const hasParams = Object.keys(zodParams).length > 0;
-      server.tool(
-        tool.name,
-        tool.description,
-        hasParams ? zodParams : {},
-        async (params: any) => {
-          const safetyError = evaluateToolCall(tool, params ?? {});
-          if (safetyError) {
-            return { content: [{ type: 'text', text: safetyError.text }], isError: true };
-          }
-          const result = await tool.handler(params, ctx);
-          const content: any[] = [];
-          if (result.image) {
-            content.push({ type: 'image', data: result.image.data, mimeType: result.image.mimeType });
-          }
-          content.push({ type: 'text', text: result.text });
-          return { content, isError: result.isError };
-        },
-      );
-    }
-
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.log(`clawdcursor MCP ready — ${tools.length} tools registered`);
+    // v0.9 PR7: server construction is shared with the HTTP transport in
+    // src/mcp-server.ts — same registry, same safety gate, same param shape.
+    const { createMcpServer, startMcpStdio } = await import('./mcp-server');
+    const { server, toolCount } = await createMcpServer({ compact: opts.compact, ctx });
+    await startMcpStdio(server);
+    console.log(`clawdcursor MCP ready — ${toolCount} tools registered`);
 
     ctx.ensureInitialized().catch((err: any) => {
       console.error('Subsystem init failed:', err?.message);
@@ -1186,11 +1158,28 @@ program
 
     app.use(createToolServer(ctx));
 
+    // v0.9 PR7: mount streamable HTTP MCP transport alongside the legacy
+    // REST tool server. Same auth gate, same context. PR7.4 deletes the
+    // REST tool surface; until then both transports run side-by-side.
+    try {
+      const { createMcpServer, startMcpHttp } = await import('./mcp-server');
+      const { server: mcpServer } = await createMcpServer({ ctx });
+      // /mcp shares the serve-mode auth gate (the app-level middleware
+      // above already enforces Bearer on non-GET; /mcp uses POST/GET/DELETE,
+      // so the GET branch — listing tools via tools/list — is unauth.
+      // That mirrors the REST `/tools` GET being unauth. Mutations on POST
+      // still pass through the gate.
+      await startMcpHttp(mcpServer, app, '/mcp');
+    } catch (err) {
+      console.warn('MCP HTTP transport not loaded:', (err as Error).message);
+    }
+
     app.listen(port, '127.0.0.1', () => {
       console.log(`   Tool server: http://127.0.0.1:${port}`);
       console.log(`   Tool schemas: http://127.0.0.1:${port}/tools`);
       console.log(`   Documentation: http://127.0.0.1:${port}/docs`);
       console.log(`   Execute: POST http://127.0.0.1:${port}/execute/{tool_name}`);
+      console.log(`   MCP HTTP: POST http://127.0.0.1:${port}/mcp`);
       console.log(`\n   ${e('🔑', '[KEY]')} Auth token: ${serveToken.slice(0, 8)}...`);
       console.log(`   (full token saved to ~/.clawdcursor/token)`);
       console.log(`   All POST endpoints require: Authorization: Bearer <token>`);
