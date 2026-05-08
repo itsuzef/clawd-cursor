@@ -8,7 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getAllTools, toJsonSchema } from '../tools';
+import { getAllTools, toJsonSchema } from '../tools/registry';
 
 export interface CanonicalTool {
   name: string;

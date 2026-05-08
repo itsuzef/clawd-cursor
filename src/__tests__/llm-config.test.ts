@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { resolveConfig, _clearDeprecationCache } from '../llm-config';
+import { resolveConfig, _clearDeprecationCache } from '../llm/config';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

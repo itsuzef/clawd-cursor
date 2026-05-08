@@ -29,7 +29,7 @@ vi.mock('sharp', () => ({
 }));
 
 // Mock OCR engine for OCR fallback tests
-vi.mock('../ocr-engine', () => {
+vi.mock('../platform/ocr-engine', () => {
   return {
     OcrEngine: class MockOcrEngine {
       isAvailable() { return true; }

@@ -16,8 +16,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { preprocess } from '../../src/pipeline/preprocessor/preprocessor';
-import { classifyTask } from '../../src/pipeline/classify/classify';
+import { preprocess } from '../../src/core/preprocessor/preprocessor';
+import { classifyTask } from '../../src/core/classify/classify';
 
 interface CanonicalCase {
   id: string;

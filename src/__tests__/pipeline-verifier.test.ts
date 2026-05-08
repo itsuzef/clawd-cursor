@@ -24,9 +24,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { Pipeline } from '../pipeline';
-import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../v2/platform/types';
-import type { Verifier, VerifyOptions, VerifyResult, StateSnapshot, ReflectionFeedback } from '../v2/verifier/types';
+import { Pipeline } from '../core/pipeline';
+import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../platform/types';
+import type { Verifier, VerifyOptions, VerifyResult, StateSnapshot, ReflectionFeedback } from '../core/verifier-types';
 
 // ─── Mock helpers ───────────────────────────────────────────────────
 
@@ -124,7 +124,7 @@ function makeMockVerifier(initial: 'pass' | 'reject' | 'throw' = 'pass') {
 
 const agentResultByRung = new Map<string, { success: boolean; exit: string }>();
 
-vi.mock('../pipeline/agent/agent', async () => {
+vi.mock('../core/agent-loop/agent', async () => {
   return {
     runAgent: vi.fn(async (input: { task: string; mode: string }) => {
       const o = agentResultByRung.get(input.mode) ?? { success: false, exit: 'give_up' };
@@ -141,7 +141,7 @@ vi.mock('../pipeline/agent/agent', async () => {
 });
 
 // Force every task into the blind→hybrid→vision ladder, no router pattern match.
-vi.mock('../pipeline/preprocessor/preprocessor', async () => {
+vi.mock('../core/preprocessor/preprocessor', async () => {
   return {
     preprocess: () => ({
       strategy: 'blind' as const,

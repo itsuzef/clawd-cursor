@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { backupSkillsOnce, skillsPath, backupPath } from '../pipeline/skills/migration';
+import { backupSkillsOnce, skillsPath, backupPath } from '../core/skills/migration';
 
 describe('skill-cache backup policy', () => {
   let tmpHome: string;

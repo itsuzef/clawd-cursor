@@ -6,7 +6,7 @@
  */
 
 import type { ToolDefinition } from './types';
-import { DEFAULT_CDP_PORT } from '../browser-config';
+import { DEFAULT_CDP_PORT } from '../llm/browser-config';
 
 export function getCdpTools(): ToolDefinition[] {
   return [

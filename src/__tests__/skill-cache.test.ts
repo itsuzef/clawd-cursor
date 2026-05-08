@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { SkillCache, isReplayable, SCHEMA_VERSION } from '../pipeline/skills/skill-cache';
+import { SkillCache, isReplayable, SCHEMA_VERSION } from '../core/skills/skill-cache';
 
 function skillsFilePath(home: string): string {
   return path.join(home, '.clawdcursor', 'skills.json');

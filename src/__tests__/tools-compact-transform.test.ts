@@ -36,7 +36,7 @@ vi.mock('sharp', () => ({
   })),
 }));
 
-vi.mock('../ocr-engine', () => ({
+vi.mock('../platform/ocr-engine', () => ({
   OcrEngine: class {
     isAvailable() { return false; }
     async recognizeScreen() { return { elements: [], fullText: '', durationMs: 0 }; }
@@ -46,7 +46,7 @@ vi.mock('../ocr-engine', () => ({
 
 // ── Imports after mocks ──────────────────────────────────────────────────────
 
-import { getAllTools, getCompactSurface, getTools } from '../tools/index';
+import { getAllTools, getCompactSurface, getTools } from '../tools/registry';
 import { getCompactTools } from '../tools/compact';
 import type { ToolContext } from '../tools/types';
 

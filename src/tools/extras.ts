@@ -665,7 +665,7 @@ export function getExtraTools(): ToolDefinition[] {
       safetyTier: 2,
       handler: async ({ userNote, logIndex }) => {
         try {
-          const { apiSubmitReport } = await import('../report');
+          const { apiSubmitReport } = await import('../surface/report');
           const result = await apiSubmitReport({
             userNote: typeof userNote === 'string' ? userNote : undefined,
             logIndex: typeof logIndex === 'number' ? logIndex : undefined,
@@ -749,7 +749,7 @@ export function getExtraTools(): ToolDefinition[] {
 
           // Reach into the compiled guide-loader so the same persisted JSON
           // shape is shared with the legacy /learn REST handler.
-          const { saveLesson, loadGuide } = require('../guide-loader');
+          const { saveLesson, loadGuide } = require('../llm/guide-loader');
           const fsMod = await import('fs');
           const pathMod = await import('path');
 

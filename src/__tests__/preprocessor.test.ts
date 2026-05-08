@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { preprocess, requiresLlm, usesVision } from '../pipeline/preprocessor/preprocessor';
+import { preprocess, requiresLlm, usesVision } from '../core/preprocessor/preprocessor';
 
 describe('preprocess — strategy selection', () => {
   it.each([

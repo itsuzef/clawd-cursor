@@ -7,13 +7,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { CostMeter, priceFor } from '../pipeline/observability/cost-meter';
+import { CostMeter, priceFor } from '../core/observability/cost-meter';
 import {
   newCorrelationId,
   runWithCorrelation,
   getCorrelationId,
   getContext,
-} from '../pipeline/observability/correlation';
+} from '../core/observability/correlation';
 
 describe('correlation', () => {
   it('generates stable-format UUIDs', () => {

@@ -69,7 +69,7 @@ module.exports = [
   // serialized and run in the browser — `document`, `window`, `getComputedStyle`
   // are legitimate globals there, not linter errors.
   {
-    files: ['src/cdp-driver.ts', 'src/browser-layer.ts', 'src/tools/cdp.ts', 'src/tools/smart.ts', 'src/a11y-reasoner.ts'],
+    files: ['src/platform/cdp-driver.ts', 'src/tools/cdp.ts', 'src/tools/smart.ts'],
     languageOptions: {
       globals: {
         document: 'readonly',

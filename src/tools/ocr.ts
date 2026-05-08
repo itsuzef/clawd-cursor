@@ -5,7 +5,7 @@
  * box coordinates — cheaper than a screenshot + vision LLM call.
  */
 
-import { OcrEngine } from '../ocr-engine';
+import { OcrEngine } from '../platform/ocr-engine';
 import type { ToolDefinition } from './types';
 
 // Shared OcrEngine instance

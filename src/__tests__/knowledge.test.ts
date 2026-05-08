@@ -7,8 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { detectApp } from '../pipeline/knowledge/domain-map';
-import { loadGuide, clearCache, getWorkflowForTask } from '../pipeline/knowledge/loader';
+import { detectApp } from '../llm/knowledge/domain-map';
+import { loadGuide, clearCache, getWorkflowForTask } from '../llm/knowledge/loader';
 
 describe('detectApp', () => {
   it.each([

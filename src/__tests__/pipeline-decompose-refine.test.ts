@@ -18,8 +18,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { Pipeline } from '../pipeline';
-import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../v2/platform/types';
+import { Pipeline } from '../core/pipeline';
+import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../platform/types';
 
 // ─── Mock adapter (minimal — verifier disabled in tests) ────────────
 
@@ -62,7 +62,7 @@ function makeAdapter(): PlatformAdapter {
 
 const subtasksReceived: string[] = [];
 
-vi.mock('../pipeline/agent/agent', async () => {
+vi.mock('../core/agent-loop/agent', async () => {
   return {
     runAgent: vi.fn(async (input: { task: string; mode: string }) => {
       subtasksReceived.push(input.task);
@@ -82,8 +82,8 @@ vi.mock('../pipeline/agent/agent', async () => {
 // Force every subtask into the blind strategy so the real router doesn't
 // fire — these tests are about the decomposer wiring, not router pattern
 // matching, and the real router's start-menu fallback would time out.
-vi.mock('../pipeline/preprocessor/preprocessor', async () => {
-  const { decompose } = await import('../pipeline/decompose/parser');
+vi.mock('../core/preprocessor/preprocessor', async () => {
+  const { decompose } = await import('../core/decompose/parser');
   return {
     preprocess: (task: string) => {
       const r = decompose(task);

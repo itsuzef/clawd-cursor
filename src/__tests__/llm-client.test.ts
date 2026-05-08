@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { callTextLLM, callVisionLLM } from '../llm-client';
-import type { PipelineConfig } from '../providers';
+import { callTextLLM, callVisionLLM } from '../llm/client';
+import type { PipelineConfig } from '../llm/providers';
 
 const fetchMock = vi.fn();
 (globalThis as any).fetch = fetchMock;

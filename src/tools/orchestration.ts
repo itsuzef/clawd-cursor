@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import type { ToolDefinition } from './types';
-import { DEFAULT_CDP_PORT } from '../browser-config';
+import { DEFAULT_CDP_PORT } from '../llm/browser-config';
 
 const execFileAsync = promisify(execFile);
 

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { evaluate, isAllowed, evaluateInput } from '../pipeline/safety/layer';
+import { evaluate, isAllowed, evaluateInput } from '../core/safety';
 
 describe('SafetyLayer.evaluate', () => {
   describe('read tier', () => {

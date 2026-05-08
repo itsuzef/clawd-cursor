@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { decompose, splitCompound } from '../pipeline/decompose/parser';
-import { decomposeWithLlm, extractJson } from '../pipeline/decompose/llm-decomposer';
+import { decompose, splitCompound } from '../core/decompose/parser';
+import { decomposeWithLlm, extractJson } from '../core/decompose/llm-decomposer';
 
 describe('splitCompound', () => {
   it('splits on " and "', () => {

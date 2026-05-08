@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { classifyTask } from '../pipeline/classify/classify';
+import { classifyTask } from '../core/classify/classify';
 
 describe('classifyTask', () => {
   describe('mechanical', () => {

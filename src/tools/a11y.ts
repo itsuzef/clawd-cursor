@@ -7,7 +7,7 @@
 
 import type { ToolDefinition, ToolContext } from './types';
 import { a11yToMouse } from './types';
-import type { UiElement, WindowInfo } from '../v2/platform/types';
+import type { UiElement, WindowInfo } from '../platform/types';
 
 function formatWindow(w: WindowInfo): string {
   return `${w.isMinimized ? '[MIN]' : '[OK]'} [${w.processName}] "${w.title}" pid:${w.processId}` +

@@ -10,8 +10,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { Router } from '../pipeline/router/router';
-import type { PlatformAdapter } from '../v2/platform/types';
+import { Router } from '../core/router/router';
+import type { PlatformAdapter } from '../platform/types';
 
 function makeStubAdapter(): PlatformAdapter & { keyPress: ReturnType<typeof vi.fn>; typeText: ReturnType<typeof vi.fn> } {
   const keyPress = vi.fn(async (_combo: string) => {});

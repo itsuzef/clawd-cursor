@@ -12,9 +12,9 @@
 
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { GroundTruthVerifier } from '../v2/verifier/ground-truth';
-import type { StateSnapshot, VerifyOptions } from '../v2/verifier/types';
-import type { PlatformAdapter } from '../v2/platform/types';
+import { GroundTruthVerifier } from '../core/verifier';
+import type { StateSnapshot, VerifyOptions } from '../core/verifier-types';
+import type { PlatformAdapter } from '../platform/types';
 
 // ─── helpers ────────────────────────────────────────────────────────
 

@@ -45,7 +45,7 @@ export interface ToolContext {
    * Lazy-loaded via `ensureInitialized` so tool handlers don't need
    * async dance on every call.
    */
-  platform?: import('../v2/platform/types').PlatformAdapter;
+  platform?: import('../platform/types').PlatformAdapter;
   /**
    * The autonomous Agent — present in `clawdcursor agent` (the daemon)
    * and undefined when run via stdio MCP without a running agent.
@@ -53,7 +53,7 @@ export interface ToolContext {
    * v0.9 PR7.2: was previously implicit on `agent.x` accesses inside
    * REST handlers; now it lives on ToolContext so MCP tools can use it.
    */
-  agent?: import('../agent').Agent;
+  agent?: import('../core/agent').Agent;
   /**
    * Optional log buffer accessor — populated by the daemon's createServer.
    * MCP `logs_recent` reads through this; null/missing means logs are not

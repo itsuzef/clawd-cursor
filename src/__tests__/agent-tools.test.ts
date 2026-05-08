@@ -32,7 +32,7 @@ vi.mock('sharp', () => ({
 import { getAgentTools } from '../tools/agent';
 import { getFavoritesTools } from '../tools/favorites';
 import { getExtraTools } from '../tools/extras';
-import type { ToolContext } from '../tools';
+import type { ToolContext } from '../tools/registry';
 
 // Minimal in-memory favorites store for the tests.
 let favStore: string[] = [];

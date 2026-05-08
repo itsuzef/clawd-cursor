@@ -6,7 +6,7 @@
  * PipelineAction. No real LLM calls; tests are deterministic.
  */
 
-import type { PipelineAction } from '../../src/pipeline/types';
+import type { PipelineAction } from '../../src/core/pipeline-types';
 
 export interface FakeAgentState {
   task: string;

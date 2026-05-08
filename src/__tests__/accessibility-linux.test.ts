@@ -7,7 +7,7 @@ vi.mock('child_process', () => ({
   execFile: execFileMock,
 }));
 
-vi.mock('../ps-runner', () => ({
+vi.mock('../platform/ps-runner', () => ({
   psRunner: {
     start: vi.fn(),
     run: psRunMock,
@@ -33,14 +33,14 @@ describe('AccessibilityBridge on Linux', () => {
   });
 
   it('reports shell unavailable instead of attempting macOS osascript', async () => {
-    const { AccessibilityBridge } = await import('../accessibility');
+    const { AccessibilityBridge } = await import('../platform/accessibility');
     const bridge = new AccessibilityBridge();
     await expect(bridge.isShellAvailable()).resolves.toBe(false);
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
   it('returns empty windows/elements and non-throwing unsupported results', async () => {
-    const { AccessibilityBridge } = await import('../accessibility');
+    const { AccessibilityBridge } = await import('../platform/accessibility');
     const bridge = new AccessibilityBridge();
     await expect(bridge.getWindows()).resolves.toEqual([]);
     await expect(bridge.findElement({ name: 'Save' })).resolves.toEqual([]);
@@ -48,7 +48,7 @@ describe('AccessibilityBridge on Linux', () => {
   });
 
   it('returns an explanatory screen context message', async () => {
-    const { AccessibilityBridge } = await import('../accessibility');
+    const { AccessibilityBridge } = await import('../platform/accessibility');
     const bridge = new AccessibilityBridge();
     await expect(bridge.getScreenContext()).resolves.toContain('Accessibility unavailable on Linux');
   });

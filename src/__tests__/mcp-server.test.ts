@@ -29,8 +29,8 @@ vi.mock('sharp', () => ({
   })),
 }));
 
-import { createMcpServer } from '../mcp-server';
-import { getAllTools, getCompactSurface, type ToolContext } from '../tools';
+import { createMcpServer } from '../surface/mcp-server';
+import { getAllTools, getCompactSurface, type ToolContext } from '../tools/registry';
 
 function fakeCtx(): ToolContext {
   return {

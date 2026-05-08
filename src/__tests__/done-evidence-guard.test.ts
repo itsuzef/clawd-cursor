@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildUnifiedTools } from '../pipeline/agent/tools';
+import { buildUnifiedTools } from '../core/agent-loop/tools';
 
 function getDoneTool() {
   const tools = buildUnifiedTools('blind');

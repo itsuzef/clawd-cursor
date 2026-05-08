@@ -3,17 +3,17 @@
   "version": "0.8.17",
   "description": "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
   "bin": {
-    "clawdcursor": "dist/index.js"
+    "clawdcursor": "dist/surface/cli.js"
   },
   "scripts": {
     "postinstall": "node scripts/verify-install.js || true",
     "build": "tsc && node dist/postbuild.js",
     "setup": "node scripts/verify-install.js && npm run build && node -e \"if(process.platform==='darwin'){const{execSync}=require('child_process');try{execSync('chmod +x native/build.sh && native/build.sh',{stdio:'inherit'})}catch(e){console.error('\\n❌ Native build failed. Run manually: cd native && ./build.sh');process.exit(1)}}\" && npm link --force",
     "postbuild:msg": "handled by postbuild.js",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js agent",
-    "stop": "node dist/index.js stop",
-    "doctor": "node dist/index.js doctor",
+    "dev": "tsx watch src/surface/cli.ts",
+    "start": "node dist/surface/cli.js agent",
+    "stop": "node dist/surface/cli.js stop",
+    "doctor": "node dist/surface/cli.js doctor",
     "lint": "eslint src/",
     "test": "vitest",
     "test:ci": "vitest run",

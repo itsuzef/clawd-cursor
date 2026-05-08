@@ -4,12 +4,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { PLAYBOOKS, matchPlaybook } from '../pipeline/playbooks/index';
-import { outlookSend } from '../pipeline/playbooks/outlook-send';
-import { macMailSend } from '../pipeline/playbooks/mac-mail-send';
-import { findReplace } from '../pipeline/playbooks/find-replace';
-import { isBlockedKey, normalizeCombo, BLOCKED_KEYS } from '../pipeline/playbooks/keys-blocklist';
-import type { PlatformAdapter } from '../v2/platform/types';
+import { PLAYBOOKS, matchPlaybook } from '../tools/playbooks/index';
+import { outlookSend } from '../tools/playbooks/outlook-send';
+import { macMailSend } from '../tools/playbooks/mac-mail-send';
+import { findReplace } from '../tools/playbooks/find-replace';
+import { isBlockedKey, normalizeCombo, BLOCKED_KEYS } from '../tools/playbooks/keys-blocklist';
+import type { PlatformAdapter } from '../platform/types';
 
 function makeAdapter(): { adapter: PlatformAdapter; calls: any[] } {
   const calls: any[] = [];

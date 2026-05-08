@@ -4,10 +4,10 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { APP_ALIASES, resolveAlias } from '../pipeline/router/aliases';
-import { needsWebView2Settle, WEBVIEW2_SETTLE_MS } from '../pipeline/router/webview2';
-import { Router } from '../pipeline/router/router';
-import type { PlatformAdapter, WindowInfo } from '../v2/platform/types';
+import { APP_ALIASES, resolveAlias } from '../core/router/aliases';
+import { needsWebView2Settle, WEBVIEW2_SETTLE_MS } from '../core/router/webview2';
+import { Router } from '../core/router/router';
+import type { PlatformAdapter, WindowInfo } from '../platform/types';
 
 /**
  * Stateful mock adapter. launchApp toggles `afterLaunchWindows` on, so

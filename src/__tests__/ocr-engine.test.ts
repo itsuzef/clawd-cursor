@@ -85,7 +85,7 @@ vi.mock('child_process', async () => {
 });
 
 // ── Import the module under test ──────────────────────────────────────────────
-import { OcrEngine } from '../ocr-engine';
+import { OcrEngine } from '../platform/ocr-engine';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

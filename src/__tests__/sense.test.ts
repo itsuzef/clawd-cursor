@@ -8,9 +8,9 @@ import {
   centerOf,
   resolveByName,
   resolveById,
-} from '../pipeline/sense/a11y-resolver';
-import { fingerprint, FingerprintHistory } from '../pipeline/sense/fingerprint';
-import type { SnapshotElement } from '../pipeline/types';
+} from '../core/sense/a11y-resolver';
+import { fingerprint, FingerprintHistory } from '../core/sense/fingerprint';
+import type { SnapshotElement } from '../core/pipeline-types';
 
 describe('a11y-resolver bounds sanity', () => {
   it('accepts normal bounds', () => {

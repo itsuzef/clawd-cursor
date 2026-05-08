@@ -15,15 +15,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GroundTruthVerifier } from '../v2/verifier/ground-truth';
-import { Pipeline } from '../pipeline';
-import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../v2/platform/types';
+import { GroundTruthVerifier } from '../core/verifier';
+import { Pipeline } from '../core/pipeline';
+import type { PlatformAdapter, WindowInfo, ScreenshotResult } from '../platform/types';
 import type {
   Verifier,
   VerifyOptions,
   StateSnapshot,
   ReflectionFeedback,
-} from '../v2/verifier/types';
+} from '../core/verifier-types';
 
 // ─── Snapshot builder helpers ───────────────────────────────────────
 
@@ -279,7 +279,7 @@ describe('ReflectionFeedback — suggestedStrategy mapping', () => {
 // Stub the agent loop so we don't need a real LLM.
 const agentResultByRung = new Map<string, { success: boolean; exit: string }>();
 
-vi.mock('../pipeline/agent/agent', async () => ({
+vi.mock('../core/agent-loop/agent', async () => ({
   runAgent: vi.fn(async (input: { task: string; mode: string }) => {
     const o = agentResultByRung.get(input.mode) ?? { success: false, exit: 'give_up' };
     return {
@@ -294,7 +294,7 @@ vi.mock('../pipeline/agent/agent', async () => ({
   }),
 }));
 
-vi.mock('../pipeline/preprocessor/preprocessor', async () => ({
+vi.mock('../core/preprocessor/preprocessor', async () => ({
   preprocess: () => ({
     strategy: 'blind' as const,
     subtasks: [],

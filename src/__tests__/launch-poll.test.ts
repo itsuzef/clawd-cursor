@@ -11,8 +11,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   waitForLaunchedWindow,
   buildAppPredicate,
-} from '../v2/platform/launch-poll';
-import type { WindowInfo } from '../v2/platform/types';
+} from '../platform/launch-poll';
+import type { WindowInfo } from '../platform/types';
 
 function w(opts: Partial<WindowInfo> & { processId: number; title?: string; processName?: string }): WindowInfo {
   return {

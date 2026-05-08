@@ -32,7 +32,7 @@
  *   up automatically.
  */
 
-import { getTool } from './index';
+import { getTool } from './registry';
 import type { ToolDefinition, ToolContext, ToolResult } from './types';
 
 // ─── Action → granular-tool delegation table ────────────────────────

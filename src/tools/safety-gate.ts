@@ -1,4 +1,4 @@
-import { evaluateInput } from '../pipeline/safety/layer';
+import { evaluateInput } from '../core/safety';
 import type { ToolDefinition, ToolResult } from './types';
 
 function labelFromArgs(args: Record<string, unknown>): string | undefined {

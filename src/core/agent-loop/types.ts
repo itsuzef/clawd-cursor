@@ -1,0 +1,160 @@
+/**
+ * Unified-agent types.
+ *
+ * ONE agent replaces text-agent + vision-agent. The same loop drives all three
+ * strategy modes (blind / hybrid / vision) — the only differences are which
+ * tools appear in the catalog and whether an initial screenshot is seeded.
+ *
+ * All types here stay provider-agnostic: they describe the agent's CONTRACT
+ * with the pipeline, not any specific LLM.
+ */
+
+import type { PlatformAdapter, ScreenshotResult } from '../../platform/types';
+
+export type AgentMode =
+  /** a11y-only. Screenshot tool is not in the catalog. Cheapest path. */
+  | 'blind'
+  /** a11y on turn 1, screenshot available as a tool the agent can call. */
+  | 'hybrid'
+  /** a11y on turn 1 + initial screenshot. Vision always available. */
+  | 'vision';
+
+export interface AgentInput {
+  task: string;
+  mode: AgentMode;
+  /** Optional app-knowledge fragment from the knowledge loader. */
+  guide?: { appName: string; promptFragment: string };
+  /**
+   * Subtask capability classification from the preprocessor. In text
+   * modes (blind/hybrid) this narrows the tool catalog to a focused
+   * palette per `agent/palettes.ts`. `'general'` / undefined → full
+   * catalog (back-compat). Vision mode always uses compound tools and
+   * ignores this field.
+   */
+  capability?: import('../classify/capability').Capability;
+  /** Hard cap on turns. Default 20. */
+  maxTurns?: number;
+  /** Cooperative cancel — polled every turn. */
+  isAborted?: () => boolean;
+  /**
+   * Reflector hint from PR9 — injected as a synthetic `tool_result` at the
+   * start of the first turn's history when set. Tells the planner why the
+   * previous rung failed so it can choose a different approach rather than
+   * repeating the same mistake.
+   *
+   * Set by the pipeline when the verifier rejected the previous rung and
+   * `ReflectionFeedback.hint` is non-empty.
+   */
+  reflectorHint?: string;
+}
+
+export interface AgentStep {
+  turn: number;
+  /** Agent's short reasoning for this turn, if any. */
+  thought?: string;
+  /** Tool name the agent called (may be 'no-op' if no tool call parsed). */
+  toolName: string;
+  /** Parsed tool args. */
+  toolArgs: Record<string, unknown>;
+  /** Outcome text + success flag. */
+  result: { success: boolean; text: string };
+  /** Turn duration in ms. */
+  durationMs: number;
+  /** Whether the screen fingerprint changed after this turn. */
+  fingerprintChanged: boolean;
+}
+
+export type AgentExit =
+  | 'done'
+  | 'give_up'
+  | 'cannot_read'
+  | 'aborted'
+  | 'max_turns'
+  | 'parse_error'
+  | 'llm_error'
+  | 'stagnation';
+
+export interface AgentResult {
+  /** True when the agent declared `done` AND exit was clean. */
+  success: boolean;
+  exit: AgentExit;
+  /** Final human-readable outcome. */
+  text: string;
+  /** Every turn in order — trace is the primary observability surface. */
+  steps: AgentStep[];
+  /** Number of LLM calls. */
+  llmCalls: number;
+  /** Number of screenshots captured. */
+  screenshotsCaptured: number;
+  /** Total turn duration (wall time for the whole loop). */
+  durationMs: number;
+}
+
+export interface AgentLlmConfig {
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  isAnthropic: boolean;
+  maxTokens?: number;
+}
+
+/**
+ * The LLM half of the agent's dependencies. Pipeline injects this so the
+ * agent stays provider-agnostic. Text-only providers work too — the agent
+ * supplies tools via the callLLMWithTools API, and providers without native
+ * tool_use fall back to the prose-JSON parser inside callLLMWithTools.
+ */
+export interface AgentLlmDeps {
+  text?: AgentLlmConfig;
+  vision?: AgentLlmConfig;
+}
+
+/** Environment the agent tools see at runtime. Stays tiny by design. */
+export interface AgentToolContext {
+  platform: PlatformAdapter;
+  task: string;
+  mode: AgentMode;
+  /** Screen size — cached on first use; used for coordinate math in click/drag. */
+  screen: { logicalWidth: number; logicalHeight: number; physicalWidth: number; physicalHeight: number; dpiRatio: number };
+  /** Mutable counter the tools bump when they take screenshots. */
+  screenshotsCaptured: { n: number };
+  /** Current active app name — used by SafetyLayer for sensitive-app elevation. */
+  activeApp?: string;
+}
+
+/**
+ * A unified tool — executable against PlatformAdapter, safety-evaluable,
+ * LLM-visible. One source of truth for all three strategy modes.
+ */
+export interface UnifiedTool {
+  /** Tool name as exposed to the LLM (matches the SafetyLayer TOOL_TIER map). */
+  name: string;
+  /** Description the LLM sees. Kept under ~140 chars for token budget. */
+  description: string;
+  /** JSON-Schema for the tool's args. */
+  inputSchema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+  /** True when this tool plausibly changes what's on screen. */
+  changesScreen: boolean;
+  /** True when this tool is a terminal action (`done` / `give_up` / `cannot_read`). */
+  terminal?: true;
+  /** Execute the tool. Returns text + optional screenshot; never throws. */
+  execute: (args: Record<string, unknown>, ctx: AgentToolContext) => Promise<UnifiedToolResult>;
+}
+
+export interface UnifiedToolResult {
+  success: boolean;
+  text: string;
+  /** Freshly-captured screenshot, if the tool took one. */
+  screenshot?: ScreenshotResult;
+  /** Stop the agent loop after this tool runs. */
+  stop?: boolean;
+  /** Terminal action exit reason — propagated to AgentResult. */
+  terminalExit?: Extract<AgentExit, 'done' | 'give_up' | 'cannot_read'>;
+  /** Label of the target element, if known — lets SafetyLayer elevate on sensitive labels. */
+  targetLabel?: string;
+}

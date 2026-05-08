@@ -13,8 +13,8 @@
  */
 
 import type { ToolDefinition, ToolContext } from './types';
-import { OcrEngine } from '../ocr-engine';
-import { getBrowserProcessNames } from '../browser-config';
+import { OcrEngine } from '../platform/ocr-engine';
+import { getBrowserProcessNames } from '../llm/browser-config';
 
 // Shared OCR engine singleton — avoids re-initialization per call
 let sharedOcr: OcrEngine | null = null;

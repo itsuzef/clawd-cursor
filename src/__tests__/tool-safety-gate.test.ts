@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getCompactSurface, getTool } from '../tools';
+import { getCompactSurface, getTool } from '../tools/registry';
 import { evaluateToolCall } from '../tools/safety-gate';
 
 describe('direct tool safety gate', () => {

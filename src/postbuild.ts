@@ -30,13 +30,13 @@ function copyDir(srcDir: string, dstDir: string): number {
 }
 
 const repoRoot  = path.join(__dirname, '..');
-const srcGuides = path.join(repoRoot, 'src', 'pipeline', 'knowledge', 'guides');
-const dstGuides = path.join(repoRoot, 'dist', 'pipeline', 'knowledge', 'guides');
+const srcGuides = path.join(repoRoot, 'src', 'llm', 'knowledge', 'guides');
+const dstGuides = path.join(repoRoot, 'dist', 'llm', 'knowledge', 'guides');
 const guideCount = copyDir(srcGuides, dstGuides);
 
 console.log(`
 🐾 Clawd Cursor built successfully!
-   (bundled ${guideCount} app-knowledge guides → dist/pipeline/knowledge/guides/)
+   (bundled ${guideCount} app-knowledge guides → dist/llm/knowledge/guides/)
 
   clawdcursor start     Start the desktop control agent
   clawdcursor mcp       Run as MCP server (for Claude Code, Cursor, etc.)

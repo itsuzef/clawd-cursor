@@ -13,10 +13,10 @@ import {
   renderSnapshot,
   renderHistory,
   wrapUntrustedScreenContent,
-} from '../pipeline/agent/prompt';
-import { rankElements, scoreElement } from '../pipeline/sense/rank';
-import { tryParseProseToolCall } from '../llm-client';
-import type { Snapshot, SnapshotElement } from '../pipeline/types';
+} from '../core/agent-loop/prompt';
+import { rankElements, scoreElement } from '../core/sense/rank';
+import { tryParseProseToolCall } from '../llm/client';
+import type { Snapshot, SnapshotElement } from '../core/pipeline-types';
 
 function mkSnapshot(elements: Partial<SnapshotElement>[] = []): Snapshot {
   return {

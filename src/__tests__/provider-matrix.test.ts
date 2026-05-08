@@ -7,10 +7,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PROVIDERS, detectProvider } from '../providers';
-import { normalizeImageBlock } from '../llm-client';
-import type { PipelineConfig } from '../providers';
-import type { VisionContentBlock } from '../llm-client';
+import { PROVIDERS, detectProvider } from '../llm/providers';
+import { normalizeImageBlock } from '../llm/client';
+import type { PipelineConfig } from '../llm/providers';
+import type { VisionContentBlock } from '../llm/client';
 
 // ── Mock fetch globally so no real HTTP calls are made ──────────────────────
 
@@ -65,7 +65,7 @@ describe('Temperature handling per provider', () => {
   it('kimi vision calls with kimi-k2.5 model should NOT include temperature', async () => {
     fetchMock.mockResolvedValueOnce(makeOpenAIResponse());
 
-    const { callVisionLLM } = await import('../llm-client');
+    const { callVisionLLM } = await import('../llm/client');
     const config = makeConfig('kimi');
     // kimi's visionModel is 'kimi-k2.5' which starts with 'kimi-k2'
     await callVisionLLM(config, {
@@ -79,7 +79,7 @@ describe('Temperature handling per provider', () => {
   it('kimi text calls with non-reasoning model should include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeOpenAIResponse());
 
-    const { callTextLLM } = await import('../llm-client');
+    const { callTextLLM } = await import('../llm/client');
     const config = makeConfig('kimi');
     // kimi's textModel is 'moonshot-v1-8k' which does NOT start with 'kimi-k2'
     await callTextLLM(config, { user: 'hello' });
@@ -91,7 +91,7 @@ describe('Temperature handling per provider', () => {
   it('OpenAI text calls always include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeOpenAIResponse());
 
-    const { callTextLLM } = await import('../llm-client');
+    const { callTextLLM } = await import('../llm/client');
     const config = makeConfig('openai');
     await callTextLLM(config, { user: 'hello' });
 
@@ -102,7 +102,7 @@ describe('Temperature handling per provider', () => {
   it('OpenAI vision calls include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeOpenAIResponse());
 
-    const { callVisionLLM } = await import('../llm-client');
+    const { callVisionLLM } = await import('../llm/client');
     const config = makeConfig('openai');
     await callVisionLLM(config, {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }] }],
@@ -115,7 +115,7 @@ describe('Temperature handling per provider', () => {
   it('Anthropic text calls include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeAnthropicResponse());
 
-    const { callTextLLM } = await import('../llm-client');
+    const { callTextLLM } = await import('../llm/client');
     const config = makeConfig('anthropic');
     await callTextLLM(config, { user: 'hello' });
 
@@ -126,7 +126,7 @@ describe('Temperature handling per provider', () => {
   it('Anthropic vision calls include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeAnthropicResponse());
 
-    const { callVisionLLM } = await import('../llm-client');
+    const { callVisionLLM } = await import('../llm/client');
     const config = makeConfig('anthropic');
     await callVisionLLM(config, {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }] }],
@@ -139,7 +139,7 @@ describe('Temperature handling per provider', () => {
   it('Groq text and vision calls include temperature: 0', async () => {
     fetchMock.mockResolvedValueOnce(makeOpenAIResponse());
 
-    const { callTextLLM } = await import('../llm-client');
+    const { callTextLLM } = await import('../llm/client');
     const config = makeConfig('groq');
     await callTextLLM(config, { user: 'hello' });
 
