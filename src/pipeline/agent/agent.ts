@@ -263,12 +263,17 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
           : typeof call.args.target === 'string' ? call.args.target
           : undefined;
 
-        // 5a. Safety gate — single chokepoint.
+        // 5a. Safety gate — single chokepoint. Pass through the user's task
+        // text so the layer can detect intent-matched bypasses (when the user
+        // explicitly asked for a destructive action, the confirm tier is
+        // skipped — the agent isn't hallucinating a Send click out of nowhere,
+        // the user typed "hit send").
         const decision = safetyEvaluate({
           tool: call.name,
           args: call.args,
           targetLabel,
           activeApp,
+          userTaskText: input.task,
         });
         if (!isAllowed(decision)) {
           const reason = decision.decision === 'block'
@@ -329,6 +334,47 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
             `runaway-guard: repeated ${call.name} with identical args (${recentRepeats}× in last ${REPEAT_WINDOW} turns). The agent is likely unable to see whether the action succeeded — try a different approach or use detect_webview_apps + CDP bridge if the target is an Electron/WebView2 app.`,
             steps, llmCalls, screenshotsCaptured.n, startedAt,
           );
+        }
+
+        // 5a''. cannot_read soft-guard. cannot_read is meant for genuinely
+        // unreadable screens (CAPTCHA, blank canvas, OCR garbage). Some models
+        // — especially safety-trained text models on irreversible actions like
+        // "Send" — try to use it as a "can I have a moment to think" pause AFTER
+        // they already located an interactive target. That stalls the pipeline
+        // for no good reason. If a perception/locator tool succeeded in the
+        // last few turns, refuse cannot_read and tell the model to act on what
+        // it already found. Pattern-based; doesn't care which model is asking.
+        if (call.name === 'cannot_read') {
+          const LOOKBACK = 4;
+          const RESOLVERS = new Set([
+            'wait_for_element', 'find_element', 'invoke_element', 'set_field_value',
+            'read_screen', 'a11y_snapshot', 'screenshot',
+            'list_windows', 'focus_window',
+          ]);
+          const recentSuccessfulResolution = steps
+            .slice(-LOOKBACK)
+            .some(s => RESOLVERS.has(s.toolName) && s.result.success);
+          if (recentSuccessfulResolution) {
+            log.info('agent.cannot_read.suppressed', {
+              turn, reason: 'recent successful element resolution within lookback',
+              lookback: LOOKBACK,
+            });
+            toolResults.push({
+              id: call.id,
+              text: 'cannot_read refused: a recent perception/locator tool succeeded in this run, so the screen IS readable. Act on what you already located (invoke_element / mouse_click / key) instead. cannot_read is for blank/garbled screens only.',
+              isError: true,
+            });
+            steps.push({
+              turn,
+              toolName: call.name,
+              toolArgs: call.args,
+              result: { success: false, text: 'cannot_read suppressed (perception just succeeded)' },
+              durationMs: Date.now() - turnStart,
+              fingerprintChanged: false,
+              thought: llmResult.text,
+            });
+            continue;
+          }
         }
 
         // 5b. Log and execute.

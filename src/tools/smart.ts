@@ -317,12 +317,22 @@ export function getSmartTools(): ToolDefinition[] {
           return { text: `Clicked "${target}" via UI Automation (invoke_element)` };
         }
 
-        // OCR found the element — coordinate click
+        // OCR found the element — coordinate click. OCR returns PHYSICAL
+        // pixels (it's running against `screen.grab()` output). On Windows
+        // with DPI scaling > 100%, nut-js mouseClick expects LOGICAL pixels,
+        // so a physical (1800, 900) on a 2x display would land at logical
+        // (1800, 900) — which is far past the actual element. Apply the
+        // physical→logical DPI correction. On 100% DPI dpiRatio === 1 and
+        // this is a no-op, so the fix is safe across every Windows config
+        // and on macOS / Linux (where dpiRatio always returns 1).
         if (ocrMatch) {
-          await ctx.desktop.mouseClick(ocrMatch.x, ocrMatch.y);
+          const dpi = ctx.desktop.getDpiRatio?.() || 1;
+          const cx = Math.round(ocrMatch.x / dpi);
+          const cy = Math.round(ocrMatch.y / dpi);
+          await ctx.desktop.mouseClick(cx, cy);
           ctx.a11y.invalidateCache();
           const warningSuffix = ocrMatch.warning ? `  [WARNING: ${ocrMatch.warning} — verify with read_screen]` : '';
-          return { text: `Clicked "${target}" via OCR (matched "${ocrMatch.text}" at ${ocrMatch.x},${ocrMatch.y})${warningSuffix}` };
+          return { text: `Clicked "${target}" via OCR (matched "${ocrMatch.text}" at ${cx},${cy}${dpi > 1 ? ` — DPI-corrected from physical ${ocrMatch.x},${ocrMatch.y}` : ''})${warningSuffix}` };
         }
 
         // a11y had bounds but couldn't invoke — coordinate fallback

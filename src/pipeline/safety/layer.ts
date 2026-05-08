@@ -41,6 +41,14 @@ export interface EvaluationContext {
   /** Optional active app name — raises the tier for sensitive domains
    *  (email, banking, messaging, password managers). */
   activeApp?: string;
+  /**
+   * The natural-language task the user submitted to the agent. When the
+   * target label appears verbatim in this text, the user has provided
+   * explicit consent for this destructive action and we skip the confirm
+   * tier. Without this field, all destructive matches require confirm
+   * (current behaviour). Pattern-based; works for any model + any app.
+   */
+  userTaskText?: string;
 }
 
 /**
@@ -361,6 +369,25 @@ export function evaluate(ctx: EvaluationContext): Decision {
   if (ctx.targetLabel) {
     for (const pattern of CONFIRM_LABEL_PATTERNS) {
       if (pattern.test(ctx.targetLabel)) {
+        // Intent-matched bypass: if the user's task text contains the
+        // target label (case-insensitive, word-bounded) AND the same
+        // confirm-pattern fires on that task text, the user has given
+        // explicit consent for this exact destructive action. Examples:
+        //   task="hit send" + target="Send"   → bypass
+        //   task="delete the row" + target="Delete" → bypass
+        //   task="open my inbox" + target="Send" → confirm (no intent match)
+        // This keeps the safety layer protective against hallucinated
+        // destructive clicks while letting legitimate user-requested
+        // actions through. Pattern-matched, not model-specific.
+        if (ctx.userTaskText && pattern.test(ctx.userTaskText)) {
+          logger.info('safety.intent_match.bypass', {
+            tool: ctx.tool,
+            targetLabel: ctx.targetLabel,
+            pattern: pattern.source,
+            correlationId,
+          });
+          return emit({ decision: 'allow', tier: 'input' });
+        }
         return emit({
           decision: 'confirm',
           tier: 'destructive',
