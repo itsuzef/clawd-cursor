@@ -80,12 +80,11 @@ export async function runOnboarding(context: 'start' | 'consent' = 'start', star
 
   const contextNote = context === 'start'
     ? `\x1b[90m  You are starting:\x1b[0m\n` +
-      `\x1b[90m  \u2192 AI Agent + REST API on \x1b[0m\x1b[36mlocalhost:${startPort}\x1b[0m\n` +
-      `\x1b[90m  \u2192 Any local process can call tool endpoints on that port\x1b[0m\n`
-    : `\x1b[90m  This one-time consent covers all transport modes:\x1b[0m\n` +
-      `\x1b[90m  \u2192 MCP server (Claude Code, Cursor, Windsurf, Zed)\x1b[0m\n` +
-      `\x1b[90m  \u2192 REST API (clawdcursor start)\x1b[0m\n` +
-      `\x1b[90m  \u2192 Direct agent tasks\x1b[0m\n`;
+      `\x1b[90m  \u2192 AI Agent + MCP HTTP transport on \x1b[0m\x1b[36mlocalhost:${startPort}\x1b[0m\n` +
+      `\x1b[90m  \u2192 Any local process with the bearer token can call tools\x1b[0m\n`
+    : `\x1b[90m  This one-time consent covers both transports of clawdcursor:\x1b[0m\n` +
+      `\x1b[90m  \u2192 stdio MCP   \x1b[0m\x1b[90m(Claude Code, Cursor, Windsurf, Zed \u2014 your editor spawns it)\x1b[0m\n` +
+      `\x1b[90m  \u2192 HTTP MCP    \x1b[0m\x1b[90m(\x1b[0m\x1b[36mclawdcursor agent\x1b[0m\x1b[90m \u2014 daemon for the autonomous agent)\x1b[0m\n`;
 
   console.log(`
 \x1b[33m

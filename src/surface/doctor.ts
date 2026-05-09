@@ -1198,11 +1198,13 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
   console.log(`\n${'═'.repeat(50)}`);
   if (allOk) {
     console.log(`✅ All systems go!\n`);
-    console.log(`   Next step — pick one:`);
-    console.log(`     clawdcursor start    Full agent mode (built-in AI brain)`);
-    console.log(`     clawdcursor serve    Tools-only mode (bring your own AI)\n`);
+    console.log(`   Next step:`);
+    console.log(`     \x1b[36mclawdcursor agent\x1b[0m            Start the autonomous agent daemon`);
+    console.log(`     \x1b[36mclawdcursor agent --no-llm\x1b[0m   Tools-only daemon (bring your own LLM)\n`);
+    console.log(`   Or, for editor-driven (MCP) use, register \x1b[36mclawdcursor mcp\x1b[0m`);
+    console.log(`   with your editor instead — no daemon needed in that case.\n`);
     console.log(`   Run now:`);
-    console.log(`     clawdcursor start`);
+    console.log(`     \x1b[36mclawdcursor agent\x1b[0m`);
   } else {
     const failures = results.filter(r => !r.ok);
     console.log(`⚠️  ${failures.length} issue(s) detected:`);

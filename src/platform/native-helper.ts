@@ -312,7 +312,7 @@ export function getNativeHelper(): NativeHelper {
 // Functional permission probes — test what ClawdCursor can ACTUALLY do.
 // The permission-check binary reports the app bundle's TCC grants, but these
 // can differ from the terminal's grants. We probe using the same binaries
-// that clawdcursor start/doctor use, so status matches reality.
+// that clawdcursor agent/doctor use, so status matches reality.
 
 async function probeScreenRecording(): Promise<boolean> {
   // Try screenshot-helper first (the actual capture mechanism clawdcursor uses)

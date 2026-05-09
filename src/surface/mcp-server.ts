@@ -130,14 +130,16 @@ export async function startMcpHttp(
   const { StreamableHTTPServerTransport } = await import(
     '@modelcontextprotocol/sdk/server/streamableHttp.js' as any
   );
-  const { randomUUID } = await import('crypto');
 
-  // Stateful mode: the SDK manages a single transport for this server, and
-  // session-id headers identify connection state. For the daemon this is
-  // fine — there's only ever one process serving /mcp. If we ever shard
-  // across nodes we'll need per-session transports keyed off Mcp-Session-Id.
+  // Stateless mode: each POST is independent — no session init handshake
+  // required. This makes the dashboard, `clawdcursor task` CLI, and
+  // delegate_to_agent tool work as one-shot JSON-RPC clients without
+  // needing to initialize and track an Mcp-Session-Id per call.
+  // The daemon is always single-process, so cross-call session state
+  // doesn't buy us anything. Editor hosts use stdio MCP, which is
+  // a separate transport with its own lifecycle.
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: undefined,
   });
 
   // Connect the server to the transport BEFORE mounting routes so any

@@ -38,12 +38,18 @@ console.log(`
 🐾 Clawd Cursor built successfully!
    (bundled ${guideCount} app-knowledge guides → dist/llm/knowledge/guides/)
 
-  clawdcursor start     Start the desktop control agent
-  clawdcursor mcp       Run as MCP server (for Claude Code, Cursor, etc.)
-  clawdcursor doctor    Auto-detect and configure AI providers
-  clawdcursor status    Check setup status
-  clawdcursor stop      Stop the agent
-  clawdcursor uninstall Remove all config and data
+  Start here:
+    clawdcursor consent     One-time desktop control authorization
 
-  Run 'clawdcursor consent' first to grant desktop control permissions.
+  Then pick a path:
+    Autonomous agent →  clawdcursor doctor   Configure AI provider + models
+                        clawdcursor agent    Start the daemon (HTTP + MCP on :3847)
+
+    MCP-only         →  clawdcursor mcp      stdio MCP for editor integration
+                                             (Claude Code, Cursor, Windsurf, Zed)
+
+  Other:
+    clawdcursor status      Check setup readiness
+    clawdcursor stop        Stop a running daemon
+    clawdcursor uninstall   Remove all config and data
 `);

@@ -724,29 +724,50 @@ program
   .description('Send a task to a running Clawd Cursor instance (interactive if no text given)')
   .option('--port <port>', 'API server port', '3847')
   .action(async (text, opts) => {
-    const url = `http://127.0.0.1:${opts.port}/task`;
+    const url = `http://127.0.0.1:${opts.port}/mcp`;
 
     const sendTask = async (taskText: string) => {
       try {
         console.log(`\n${e('🐾', '>')} Sending: ${taskText}`);
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ task: taskText }),
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            ...authHeaders(),
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'submit_task', arguments: { task: taskText } },
+          }),
         });
         if (res.status === 401) {
-          console.error('Auth failed (401). Token mismatch — run: clawdcursor stop && clawdcursor start');
+          console.error('Auth failed (401). Token mismatch — run: clawdcursor stop && clawdcursor agent');
           return;
         }
         if (!res.ok) {
           console.error(`Server error (${res.status}). Check server logs.`);
           return;
         }
-        const data = await res.json();
-        console.log(JSON.stringify(data, null, 2));
+        const data = await res.json() as any;
+        if (data?.error) {
+          console.error(`MCP error: ${data.error.message ?? JSON.stringify(data.error)}`);
+          return;
+        }
+        // Pull the task result text out of the JSON-RPC envelope
+        const content = data?.result?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block?.type === 'text' && typeof block.text === 'string') console.log(block.text);
+          }
+        } else {
+          console.log(JSON.stringify(data, null, 2));
+        }
       } catch {
         console.error(`Failed to connect to Clawd Cursor at ${url}`);
-        console.error('Is the agent running? Start it with: clawdcursor start');
+        console.error('Is the agent running? Start it with: clawdcursor agent');
       }
     };
 
@@ -767,7 +788,8 @@ $host.UI.RawUI.WindowTitle = "Clawd Cursor - Task Console"
 Write-Host "Clawd Cursor - Interactive Task Mode" -ForegroundColor Cyan
 Write-Host "   Type a task and press Enter. Type 'quit' to exit." -ForegroundColor Gray
 Write-Host ""
-$headers = @{ "Content-Type" = "application/json"${token ? `; "Authorization" = "Bearer ${token}"` : ''} }
+$headers = @{ "Content-Type" = "application/json"; "Accept" = "application/json, text/event-stream"${token ? `; "Authorization" = "Bearer ${token}"` : ''} }
+$rpcId = 0
 while ($true) {
     $task = Read-Host "Enter task"
     if (-not $task -or $task -eq "quit" -or $task -eq "exit") {
@@ -780,19 +802,33 @@ while ($true) {
     if (-not $task) { continue }
     Write-Host "> Sending: $task" -ForegroundColor Yellow
     try {
-        $jsonBody = @{ task = $task } | ConvertTo-Json -Compress
-        $response = Invoke-RestMethod -Uri http://127.0.0.1:${opts.port}/task -Method POST -Headers $headers -Body $jsonBody
-        $response | ConvertTo-Json -Depth 5
+        $rpcId = $rpcId + 1
+        $body = @{
+            jsonrpc = '2.0'
+            id      = $rpcId
+            method  = 'tools/call'
+            params  = @{ name = 'submit_task'; arguments = @{ task = $task } }
+        } | ConvertTo-Json -Depth 6 -Compress
+        $response = Invoke-RestMethod -Uri http://127.0.0.1:${opts.port}/mcp -Method POST -Headers $headers -Body $body
+        if ($response.error) {
+            Write-Host ("MCP error: " + ($response.error.message)) -ForegroundColor Red
+        } elseif ($response.result -and $response.result.content) {
+            foreach ($block in $response.result.content) {
+                if ($block.type -eq 'text') { Write-Host $block.text }
+            }
+        } else {
+            $response | ConvertTo-Json -Depth 5
+        }
     } catch {
         if ($_.Exception.Response) {
             $code = [int]$_.Exception.Response.StatusCode
             if ($code -eq 401) {
-                Write-Host 'Auth failed (401). Token mismatch. Run: clawdcursor stop then clawdcursor start' -ForegroundColor Red
+                Write-Host 'Auth failed (401). Token mismatch. Run: clawdcursor stop then clawdcursor agent' -ForegroundColor Red
             } else {
                 Write-Host "Server error ($code). Check server logs." -ForegroundColor Red
             }
         } else {
-            Write-Host 'Failed to connect. Is clawdcursor start running?' -ForegroundColor Red
+            Write-Host 'Failed to connect. Is clawdcursor agent running?' -ForegroundColor Red
         }
     }
     Write-Host ""
@@ -804,6 +840,7 @@ echo "Clawd Cursor - Interactive Task Mode"
 echo "   Type a task and press Enter. Type 'quit' to exit."
 echo ""
 AUTH_HEADER="${token ? `Authorization: Bearer ${token}` : ''}"
+RPC_ID=0
 while true; do
     printf "Enter task: "
     read task
@@ -812,7 +849,15 @@ while true; do
         break
     fi
     echo "> Sending: $task"
-    curl -s -X POST http://127.0.0.1:${opts.port}/task -H "Content-Type: application/json"${token ? ' -H "$AUTH_HEADER"' : ''} -d "{\\"task\\": \\"$task\\"}" | python3 -m json.tool 2>/dev/null || echo "Failed to connect. Is clawdcursor start running?"
+    RPC_ID=$((RPC_ID + 1))
+    # JSON-encode the task by piping through python; falls back to naive escape if python missing
+    BODY=$(python3 -c "import json,sys; print(json.dumps({'jsonrpc':'2.0','id':$RPC_ID,'method':'tools/call','params':{'name':'submit_task','arguments':{'task':sys.argv[1]}}}))" "$task" 2>/dev/null) || BODY="{\\"jsonrpc\\":\\"2.0\\",\\"id\\":$RPC_ID,\\"method\\":\\"tools/call\\",\\"params\\":{\\"name\\":\\"submit_task\\",\\"arguments\\":{\\"task\\":\\"$task\\"}}}"
+    curl -s -X POST http://127.0.0.1:${opts.port}/mcp \\
+      -H "Content-Type: application/json" \\
+      -H "Accept: application/json, text/event-stream"${token ? ' \\\n      -H "$AUTH_HEADER"' : ''} \\
+      -d "$BODY" \\
+      | python3 -c "import json,sys; r=json.load(sys.stdin); content=r.get('result',{}).get('content',[]); [print(b.get('text','')) for b in content if b.get('type')=='text']" 2>/dev/null \\
+      || echo "Failed to connect. Is clawdcursor agent running?"
     echo ""
 done
 `;
@@ -1127,8 +1172,7 @@ program
         `This tool gives AI models full control of your desktop.\n\n` +
         `Run one of the following, then retry:\n` +
         `  clawdcursor consent          # interactive consent prompt\n` +
-        `  clawdcursor consent --accept # non-interactive (CI/scripts)\n` +
-        `  clawdcursor start            # consent + start agent\n\n`
+        `  clawdcursor consent --accept # non-interactive (CI/scripts)\n\n`
       );
       process.exit(1);
     }
@@ -1229,18 +1273,37 @@ program
     if (opts.accept) {
       writeConsentFile();
       console.log('  Consent accepted. clawdcursor can now control your desktop.');
-      console.log('  Run `clawdcursor start` or `clawdcursor mcp` to begin.\n');
+      printPostConsentNextSteps();
       return;
     }
 
     // Interactive flow
     const accepted = await runOnboarding('consent');
     if (accepted) {
-      console.log('  Run `clawdcursor start` or `clawdcursor mcp` to begin.\n');
+      printPostConsentNextSteps();
     } else {
       process.exit(1);
     }
   });
+
+/** Two-path "what to do next" panel shown after consent and after doctor success. */
+function printPostConsentNextSteps(): void {
+  const cyan = '\x1b[36m';
+  const dim  = '\x1b[90m';
+  const bold = '\x1b[1m';
+  const r    = '\x1b[0m';
+  console.log('');
+  console.log(`  ${bold}Two ways to use clawdcursor:${r}`);
+  console.log('');
+  console.log(`  ${cyan}→ As an autonomous AI agent${r} ${dim}(clawdcursor brings the brain)${r}`);
+  console.log(`       1. ${cyan}clawdcursor doctor${r}    Configure your AI provider + models`);
+  console.log(`       2. ${cyan}clawdcursor agent${r}     Start the daemon (HTTP + MCP on :3847)`);
+  console.log('');
+  console.log(`  ${cyan}→ As an MCP tool server${r} ${dim}(your editor brings the brain)${r}`);
+  console.log(`       Register ${cyan}clawdcursor mcp${r} with Claude Code, Cursor, Windsurf, Zed, etc.`);
+  console.log(`       No daemon, no API key — your editor spawns clawdcursor on demand.`);
+  console.log('');
+}
 
 program
   .command('guides [subcommand] [args...]')

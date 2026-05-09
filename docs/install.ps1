@@ -132,13 +132,26 @@ if ($exe) {
 }
 
 Write-Host ""
-Write-Host "  ┌────────────────────────────────────────────────────────────┐" -ForegroundColor Cyan
-Write-Host "  │  Next steps:                                               │" -ForegroundColor Cyan
-Write-Host "  ├────────────────────────────────────────────────────────────┤" -ForegroundColor Cyan
-Write-Host "  │  1. clawdcursor doctor    Set up API keys & check perms   │" -ForegroundColor White
-Write-Host "  │  2. clawdcursor start     Launch the agent                │" -ForegroundColor White
-Write-Host "  └────────────────────────────────────────────────────────────┘" -ForegroundColor Cyan
+Write-Host "  Start here:" -ForegroundColor Cyan
+Write-Host "    clawdcursor consent     " -NoNewline -ForegroundColor Yellow
+Write-Host "One-time desktop control authorization" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Then pick a path:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "    Autonomous agent" -NoNewline -ForegroundColor White
+Write-Host " (clawdcursor brings the AI brain):" -ForegroundColor Gray
+Write-Host "      1. clawdcursor doctor   " -NoNewline -ForegroundColor Yellow
+Write-Host "Configure AI provider + models" -ForegroundColor Gray
+Write-Host "      2. clawdcursor agent    " -NoNewline -ForegroundColor Yellow
+Write-Host "Start the daemon (HTTP + MCP on :3847)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "    MCP-only" -NoNewline -ForegroundColor White
+Write-Host " (your editor brings the AI brain):" -ForegroundColor Gray
+Write-Host "      Register " -NoNewline -ForegroundColor Gray
+Write-Host "clawdcursor mcp" -NoNewline -ForegroundColor Yellow
+Write-Host " with Claude Code, Cursor, Windsurf, Zed, etc." -ForegroundColor Gray
+Write-Host "      No daemon, no API key in clawdcursor — your editor handles both." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Run now:" -ForegroundColor White
-Write-Host "    clawdcursor doctor" -ForegroundColor Yellow
+Write-Host "    clawdcursor consent" -ForegroundColor Yellow
 Write-Host ""
