@@ -39,7 +39,35 @@ try {
 
     $targetWindow = $null
 
-    if ($ProcessId -gt 0) {
+    # When BOTH ProcessId and Title are supplied, AND-match. This disambiguates
+    # tabbed apps like Win11 Notepad where multiple windows share one pid —
+    # without the AND-match, this script returned whichever window came first
+    # in the UIA enumeration, which is non-deterministic across launches.
+    if ($ProcessId -gt 0 -and $Title -ne "") {
+        $titleLower = $Title.ToLower()
+        foreach ($win in $allWindows) {
+            try {
+                if ($win.Current.ProcessId -ne $ProcessId) { continue }
+                $winTitle = $win.Current.Name
+                if ($winTitle -and $winTitle.ToLower().Contains($titleLower)) {
+                    $targetWindow = $win
+                    break
+                }
+            } catch {}
+        }
+        # Fall back to pid-only if the title didn't match — the caller may
+        # have passed a stale title; better to focus *something* than fail.
+        if ($null -eq $targetWindow) {
+            foreach ($win in $allWindows) {
+                try {
+                    if ($win.Current.ProcessId -eq $ProcessId) {
+                        $targetWindow = $win
+                        break
+                    }
+                } catch {}
+            }
+        }
+    } elseif ($ProcessId -gt 0) {
         foreach ($win in $allWindows) {
             try {
                 if ($win.Current.ProcessId -eq $ProcessId) {

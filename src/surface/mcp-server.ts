@@ -135,56 +135,53 @@ export async function startMcpHttp(
   // required. This makes the dashboard, `clawdcursor task` CLI, and
   // delegate_to_agent tool work as one-shot JSON-RPC clients without
   // needing to initialize and track an Mcp-Session-Id per call.
-  // The daemon is always single-process, so cross-call session state
-  // doesn't buy us anything. Editor hosts use stdio MCP, which is
-  // a separate transport with its own lifecycle.
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
+  //
+  // CRITICAL: in stateless mode the SDK requires a FRESH transport per
+  // HTTP request — a single shared transport accumulates per-request
+  // state (response writers, in-flight message correlation) and
+  // returns 500 on every call after the first. The pattern we use
+  // here matches the MCP SDK's stateless example:
+  //   for each request:
+  //     1) construct a new transport
+  //     2) server.connect(transport)
+  //     3) transport.handleRequest(req, res, req.body)
+  //     4) on response close → transport.close()
+  //
+  // This is per-request boilerplate, not per-connection — there's
+  // still one McpServer (and one tool registry) for the whole daemon.
+  const newTransport = () => new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
-  // Connect the server to the transport BEFORE mounting routes so any
-  // initialize request lands on a live message handler.
-  await server.connect(transport);
+  const handle = async (req: any, res: any, body?: unknown) => {
+    const transport = newTransport();
+    res.on('close', () => {
+      // Best-effort cleanup whenever the response ends, errors out, or the
+      // client disconnects mid-stream.
+      try { void transport.close(); } catch { /* swallow */ }
+    });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, body);
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: `MCP transport error: ${(err as Error).message}` });
+      }
+    }
+  };
 
   // POST /mcp — JSON-RPC requests. Express has already parsed the body
   // via express.json(); pass it through so the SDK doesn't re-read req.
-  app.post(mountPath, async (req, res) => {
-    try {
-      await transport.handleRequest(req as any, res as any, req.body);
-    } catch (err) {
-      // Defensive — handleRequest writes the response itself, but if it
-      // throws synchronously (shouldn't happen) we surface a 500.
-      if (!res.headersSent) {
-        res.status(500).json({ error: `MCP transport error: ${(err as Error).message}` });
-      }
-    }
-  });
+  app.post(mountPath, (req, res) => { void handle(req, res, req.body); });
 
   // GET /mcp — SSE channel for server-initiated notifications.
-  app.get(mountPath, async (req, res) => {
-    try {
-      await transport.handleRequest(req as any, res as any);
-    } catch (err) {
-      if (!res.headersSent) {
-        res.status(500).json({ error: `MCP transport error: ${(err as Error).message}` });
-      }
-    }
-  });
+  app.get(mountPath, (req, res) => { void handle(req, res); });
 
-  // DELETE /mcp — explicit session termination.
-  app.delete(mountPath, async (req, res) => {
-    try {
-      await transport.handleRequest(req as any, res as any);
-    } catch (err) {
-      if (!res.headersSent) {
-        res.status(500).json({ error: `MCP transport error: ${(err as Error).message}` });
-      }
-    }
-  });
+  // DELETE /mcp — explicit session termination (no-op in stateless).
+  app.delete(mountPath, (req, res) => { void handle(req, res); });
 
   return {
     close: async () => {
-      try { await transport.close(); } catch { /* best-effort */ }
+      // Per-request transports clean themselves up on response close;
+      // nothing global to tear down.
     },
   };
 }

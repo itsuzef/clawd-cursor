@@ -233,7 +233,23 @@ function Cmd-FocusWindow {
     $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $winCond)
 
     $target = $null
-    if ($wpid -gt 0) {
+    # When BOTH pid and title are supplied, AND-match. Disambiguates tabbed
+    # apps like Win11 Notepad where multiple windows share one pid.
+    if ($wpid -gt 0 -and $title -ne "") {
+        $tl = $title.ToLower()
+        foreach ($w in $allWins) {
+            try {
+                if ($w.Current.ProcessId -ne $wpid) { continue }
+                if ($w.Current.Name -and $w.Current.Name.ToLower().Contains($tl)) { $target = $w; break }
+            } catch {}
+        }
+        # Fall back to pid-only if no title match (caller may have passed a stale title)
+        if ($null -eq $target) {
+            foreach ($w in $allWins) {
+                try { if ($w.Current.ProcessId -eq $wpid) { $target = $w; break } } catch {}
+            }
+        }
+    } elseif ($wpid -gt 0) {
         foreach ($w in $allWins) {
             try { if ($w.Current.ProcessId -eq $wpid) { $target = $w; break } } catch {}
         }

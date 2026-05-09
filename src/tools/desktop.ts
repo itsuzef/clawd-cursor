@@ -223,7 +223,7 @@ export function getDesktopTools(): ToolDefinition[] {
 
     {
       name: 'type_text',
-      description: 'Type text into the currently focused element via clipboard paste (reliable, no dropped chars).',
+      description: 'Type text into the currently focused element. Internally uses clipboard paste for reliability (no dropped chars). The user clipboard is saved before and restored after, so calling type_text never clobbers any text the caller had previously placed on the clipboard.',
       parameters: {
         text: { type: 'string', description: 'The text to type', required: true },
       },
@@ -234,11 +234,31 @@ export function getDesktopTools(): ToolDefinition[] {
         await ctx.ensureInitialized();
         const active = await ctx.a11y.getActiveWindow();
         const activeInfo = active ? `[${active.processName}] "${active.title}"` : '(unknown)';
+
+        // Preserve the user's clipboard contents around the paste-as-type
+        // operation. Without this, callers who do
+        //   write_clipboard("important sentence")
+        //   type_text("\nheader\n")
+        //   key_press("ctrl+v")
+        // get the header text re-pasted instead of the sentence — type_text
+        // silently overwrote the clipboard. Save/restore makes type_text
+        // transparent to the clipboard.
+        let saved: string | null = null;
+        try { saved = await ctx.a11y.readClipboard(); } catch { saved = null; }
+
         await ctx.a11y.writeClipboard(text);
         await new Promise(r => setTimeout(r, 50));
         // Paste combo is platform-specific
         await ctx.desktop.keyPress(IS_MAC ? 'super+v' : 'ctrl+v');
         await new Promise(r => setTimeout(r, 100));
+
+        // Restore clipboard. Best-effort — if the read failed (no clipboard
+        // available) or the restore throws, we don't surface the error;
+        // type_text's contract is about typing, not clipboard ops.
+        if (saved !== null) {
+          try { await ctx.a11y.writeClipboard(saved); } catch { /* best-effort */ }
+        }
+
         ctx.a11y.invalidateCache();
         return { text: `Typed ${text.length} chars into ${activeInfo}` };
       },

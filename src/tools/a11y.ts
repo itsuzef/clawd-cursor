@@ -191,7 +191,32 @@ export function getA11yTools(): ToolDefinition[] {
         }
         if (!targetBounds && targetPid) {
           const windows = await ctx.a11y.getWindows(true);
-          const win = windows?.find((w: any) => w.processId === targetPid);
+          // Title-as-disambiguator: when caller passed BOTH pid AND title, the
+          // title takes precedence as the primary key. This matters on Win11
+          // Notepad where multiple windows share one pid (tab model) — without
+          // this, we'd silently focus whichever tab `find` returned first,
+          // which is non-deterministic across launches.
+          let win: any;
+          if (title) {
+            const t = (title as string).toLowerCase();
+            const candidates = (windows ?? []).filter((w: any) =>
+              w.processId === targetPid && w.title.toLowerCase().includes(t)
+            );
+            // Prefer on-screen, non-minimized windows when multiple match.
+            candidates.sort((a: any, b: any) => {
+              const aOn = (a.bounds.x >= 0 && a.bounds.y >= 0 && !a.isMinimized) ? 1 : 0;
+              const bOn = (b.bounds.x >= 0 && b.bounds.y >= 0 && !b.isMinimized) ? 1 : 0;
+              return bOn - aOn;
+            });
+            win = candidates[0];
+            if (!win) {
+              // Fall back to pid-only match if no title match — caller may
+              // have passed a stale title.
+              win = windows?.find((w: any) => w.processId === targetPid);
+            }
+          } else {
+            win = windows?.find((w: any) => w.processId === targetPid);
+          }
           if (win?.bounds) targetBounds = win.bounds;
         }
 

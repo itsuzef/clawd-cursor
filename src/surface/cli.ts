@@ -357,10 +357,21 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
   if (agent) {
     let platform: import('../platform/types').PlatformAdapter | undefined;
     try { platform = await getPlatform(); } catch { /* non-fatal */ }
+
+    // The Agent class doesn't currently own a CDPDriver — that bridge lives
+    // on the toolCtx for both `agent` and `agent --no-llm`. Without this,
+    // navigate_browser / cdp_* tools hit "Cannot read properties of
+    // undefined" on first call. Instantiate one here and wire it into the
+    // context so the MCP catalog has the same surface in both modes.
+    const { CDPDriver } = await import('../platform/cdp-driver');
+    const { DEFAULT_CDP_PORT } = await import('../llm/browser-config');
+    const cdp = (agent as any).cdpDriver ?? new CDPDriver(DEFAULT_CDP_PORT);
+    if (!(agent as any).cdpDriver) (agent as any).cdpDriver = cdp;
+
     toolCtx = {
       desktop: agent.getDesktop(),
       a11y: (agent as any).a11y,
-      cdp: (agent as any).cdpDriver,
+      cdp,
       platform,
       agent,
       getLogBuffer: getServerLogBuffer,

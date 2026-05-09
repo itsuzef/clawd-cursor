@@ -1641,7 +1641,7 @@
     },
     {
       "name": "type_text",
-      "description": "Type text into the currently focused element via clipboard paste (reliable, no dropped chars).",
+      "description": "Type text into the currently focused element. Internally uses clipboard paste for reliability (no dropped chars). The user clipboard is saved before and restored after, so calling type_text never clobbers any text the caller had previously placed on the clipboard.",
       "category": "keyboard",
       "parameters": {
         "type": "object",
