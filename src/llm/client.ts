@@ -1017,16 +1017,22 @@ export function tryParseProseToolCall(prose: string): { name: string; args: Reco
   // Strip code fences once up-front; every family below benefits.
   const cleaned = prose.replace(/```(?:json|tool|function)?\s*|```\s*$/g, '').trim();
 
-  // ── Family 1: prefix-style — `functions.<NAME>:<id>$\n<JSON>` ──
-  // This is the Kimi `moonshot-v1-*` shape that v0.8.8 silently mis-parsed
-  // (the JSON body's "name" field was being read as the tool name).
-  // Pattern: `functions.<name>` then optional `:id`, then `$` separator,
-  // then any whitespace/newlines, then a balanced JSON object.
-  const prefixMatch = cleaned.match(/(?:^|\n)\s*functions\.([A-Za-z_][\w]*)(?::\d+)?\s*\$\s*([\s\S]*)$/);
+  // ── Family 1: prefix-style — `functions.<NAME>(:<id>)?(separator)<JSON>` ──
+  // The Kimi `moonshot-v1-*` shape. The model has shipped at least three
+  // separator variants in the wild:
+  //   functions.NAME:0$\n{...}              (original v0.8.8 era)
+  //   functions.NAME:0->{...}               (current as of 2026-05)
+  //   functions.NAME:0\n{...}               (no separator, just whitespace)
+  // Plus an args wrapper variant: Kimi sometimes emits `{_{...real args...}}`
+  // where `_` is a literal underscore "no-key" wrapper. We strip that by
+  // letting `extractParseableJsonObject` walk past unparseable outer braces.
+  const prefixMatch = cleaned.match(/(?:^|\n)\s*functions\.([A-Za-z_][\w]*)(?::\d+)?\s*(?:\$|->|=>)?\s*([\s\S]*)$/);
   if (prefixMatch) {
     const name = prefixMatch[1];
-    const body = prefixMatch[2];
-    const args = extractFirstJsonObject(body);
+    const body = prefixMatch[2].trim();
+    // Empty body — zero-arg call (e.g. `functions.read_screen:18` with nothing after).
+    if (!body) return { name, args: {} };
+    const args = extractParseableJsonObject(body);
     if (name && args !== null) {
       return { name, args };
     }
@@ -1193,4 +1199,43 @@ function extractFirstJsonObject(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Find the first PARSEABLE balanced JSON object in `text`.
+ * Walks every `{` position and tries to JSON.parse the matching balanced
+ * region. Returns the first one that parses successfully.
+ *
+ * This handles wrapper-style outputs like `{_{...real json...}}` that some
+ * models (Kimi `moonshot-v1-*`) emit — the outer `{_{...}}` fails JSON.parse
+ * because `_` isn't a valid key prefix, but the inner `{...}` parses cleanly.
+ */
+function extractParseableJsonObject(text: string): Record<string, unknown> | null {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') inStr = !inStr;
+      if (inStr) continue;
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) { end = j + 1; break; }
+      }
+    }
+    if (end === -1) continue;
+    try {
+      const parsed = JSON.parse(text.slice(i, end));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch { /* try next position */ }
+  }
+  return null;
 }

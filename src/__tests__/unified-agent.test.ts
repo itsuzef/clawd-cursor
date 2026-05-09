@@ -236,4 +236,36 @@ describe('tryParseProseToolCall (fallback for providers without native tool_use)
   it('returns null for malformed JSON', () => {
     expect(tryParseProseToolCall('{not valid')).toBeNull();
   });
+
+  // ── Kimi `moonshot-v1-*` prefix-style variants (regression: agent.no_tool_call storm) ──
+  // Observed in v0.9 against moonshot-v1-32k. Parser must handle both `$` and
+  // `->` separators, and the `{_{...}}` arg wrapper, and zero-arg calls.
+  it('parses Kimi prefix-style with $ separator (legacy form)', () => {
+    const r = tryParseProseToolCall('functions.invoke_element:0$\n{"name":"Submit"}');
+    expect(r).toEqual({ name: 'invoke_element', args: { name: 'Submit' } });
+  });
+
+  it('parses Kimi prefix-style with -> separator (current form)', () => {
+    const r = tryParseProseToolCall('functions.invoke_element:0->{"name":"New Email"}');
+    expect(r).toEqual({ name: 'invoke_element', args: { name: 'New Email' } });
+  });
+
+  it('parses Kimi prefix-style with {_{...}} arg wrapper', () => {
+    const r = tryParseProseToolCall('functions.invoke_element:0->{_{"name":"New Email"}}');
+    expect(r).toEqual({ name: 'invoke_element', args: { name: 'New Email' } });
+  });
+
+  it('parses Kimi prefix-style zero-arg call (no body)', () => {
+    expect(tryParseProseToolCall('functions.read_screen:18')).toEqual({ name: 'read_screen', args: {} });
+    expect(tryParseProseToolCall('functions.screenshot:4')).toEqual({ name: 'screenshot', args: {} });
+  });
+
+  it('parses Kimi prefix-style with empty wrapped body', () => {
+    expect(tryParseProseToolCall('functions.list_windows:13->{_{}}')).toEqual({ name: 'list_windows', args: {} });
+  });
+
+  it('parses Kimi prefix-style numeric and string args', () => {
+    expect(tryParseProseToolCall('functions.wait:2->{_{"ms":1200}}')).toEqual({ name: 'wait', args: { ms: 1200 } });
+    expect(tryParseProseToolCall('functions.give_up:6->{_{"reason":"cannot read"}}')).toEqual({ name: 'give_up', args: { reason: 'cannot read' } });
+  });
 });
