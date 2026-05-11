@@ -131,17 +131,34 @@ if ($exe) {
     }
 }
 
+# Detect whether the user already accepted consent on a prior install.
+# Saves them from being told to re-run a one-time step they already did.
+$consentGiven = Test-Path "$HOME\.clawdcursor\consent"
+$configPresent = Test-Path "$INSTALL_DIR\.clawdcursor-config.json"
+
 Write-Host ""
-Write-Host "  Start here:" -ForegroundColor Cyan
-Write-Host "    clawdcursor consent     " -NoNewline -ForegroundColor Yellow
-Write-Host "One-time desktop control authorization" -ForegroundColor Gray
-Write-Host ""
-Write-Host "  Then pick a path:" -ForegroundColor Cyan
+if (-not $consentGiven) {
+    Write-Host "  Start here:" -ForegroundColor Cyan
+    Write-Host "    clawdcursor consent     " -NoNewline -ForegroundColor Yellow
+    Write-Host "One-time desktop control authorization" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Then pick a path:" -ForegroundColor Cyan
+} else {
+    Write-Host "  [OK] Consent already accepted from a previous install." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Pick a path:" -ForegroundColor Cyan
+}
 Write-Host ""
 Write-Host "    Autonomous agent" -NoNewline -ForegroundColor White
 Write-Host " (clawdcursor brings the AI brain):" -ForegroundColor Gray
-Write-Host "      1. clawdcursor doctor   " -NoNewline -ForegroundColor Yellow
-Write-Host "Configure AI provider + models" -ForegroundColor Gray
+if ($configPresent) {
+    Write-Host "      Config already saved — skip step 1 unless you want to reconfigure." -ForegroundColor DarkGray
+    Write-Host "      1. clawdcursor doctor   " -NoNewline -ForegroundColor DarkYellow
+    Write-Host "(optional) Re-check / change AI provider + models" -ForegroundColor Gray
+} else {
+    Write-Host "      1. clawdcursor doctor   " -NoNewline -ForegroundColor Yellow
+    Write-Host "Configure AI provider + models" -ForegroundColor Gray
+}
 Write-Host "      2. clawdcursor agent    " -NoNewline -ForegroundColor Yellow
 Write-Host "Start the daemon (HTTP + MCP on :3847)" -ForegroundColor Gray
 Write-Host ""
@@ -153,5 +170,11 @@ Write-Host " with Claude Code, Cursor, Windsurf, Zed, etc." -ForegroundColor Gra
 Write-Host "      No daemon, no API key in clawdcursor — your editor handles both." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Run now:" -ForegroundColor White
-Write-Host "    clawdcursor consent" -ForegroundColor Yellow
+if (-not $consentGiven) {
+    Write-Host "    clawdcursor consent" -ForegroundColor Yellow
+} elseif (-not $configPresent) {
+    Write-Host "    clawdcursor doctor" -ForegroundColor Yellow
+} else {
+    Write-Host "    clawdcursor agent" -ForegroundColor Yellow
+}
 Write-Host ""

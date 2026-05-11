@@ -210,14 +210,30 @@ else
     fi
 fi
 
+# Detect prior state so we don't tell the user to re-run one-time steps
+# they already completed (consent, doctor config).
+CONSENT_FILE="$HOME/.clawdcursor/consent"
+CONFIG_FILE="$INSTALL_DIR/.clawdcursor-config.json"
+
 echo ""
-echo "  Start here:"
-echo "    clawdcursor consent     One-time desktop control authorization"
-echo ""
-echo "  Then pick a path:"
+if [ ! -f "$CONSENT_FILE" ]; then
+    echo "  Start here:"
+    echo "    clawdcursor consent     One-time desktop control authorization"
+    echo ""
+    echo "  Then pick a path:"
+else
+    echo "  [OK] Consent already accepted from a previous install."
+    echo ""
+    echo "  Pick a path:"
+fi
 echo ""
 echo "    Autonomous agent (clawdcursor brings the AI brain):"
-echo "      1. clawdcursor doctor   Configure AI provider + models"
+if [ -f "$CONFIG_FILE" ]; then
+    echo "      Config already saved — skip step 1 unless you want to reconfigure."
+    echo "      1. clawdcursor doctor   (optional) Re-check / change AI provider + models"
+else
+    echo "      1. clawdcursor doctor   Configure AI provider + models"
+fi
 echo "      2. clawdcursor agent    Start the daemon (HTTP + MCP on :3847)"
 echo ""
 echo "    MCP-only (your editor brings the AI brain):"
@@ -225,5 +241,11 @@ echo "      Register \`clawdcursor mcp\` with Claude Code, Cursor, Windsurf, Zed
 echo "      No daemon, no API key in clawdcursor — your editor handles both."
 echo ""
 echo "  Run now:"
-echo "    clawdcursor consent"
+if [ ! -f "$CONSENT_FILE" ]; then
+    echo "    clawdcursor consent"
+elif [ ! -f "$CONFIG_FILE" ]; then
+    echo "    clawdcursor doctor"
+else
+    echo "    clawdcursor agent"
+fi
 echo ""

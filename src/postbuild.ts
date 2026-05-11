@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 function copyDir(srcDir: string, dstDir: string): number {
@@ -34,15 +35,26 @@ const srcGuides = path.join(repoRoot, 'src', 'llm', 'knowledge', 'guides');
 const dstGuides = path.join(repoRoot, 'dist', 'llm', 'knowledge', 'guides');
 const guideCount = copyDir(srcGuides, dstGuides);
 
+// Suppress "Run consent" / "Run doctor" hints if the user already did them
+// on this machine. The build script can detect prior state from $HOME and
+// the package's own config file.
+const consentGiven = fs.existsSync(path.join(os.homedir(), '.clawdcursor', 'consent'));
+const configPresent = fs.existsSync(path.join(repoRoot, '.clawdcursor-config.json'));
+
+const startBlock = consentGiven
+  ? `  [OK] Consent already accepted from a previous run.\n\n  Pick a path:`
+  : `  Start here:\n    clawdcursor consent     One-time desktop control authorization\n\n  Then pick a path:`;
+
+const doctorLine = configPresent
+  ? `clawdcursor doctor   (optional) Re-check / change AI provider + models`
+  : `clawdcursor doctor   Configure AI provider + models`;
+
 console.log(`
 🐾 Clawd Cursor built successfully!
    (bundled ${guideCount} app-knowledge guides → dist/llm/knowledge/guides/)
 
-  Start here:
-    clawdcursor consent     One-time desktop control authorization
-
-  Then pick a path:
-    Autonomous agent →  clawdcursor doctor   Configure AI provider + models
+${startBlock}
+    Autonomous agent →  ${doctorLine}
                         clawdcursor agent    Start the daemon (HTTP + MCP on :3847)
 
     MCP-only         →  clawdcursor mcp      stdio MCP for editor integration
