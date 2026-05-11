@@ -34,6 +34,15 @@ metadata:
     skill_dir: ~/.openclaw/workspace/skills/clawdcursor
 ---
 
+> **👋 If you are a human evaluating this project:** the file you actually
+> want is [`README.md`](README.md). This document is the AI-facing manual —
+> it's written *to* an LLM, in the second person, and it's dense on purpose.
+> The README is the human pitch with a hero GIF and a 5-minute quickstart.
+>
+> **If you are an LLM reading this: welcome. Keep going.**
+
+---
+
 > **USE AS A FALLBACK - NOT FIRST CHOICE**
 >
 > Before reaching for any clawdcursor tool, ask:

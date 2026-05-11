@@ -1,12 +1,15 @@
 <p align="center">
-  <img src="docs/favicon.svg" width="80" alt="Clawd Cursor">
+  <img src="docs/hero.gif" width="720" alt="Claude (Sonnet) drawing a stickman in Microsoft Paint, end to end, through Clawd Cursor">
+  <br>
+  <sub><em>Sonnet driving Microsoft Paint over MCP — no Paint plugin, no app integration, just verbs.</em></sub>
 </p>
 
 <h1 align="center">Clawd Cursor</h1>
 
 <p align="center">
-  <strong>The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop.</strong><br>
-  Install it. Your agent uses it. Windows, macOS, Linux &mdash; any tool-calling model.
+  <strong>Give any AI agent a mouse, a keyboard, and a screen.</strong><br>
+  Works in Outlook, Figma, your bank's web portal, that weird legacy ERP.<br>
+  Windows, macOS, Linux. Any model. One MCP entry. Local-only.
 </p>
 
 <p align="center">
@@ -18,37 +21,54 @@
 </p>
 
 <p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#5-minute-quickstart">Quickstart</a> &middot;
+  <a href="#how-it-thinks">How it thinks</a> &middot;
+  <a href="#how-it-stacks-up">vs alternatives</a> &middot;
   <a href="https://clawdcursor.com">Website</a> &middot;
   <a href="https://discord.gg/hW29nrEZ8G">Discord</a> &middot;
-  <a href="#install-the-skill">Install</a> &middot;
-  <a href="#connect-your-agent">Connect</a> &middot;
-  <a href="#tool-surface">Tools</a> &middot;
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
 
-## What This Is
+## What it does, in one sentence
 
-Clawd Cursor is a **skill**, not an application. It gives an AI agent the ability to use the user's computer &mdash; mouse, keyboard, screen, windows, browser &mdash; the same way a human would.
+If a human can do it on the screen, your AI can do it too.
 
-You install it once. Any tool-calling agent on the machine &mdash; Claude Code, Cursor, Windsurf, OpenClaw, the Claude Agent SDK, or a bring-your-own-model setup &mdash; picks it up through MCP or the skill registry once configured. The agent then knows how to click, type, read the screen, open apps, and drive GUIs whenever the task requires it.
+The hero GIF above is **Claude Sonnet 4.6** taking a plain-English task &mdash; *"open Microsoft Paint and draw a stickman"* &mdash; and driving it end to end. No Paint plugin. No app integration. No screen-share. Sonnet picks the cheapest path on every turn (accessibility tree first, OCR if needed, screenshot only if it must), checks the result against the actual pixels, and reports done. Same code on Windows, macOS, and Linux. Same code with Claude, GPT, Gemini, Llama, Kimi, or Ollama.
+
+## Why people use it
+
+- **Works where APIs don't exist.** Native apps, legacy enterprise tools, web portals behind SSO that block headless browsers, anything inside Citrix/RDP. If it renders on screen, your agent can drive it.
+- **Picks up where a smarter agent left off.** Clawd Cursor is built to be a fallback skill: when the upstream agent already opened Outlook and only needs the GUI for the last mile, we don't re-open Outlook. The fast preprocessor handles app-launch in milliseconds when needed and skips when it isn't.
+- **Cross-platform on day one.** One install. Windows 11, macOS 14, Ubuntu (X11 + Wayland) all on the same code path. No Docker required, no VM, no cloud sandbox.
+- **Bring your own model.** Claude, GPT, Gemini, Llama, Kimi, anything local through Ollama. 13 providers ship configured; vision and text can be different models from different vendors.
+- **Local-only.** Server binds to `127.0.0.1`. Screenshots never leave your machine unless you point a cloud model at them. No telemetry.
+- **MCP-native.** One JSON block in your Claude Code / Cursor / Windsurf / Zed config and the tools appear. No daemon required for editor hosts.
+
+## The pitch
+
+The whole world spends most of its waking hours staring at a screen. People talk about inventing robots; if your life happens on a screen, **Clawd Cursor is your robot on the screen** &mdash; eyes, hands, and a keyboard for any AI that can call a tool. There is no task that requires "app X is unsupported." If your GUI has access to it, so does Clawd Cursor.
+
+## How a turn looks
 
 ```
 User: "Open Outlook and reply to the latest email from Sarah."
 
-Agent  →  window({"action":"open_app","name":"Outlook"})
-       →  accessibility({"action":"read_tree"})
-       →  accessibility({"action":"invoke","name":"Sarah's email"})
-       →  computer({"action":"key","combo":"mod+r"})
-       →  computer({"action":"type","text":"..."})
-       →  accessibility({"action":"invoke","name":"Send"})
-       → done (verified by ground-truth verifier)
+Claude/GPT/Gemini/... over MCP
+  →  window({"action":"open_app","name":"Outlook"})
+  →  accessibility({"action":"read_tree"})
+  →  accessibility({"action":"invoke","name":"Sarah's email"})
+  →  computer({"action":"key","combo":"mod+r"})
+  →  computer({"action":"type","text":"..."})
+  →  accessibility({"action":"invoke","name":"Send"})
+  →  done — verified by ground-truth pixel/OCR/window-state check
 ```
 
 No app-specific integrations. No per-service API keys. No cloud round-trip &mdash; everything runs locally on `127.0.0.1`. If it renders on screen, the agent can read it and act on it.
 
-**Design principles.** Model-agnostic (Claude, GPT, Gemini, local models via Ollama). OS-agnostic (a single `PlatformAdapter` handles Windows, macOS, and Linux behind one interface). Skill-first (the AI is the primary consumer; the CLI exists for testing).
+**Design principles.** Model-agnostic (Claude, GPT, Gemini, local via Ollama). OS-agnostic (a single `PlatformAdapter` handles Windows, macOS, and Linux behind one interface). Skill-first (the AI is the primary consumer; the CLI exists for testing).
 
 ---
 
