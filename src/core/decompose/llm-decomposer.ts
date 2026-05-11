@@ -17,9 +17,21 @@ Rules:
   Bad:  "Type the user's name"
   Good: "type John Smith"
 - Subtasks must be in execution order.
-- Aim for 3-6 subtasks. Hard cap is 8. If you'd need more, COLLAPSE — each
-  subtask runs through its own perception+plan+act loop, so chunky steps
-  cost less than micro-steps.
+- USE AS FEW SUBTASKS AS POSSIBLE. Hard cap is 8. Each subtask runs through
+  its own perception+plan+act loop IN COMPLETE ISOLATION — the agent for
+  subtask 3 has NO IDEA what subtask 2 did. State does NOT persist between
+  subtasks. So chunky "do the whole thing" subtasks cost less and succeed
+  more than micro-steps.
+- SINGLE-APP WORKFLOWS ARE ONE SUBTASK. If the entire task happens in one
+  app (e.g. "send an email in Outlook", "draw a stickman in Paint"), emit
+  just "open <app>" + "do the thing in <app>" — at most 2 subtasks. Do NOT
+  break click/type/click sequences inside one app into separate subtasks.
+    Bad:  ["open Outlook", "click Compose", "type email address", "type subject", "type body", "click Send"]
+    Why:  6 isolated agents, each blind to what prior agents did. Subtask 4
+          runs, sees Outlook but no compose window (subtask 2's window
+          closed), fails.
+    Good: ["open Outlook", "compose and send an email to john@example.com introducing yourself"]
+    Why:  1 agent opens Outlook, 1 agent does the entire compose flow.
 - Each subtask must be SELF-CONTAINED. The downstream agent sees ONLY this
   one string, not the original task or prior subtasks. So every subtask must
   carry enough context to execute correctly on its own.
