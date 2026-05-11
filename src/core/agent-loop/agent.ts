@@ -444,27 +444,51 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // — especially safety-trained text models on irreversible actions like
         // "Send" — try to use it as a "can I have a moment to think" pause AFTER
         // they already located an interactive target. That stalls the pipeline
-        // for no good reason. If a perception/locator tool succeeded in the
-        // last few turns, refuse cannot_read and tell the model to act on what
-        // it already found. Pattern-based; doesn't care which model is asking.
+        // for no good reason. If a perception/locator tool succeeded with REAL
+        // CONTENT in the last few turns, refuse cannot_read and tell the model
+        // to act on what it already found. Pattern-based; doesn't care which
+        // model is asking.
+        //
+        // v0.9.0: tightened to check for actual content, not just "success".
+        // A read_screen that returned "(empty a11y tree — app may be
+        // custom-canvas)" is technically successful but has no content for the
+        // model to act on — don't block cannot_read in that case.
         if (call.name === 'cannot_read') {
           const LOOKBACK = 4;
-          const RESOLVERS = new Set([
+          // Resolvers split into two tiers:
+          //   STRONG: action-y tools whose success means the agent actually
+          //   resolved a specific target (invoke_element, set_field_value,
+          //   focus_window). Pure success = real resolution.
+          //   WEAK: perception tools (read_screen, screenshot, a11y_snapshot,
+          //   list_windows) where success can be returned with empty content.
+          //   For those we ALSO require the result text to look non-empty.
+          const STRONG_RESOLVERS = new Set([
             'wait_for_element', 'find_element', 'invoke_element', 'set_field_value',
-            'read_screen', 'a11y_snapshot', 'screenshot',
-            'list_windows', 'focus_window',
+            'focus_window',
           ]);
-          const recentSuccessfulResolution = steps
-            .slice(-LOOKBACK)
-            .some(s => RESOLVERS.has(s.toolName) && s.result.success);
-          if (recentSuccessfulResolution) {
+          const WEAK_RESOLVERS = new Set([
+            'read_screen', 'a11y_snapshot', 'screenshot', 'list_windows',
+          ]);
+          const EMPTY_TREE_HINTS = /empty a11y tree|app may be custom-canvas|\(empty\)|\(no elements found\)|no elements/i;
+          const recentReal = steps.slice(-LOOKBACK).some(s => {
+            if (!s.result.success) return false;
+            if (STRONG_RESOLVERS.has(s.toolName)) return true;
+            if (WEAK_RESOLVERS.has(s.toolName)) {
+              const txt = (s.result as { text?: string }).text ?? '';
+              if (!txt || txt.length < 60) return false;
+              if (EMPTY_TREE_HINTS.test(txt)) return false;
+              return true;
+            }
+            return false;
+          });
+          if (recentReal) {
             log.info('agent.cannot_read.suppressed', {
-              turn, reason: 'recent successful element resolution within lookback',
+              turn, reason: 'recent perception or locator returned real content',
               lookback: LOOKBACK,
             });
             toolResults.push({
               id: call.id,
-              text: 'cannot_read refused: a recent perception/locator tool succeeded in this run, so the screen IS readable. Act on what you already located (invoke_element / mouse_click / key) instead. cannot_read is for blank/garbled screens only.',
+              text: 'cannot_read refused: a recent perception/locator tool succeeded with real content in this run, so the screen IS readable. Act on what you already located (invoke_element / mouse_click / key) instead. cannot_read is for blank/garbled screens only.',
               isError: true,
             });
             steps.push({

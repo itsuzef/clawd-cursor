@@ -476,12 +476,22 @@ export class WindowsAdapter implements PlatformAdapter {
   }
 
   async findElements(query: { name?: string; controlType?: string; processId?: number }): Promise<UiElement[]> {
+    // Default to the foreground window's pid when caller omits processId.
+    // Without this, the PSBridge searches from the desktop root across ALL
+    // windows and hits its 20-element cap before finding deep targets. The
+    // foreground window is almost always the right scope for an unscoped
+    // "find me X" query coming from the agent.
+    let processId = query.processId;
+    if (processId === undefined) {
+      const fg = await this.getActiveWindow();
+      if (fg?.processId) processId = fg.processId;
+    }
     try {
       const result = await psRunner.run({
         cmd: 'find-element',
         ...(query.name !== undefined ? { name: query.name } : {}),
         ...(query.controlType !== undefined ? { controlType: query.controlType } : {}),
-        ...(query.processId !== undefined ? { processId: query.processId } : {}),
+        ...(processId !== undefined ? { processId } : {}),
       }) as any;
       const raw = Array.isArray(result) ? result : [];
       return raw.map(this.normalizeElement);
@@ -511,23 +521,32 @@ export class WindowsAdapter implements PlatformAdapter {
     bounds?: { x: number; y: number; width: number; height: number };
     data?: Record<string, unknown>;
   }> {
-    // The underlying PS bridge requires a processId for invoke-element — when the
-    // caller omits it, resolve via find-element first (same pattern as AccessibilityBridge).
+    // The underlying PS bridge requires a processId for invoke-element.
+    // Resolution order when caller omits processId:
+    //   1. Foreground window (the agent's usual implicit scope).
+    //   2. Fall back to find-element scan if the foreground window has no match.
+    // Without this, find-element ran from the desktop root and could miss
+    // deeply-nested targets due to the PSBridge 20-result cap.
     let processId = query.processId;
     if (processId === undefined && query.name) {
-      const candidates = await this.findElements({
-        name: query.name,
-        controlType: query.controlType,
-      });
-      if (candidates.length === 0) return { success: false };
-      processId = (candidates[0] as any).processId
-        ?? (candidates[0] as any).pid;
-      // If still no pid but we have bounds, caller can fall back to a coord click.
-      if (processId === undefined) {
-        return {
-          success: false,
-          bounds: candidates[0].bounds,
-        };
+      const fg = await this.getActiveWindow();
+      if (fg?.processId) {
+        processId = fg.processId;
+      } else {
+        const candidates = await this.findElements({
+          name: query.name,
+          controlType: query.controlType,
+        });
+        if (candidates.length === 0) return { success: false };
+        processId = (candidates[0] as any).processId
+          ?? (candidates[0] as any).pid;
+        // If still no pid but we have bounds, caller can fall back to a coord click.
+        if (processId === undefined) {
+          return {
+            success: false,
+            bounds: candidates[0].bounds,
+          };
+        }
       }
     }
 
