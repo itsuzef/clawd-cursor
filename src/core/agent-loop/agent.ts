@@ -72,6 +72,16 @@ const STAGNATION_WINDOW = 3;
  */
 const STAGNATION_HARD_LIMIT = 5;
 const MAX_HISTORY_SCREENSHOTS = 2;
+/**
+ * After this many consecutive turns of `agent.no_tool_call` (model
+ * produced text but no parseable tool call), the rung aborts so the
+ * pipeline ladder can climb. Three is conservative — a single
+ * malformed turn from a degenerate model state can usually self-correct
+ * with the "retry with a tool call" reprompt, but three in a row
+ * means the model is stuck in a loop and the next strategy has a
+ * better chance.
+ */
+const NO_TOOL_CALL_LIMIT = 3;
 
 export interface AgentDeps {
   adapter: import('../../platform/types').PlatformAdapter;
@@ -137,6 +147,21 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
    * then fabricated `done()` evidence.
    */
   let consecutiveStagnantTurns = 0;
+  /**
+   * Counts consecutive turns where the model produced no tool call.
+   * Reset to 0 whenever the model successfully emits a tool call. When
+   * this hits `NO_TOOL_CALL_LIMIT` the rung aborts with `'give_up'` so
+   * the pipeline ladder can climb to the next strategy. Without this,
+   * a Kimi/Moonshot model that fell into degenerate generation (loop
+   * of repeated tokens, hits max_tokens with no parseable tool call)
+   * just kept producing more garbage every turn for 5 minutes until the
+   * task-level timeout fired — 12 wasted turns, ~$0.03 wasted, 0
+   * actions taken. Real trace: Outlook subtask 3 ("type recipient")
+   * after focus_element failed legitimately on turn 1, the model
+   * emitted `functions.read_screen:1ORTYMQAQBAA…(1024 tokens of
+   * garbage)` for 11 turns straight.
+   */
+  let consecutiveNoToolCallTurns = 0;
 
   // Turn-1 perception — always an a11y snapshot. In vision mode, also a
   // screenshot. The blind mode gets text-only snapshot.
@@ -240,11 +265,55 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
       }
 
       // 3. Record the assistant turn in history so the next turn sees it.
-      history.push({ role: 'assistant', content: llmResult.raw });
+      //    SAFETY: when the model hit max_tokens with no parseable tool
+      //    call, the content is almost certainly degenerate (token-loop
+      //    garbage). Feeding it back as assistant context just feeds the
+      //    loop. Replace with a short placeholder in that case.
+      const looksDegenerate =
+        llmResult.toolCalls.length === 0
+        && llmResult.stopReason === 'length'
+        && llmResult.text.length > 200;
+      if (looksDegenerate) {
+        history.push({
+          role: 'assistant',
+          content: [{ type: 'text', text: '(previous response exceeded token limit and produced no tool call)' }],
+        });
+      } else {
+        history.push({ role: 'assistant', content: llmResult.raw });
+      }
 
       // 4. No tool call → treat as parse failure (re-prompt once).
       if (llmResult.toolCalls.length === 0) {
-        log.warn('agent.no_tool_call', { turn, stopReason: llmResult.stopReason, text: truncate(llmResult.text, 200) });
+        consecutiveNoToolCallTurns += 1;
+        log.warn('agent.no_tool_call', {
+          turn,
+          stopReason: llmResult.stopReason,
+          text: truncate(llmResult.text, 200),
+          consecutive: consecutiveNoToolCallTurns,
+          degenerate: looksDegenerate,
+        });
+
+        // Hard abort if the model has produced no tool call N turns in
+        // a row — it's stuck in a degenerate state and won't recover.
+        // Exit with 'give_up' so the pipeline ladder climbs to the
+        // next rung (blind → hybrid → vision), which uses a different
+        // model / prompt shape and is likely to escape the loop.
+        if (consecutiveNoToolCallTurns >= NO_TOOL_CALL_LIMIT) {
+          log.error('agent.no_tool_call.runaway_abort', {
+            turn,
+            consecutive: consecutiveNoToolCallTurns,
+            hardLimit: NO_TOOL_CALL_LIMIT,
+          });
+          return finish(
+            'give_up',
+            `Model produced no parseable tool call for ${consecutiveNoToolCallTurns} consecutive turns (last stopReason="${llmResult.stopReason}"). Likely degenerate generation — aborting rung so the pipeline ladder can escalate.`,
+            steps,
+            llmCalls,
+            screenshotsCaptured.n,
+            startedAt,
+          );
+        }
+
         history.push({
           role: 'user',
           content: [{ type: 'text', text: 'You must call exactly one tool per turn. Try again with a tool call.' }],
@@ -260,6 +329,9 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         });
         continue;
       }
+
+      // Successful tool-call emission resets the runaway counter.
+      consecutiveNoToolCallTurns = 0;
 
       // 5. Process every tool call the model emitted this turn. Most
       //    models return exactly one; if more, we process them in order
