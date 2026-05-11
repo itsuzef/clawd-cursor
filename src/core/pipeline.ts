@@ -52,33 +52,30 @@ import { GroundTruthVerifier } from './verifier';
 import type { Capability } from './classify/capability';
 import { decomposeWithLlm, DECOMPOSE_SYSTEM_PROMPT } from './decompose/llm-decomposer';
 import { callLLMWithTools } from '../llm/client';
+import { OcrEngine } from '../platform/ocr-engine';
 
 /**
- * Tasks the LLM decomposer can safely skip — a single concrete verb + a
- * single concrete target with no indefinite phrasing. These get the
- * router's deterministic fast path (or the agent ladder) without paying
- * for an LLM round-trip.
+ * Patterns that gate the LLM decomposer (v0.9: opt-in instead of always-on).
  *
- * Skip LLM:
- *   • "open notepad"                   → trivial
- *   • "navigate to https://github.com" → trivial (URL is concrete)
- *   • "focus outlook"                  → trivial
- *   • "copy"                           → trivial
+ * The decomposer runs ONLY when one of these matches OR the offline
+ * regex preprocessor already split the task into ≥2 subtasks. Trust
+ * the agent with the raw task for everything else.
  *
- * Run LLM:
+ * Run LLM when:
  *   • "open any wikipedia page"        → INDEFINITE_INTENT_PATTERN matches
  *   • "open the latest article"        → INDEFINITE_INTENT_PATTERN matches
  *   • "open notepad and type hello"    → COMPOUND_TASK_PATTERN matches
- *   • "find a restaurant near me"      → both
- *   • "summarize this page"            → no trivial-verb match (LLM by default)
+ *   • "find a restaurant near me"      → INDEFINITE_INTENT_PATTERN matches
  *
- * Triviality requires ALL THREE: verb-prefix match AND no compound
- * AND no indefinite phrasing. If any of those fails, we run the LLM.
+ * Skip LLM (single-clause concrete task → agent handles it whole):
+ *   • "open notepad"                   → no compound, no indefinite
+ *   • "send Sarah the Q2 numbers"      → no compound, no indefinite
+ *   • "focus outlook"                  → no compound, no indefinite
+ *   • "draw a stickman in Paint"       → no compound, no indefinite
+ *   • "summarize this page"            → no compound, no indefinite
  */
-const TRIVIAL_TASK_PATTERN =
-  /^\s*(?:open|launch|start|run|focus|switch\s+to|navigate\s+to|go\s+to|visit|browse\s+to|copy|paste|cut|save|undo|redo|press|type)\s+\S[^.]*?$/i;
 
-/** Compound-task hint. Forces LLM decomposition even if the parts look trivial. */
+/** Compound-task hint. Triggers LLM decomposition. */
 const COMPOUND_TASK_PATTERN = /\b(?:and|then|,)\b/i;
 
 /**
@@ -214,6 +211,13 @@ export class Pipeline {
   private readonly maxEscalations: number;
   private readonly verifier: Verifier | null;
   private readonly decomposer: ((task: string) => Promise<string[] | null>) | null;
+  /**
+   * Lazy OCR engine for the verifier's `after`-snapshot. Constructed on
+   * first use so tests that don't exercise verification pay no cost.
+   * OS-agnostic: OcrEngine internally dispatches to Win/Mac/Linux
+   * backends. Model-agnostic: no LLM involved.
+   */
+  private ocrEngine: OcrEngine | null = null;
 
   constructor(private readonly deps: PipelineDeps) {
     this.router = new Router(deps.adapter);
@@ -301,28 +305,41 @@ export class Pipeline {
         ? outerDecision.subtasks
         : [input.task];
 
-      // ── Tier 0: LLM intent resolution (always-on when text LLM is configured).
+      // ── Tier 0: LLM intent resolution (opt-in for genuinely compound tasks).
       //
-      // v0.7.x ran an LLM decomposer UNCONDITIONALLY at the front of the
-      // pipeline; v0.8.x demoted it to a regex-gated fallback. That
-      // dropped semantic interpretation for whole classes of input —
-      // "open default browser and search …", "find a restaurant near me",
-      // "the latest email" — none of which the regex preprocessor
-      // recognizes as needing interpretation.
+      // Evolution:
+      //   v0.7.x — LLM decomposer ran UNCONDITIONALLY (slow, but always-on).
+      //   v0.8.x — demoted to a regex-gated fallback (fast, but missed
+      //            indefinite intents like "any wikipedia page").
+      //   v0.8.1 — reverted to "always-on except trivial" (slow again,
+      //            and invented phantom scaffolding subtasks like
+      //            "create a new canvas in Paint" right after "open Paint").
+      //   v0.9   — opt-in: run ONLY when the preprocessor already split
+      //            the task into ≥2 subtasks OR the task text matches a
+      //            compound/indefinite pattern. Single-clause concrete
+      //            tasks ("send Sarah an email", "focus Outlook",
+      //            "draw a stickman") go straight to the agent whole —
+      //            the agent's own perception loop handles them more
+      //            reliably than two isolated subtask agents can.
       //
-      // Restored design: the decomposer ALWAYS runs unless the task is
-      // unambiguously trivial (single concrete verb + concrete target,
-      // no compound) — those skip the LLM call as an optimization. This
-      // restores the "LLM is active at every stage that needs it"
-      // invariant the user remembers from legacy clawdcursor.
+      // This is the v0.8.0 contract: trust the agent with the original
+      // task unless we have strong evidence it's actually compound. Net
+      // win: ~700 ms median latency cut, plus elimination of "decomposer
+      // invented a phantom subtask" failures. The decomposer stays
+      // available for tasks that genuinely need it (cross-app workflows,
+      // "the latest X", "any Y", "find a Z").
       //
-      // Cost: ~500-1000 ms text-LLM call for non-trivial tasks. Cheap
-      // tier; well worth the consistent canonicalization downstream.
-      const isTrivial =
-        TRIVIAL_TASK_PATTERN.test(input.task)
-        && !COMPOUND_TASK_PATTERN.test(input.task)
-        && !INDEFINITE_INTENT_PATTERN.test(input.task);
-      if (this.decomposer && !isTrivial) {
+      // Critical for the picking-up-where-an-upstream-agent-left-off
+      // use case: when a caller hands us "send Sarah the Q2 numbers"
+      // with Outlook already focused, we no longer insert a phantom
+      // "open Outlook" subtask. The router's focus_existing path was
+      // already idempotent; this just stops us paying the LLM round-trip
+      // for a subtask that didn't need to exist.
+      const needsDecompose =
+        outerDecision.subtasks.length >= 2
+        || COMPOUND_TASK_PATTERN.test(input.task)
+        || INDEFINITE_INTENT_PATTERN.test(input.task);
+      if (this.decomposer && needsDecompose) {
         log.info('pipeline.decompose.refine_attempt', { task: input.task });
         try {
           const refined = await this.decomposer(input.task);
@@ -389,35 +406,53 @@ export class Pipeline {
         lastPath = subResult.path;
 
         if (!subResult.success) {
-          // Soft-fail policy: a single subtask failing on a low-confidence
-          // verifier rejection shouldn't kill the whole chain. Common
-          // false-positive: "create a new canvas in Paint" right after Paint
-          // launched — zero pixel change, verifier says "no_pixel_change"
-          // at confidence ~0.1, but the goal state is already satisfied
-          // because Paint opened with a blank canvas. Legacy v0.7-0.8.11
-          // didn't have a verifier, so these idempotent no-ops just succeeded.
+          // v0.8.0 had NO chain to abort — one task, one verifier pass at
+          // the end. v0.8.1 introduced per-subtask verification and made
+          // chain-abort the default on any failure; that turned a single
+          // imperfect subtask into a whole-task failure. The user-facing
+          // contract v0.8.0 had was: "the agent ran, here's what it
+          // claims; you decide what to do." v0.9 walks back to that
+          // contract for everything except true unrecoverable failures.
           //
-          // Rule:
-          //   - failureReason='verifier_rejected' AND confidence<0.5
-          //     → log warning, mark soft-fail, CONTINUE chain.
-          //   - everything else (max_turns, give_up, error, anti-pattern,
-          //     high-confidence verifier reject) → ABORT chain (hard fail).
-          const isSoftVerifierReject =
-            subResult.failureReason === 'verifier_rejected'
-            && (subResult.verifierConfidence ?? 0) < 0.5;
+          // Hard-abort ONLY on:
+          //   - 'aborted'                        → user pressed cancel
+          //   - 'error'                          → infrastructure threw
+          //   - 'anti_pattern'                   → explicit failure signal
+          //                                        detected on the post-screen
+          //                                        ("send failed", "401",
+          //                                        "cannot save", error modal)
+          //   - 'verifier_rejected' + conf≥0.8  → verifier is CERTAIN it failed
+          //
+          // Soft-fail (log + continue) on everything else:
+          //   max_turns, stagnation, give_up, cannot_read, no_text_model,
+          //   vision_disabled, router_miss, no_llm, no_ladder,
+          //   verifier_rejected with confidence < 0.8.
+          //
+          // The aggregate result still reports which subtasks soft-failed,
+          // so callers see partial completion. This matches v0.8.0's "agent
+          // reports, caller decides" contract while keeping v0.9's
+          // structured chain telemetry. OS/model/app-agnostic.
+          const reason = subResult.failureReason;
+          const verifierConfidence = subResult.verifierConfidence ?? 0;
+          const isHardAbort =
+            reason === 'aborted'
+            || reason === 'error'
+            || reason === 'anti_pattern'
+            || (reason === 'verifier_rejected' && verifierConfidence >= 0.8);
 
-          if (isSoftVerifierReject) {
+          if (!isHardAbort) {
             log.warn('pipeline.subtask.soft_fail_continue', {
               index: i + 1, of: subtasks.length, subtask,
               path: subResult.path,
-              reason: subResult.failureReason,
-              confidence: subResult.verifierConfidence,
-              note: 'low-confidence verifier rejection — likely idempotent no-op; chain continues',
+              reason,
+              confidence: verifierConfidence,
+              note: reason === 'verifier_rejected'
+                ? 'low-confidence verifier rejection — likely idempotent no-op; chain continues'
+                : `non-fatal failure (${reason}) — chain continues; aggregate result reports soft-fail`,
             });
             subtaskSoftFails += 1;
             // Don't update lastText with a failure message — the next
             // subtask should see "what came before" as the agent's claim.
-            // (Already updated above at line 372 — no-op here.)
           } else {
             log.warn('pipeline.subtask.failed_chain_abort', {
               index: i + 1, subtask, path: subResult.path, reason: subResult.failureReason,
@@ -636,8 +671,19 @@ export class Pipeline {
    * is disabled / capture fails. OCR text is left empty — the verifier's
    * window/focus/pixel signals work regardless, and OCR-dependent
    * assertions degrade gracefully (they just don't add weight to the
-   * verdict). Adding OCR here would more than double the latency per
-   * subtask; the cost trade-off is documented inline.
+   * verdict). OCR runs ONLY on the `after`-snapshot so `task_assertions`
+   * (weight 0.3 — the largest single signal) can match recipient strings,
+   * URLs, typed text, etc. The `before`-snapshot keeps `ocrText: ''`
+   * because `ocr_delta` compares deltas and degrades gracefully when one
+   * side is empty. Net cost: one OCR pass per subtask (~150-400 ms on
+   * Win/Mac native OCR, ~600 ms-1.5 s on Tesseract/Linux), in exchange
+   * for restoring v0.8.0-grade verifier accuracy on send_email,
+   * navigate_url, type_text, compose_message, search.
+   *
+   * If OCR is unavailable on this platform (no Tesseract installed,
+   * permissions denied), captureState gets `''` and the verifier falls
+   * back to pixel/window/focus signals — same as before this change.
+   * OS-agnostic, model-agnostic, app-agnostic.
    */
   private async captureVerifierState(
     env: StrategyEnv,
@@ -645,12 +691,30 @@ export class Pipeline {
   ): Promise<StateSnapshot | null> {
     if (!this.verifier) return null;
     try {
-      return await this.verifier.captureState('');
+      const ocrText = label === 'after' ? await this.captureOcrText() : '';
+      return await this.verifier.captureState(ocrText);
     } catch (err) {
       env.log.warn('pipeline.verifier.capture_failed', {
         label, error: err instanceof Error ? err.message : String(err),
       });
       return null;
+    }
+  }
+
+  /**
+   * Best-effort OCR of the current screen for the verifier's after-state.
+   * Returns '' on any failure (unavailable platform, timeout, permission
+   * denied) — the verifier then degrades to pixel/window/focus only,
+   * which is the same contract we shipped pre-this-change.
+   */
+  private async captureOcrText(): Promise<string> {
+    try {
+      if (!this.ocrEngine) this.ocrEngine = new OcrEngine();
+      if (!this.ocrEngine.isAvailable()) return '';
+      const result = await this.ocrEngine.recognizeScreen();
+      return result.fullText ?? '';
+    } catch {
+      return '';
     }
   }
 

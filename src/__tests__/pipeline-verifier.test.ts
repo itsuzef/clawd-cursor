@@ -249,11 +249,12 @@ describe('Pipeline ground-truth verifier wiring', () => {
 
   it('all rungs verifier-rejected at LOW confidence → soft-fail, chain continues, single-subtask completes "successfully"', async () => {
     // The mock returns confidence=0.2 for rejects, which is below the
-    // soft-fail threshold (< 0.5). Per the v0.9 soft-fail policy, low-
-    // confidence verifier rejections are treated as warnings, not failures —
-    // they're often false-negatives on idempotent operations like
-    // "create new canvas in Paint" where Paint launched with a blank canvas.
-    // The verifier still ran on every rung; the chain just doesn't abort.
+    // hard-abort threshold (< 0.8). Per the v0.9 soft-fail policy, anything
+    // short of a high-confidence (≥0.8) verifier rejection is treated as a
+    // warning, not a chain-killer — false-negatives on idempotent operations
+    // ("create new canvas in Paint" right after Paint launched) are common
+    // and shouldn't take down the whole chain. The verifier still ran on
+    // every rung; the chain just doesn't abort.
     agentResultByRung.clear();
     agentResultByRung.set('blind', { success: true, exit: 'done' });
     agentResultByRung.set('hybrid', { success: true, exit: 'done' });
@@ -276,9 +277,11 @@ describe('Pipeline ground-truth verifier wiring', () => {
     expect(result.success).toBe(true);
   });
 
-  it('high-confidence verifier rejection (≥ 0.5) DOES abort the chain', async () => {
-    // Override the mock to return a high-confidence rejection so the
-    // soft-fail threshold doesn't apply.
+  it('high-confidence verifier rejection (≥ 0.8) DOES abort the chain', async () => {
+    // Override the mock to return a high-confidence rejection (0.85)
+    // above the v0.9 hard-abort threshold (≥ 0.8). At this confidence
+    // the verifier is essentially certain the task failed, so the chain
+    // is allowed to die early instead of dragging through more rungs.
     agentResultByRung.clear();
     agentResultByRung.set('blind', { success: true, exit: 'done' });
     agentResultByRung.set('hybrid', { success: true, exit: 'done' });
@@ -311,5 +314,49 @@ describe('Pipeline ground-truth verifier wiring', () => {
     expect(result.success).toBe(false);
     expect(verifyWithFeedback).toHaveBeenCalledTimes(3);
     expect(result.text.toLowerCase()).toContain('verifier');
+  });
+
+  it('mid-confidence verifier rejection (0.6) is now SOFT-FAIL after v0.9 threshold change', async () => {
+    // Boundary test: 0.6 was a hard-abort under the old <0.5 soft-fail
+    // rule. Under v0.9, the hard-abort threshold moved up to ≥0.8, so a
+    // 0.6-confidence rejection now soft-fails and the chain continues.
+    // This is the contract restoration: v0.8.0 had no chain to abort,
+    // and the user's lived experience was "the agent ran, the agent
+    // reported, the caller decides what to do." 0.6 is the verifier
+    // saying "I'm leaning towards failure" — not strong enough to nuke
+    // the chain on its own.
+    agentResultByRung.clear();
+    agentResultByRung.set('blind', { success: true, exit: 'done' });
+    agentResultByRung.set('hybrid', { success: true, exit: 'done' });
+    agentResultByRung.set('vision', { success: true, exit: 'done' });
+
+    const verifyWithFeedback = vi.fn(async (): Promise<ReflectionFeedback> => ({
+      pass: false,
+      confidence: 0.6,
+      causes: [{ kind: 'no_pixel_change' }],
+      hint: 'Mild signal — verifier not certain',
+    }));
+    const verifier: Verifier = {
+      verify: vi.fn(async () => ({
+        pass: false, confidence: 0.6, reason: 'Mid-confidence reject', signals: [],
+      })),
+      verifyWithFeedback,
+      captureState: vi.fn(async () => emptyState()),
+    };
+
+    const pipeline = new Pipeline({
+      adapter: makeAdapter(),
+      llm: {
+        text: { baseUrl: 'x', model: 'm', apiKey: 'k', isAnthropic: false },
+        vision: { baseUrl: 'x', model: 'v', apiKey: 'k', isAnthropic: false },
+      },
+      verifier,
+    });
+
+    const result = await pipeline.run({ task: 'test task' });
+    // Three rungs climbed; verifier consulted each time.
+    expect(verifyWithFeedback).toHaveBeenCalledTimes(3);
+    // Chain did NOT abort — 0.6 < 0.8, so soft-fail policy kicked in.
+    expect(result.success).toBe(true);
   });
 });
