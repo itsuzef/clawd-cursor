@@ -1219,8 +1219,9 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
   if (allOk) {
     console.log(`✅ All systems go!\n`);
     console.log(`   Next step:`);
-    console.log(`     \x1b[36mclawdcursor agent\x1b[0m            Start the autonomous agent daemon`);
-    console.log(`     \x1b[36mclawdcursor agent --no-llm\x1b[0m   Tools-only daemon (bring your own LLM)\n`);
+    console.log(`     \x1b[36mclawdcursor agent\x1b[0m            Start the daemon (auto-detects LLM availability)\n`);
+    console.log(`   The daemon serves the MCP tool surface either way — with an LLM`);
+    console.log(`   configured, you also get the built-in autonomous agent.\n`);
     console.log(`   Or, for editor-driven (MCP) use, register \x1b[36mclawdcursor mcp\x1b[0m`);
     console.log(`   with your editor instead — no daemon needed in that case.\n`);
     console.log(`   Run now:`);

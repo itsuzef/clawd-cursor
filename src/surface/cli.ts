@@ -218,9 +218,16 @@ program
 //   GET  /mcp      — MCP SSE channel (auth)
 //   DELETE /mcp    — MCP session terminate (auth)
 //
-// `--no-llm` skips the autonomous-agent path: no Tier-0 decomposer,
-// no API-key validation, ToolContext.agent is undefined. The MCP tool
-// surface is still fully available — clients drive primitives directly.
+// v0.9 cleanup: the explicit `--no-llm` flag is gone. The daemon now
+// auto-detects whether an LLM is configured and adapts:
+//   - LLM available → autonomous agent + MCP tool surface (full mode)
+//   - LLM missing   → MCP tool surface only, agent disabled
+//                     (drives clawdcursor from an external host's brain)
+//
+// The valuable thing about the old --no-llm path was never the flag —
+// it was the fact that the preprocessor (pure regex, 0 LLM) could open
+// apps blindingly fast. That preprocessor still lives in core/preprocessor
+// and runs on every task regardless of LLM availability.
 interface AgentModeOpts {
   port?: string;
   provider?: string;
@@ -232,7 +239,6 @@ interface AgentModeOpts {
   debug?: boolean;
   accept?: boolean;
   noVision?: boolean;
-  noLlm?: boolean;
   skipConsent?: boolean;
 }
 
@@ -277,19 +283,20 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     process.exit(1);
   }
 
-  // ── First-run auto-setup (only when LLM is wanted) ──
-  if (!opts.noLlm) {
-    const configPath = path.join(getPackageRoot(), '.clawdcursor-config.json');
-    if (!fs.existsSync(configPath)) {
-      console.log(`${e('🔍', '*')} First run — auto-detecting AI providers...\n`);
-      const { quickSetup } = await import('./doctor');
-      const pipeline = await quickSetup();
-      if (pipeline) {
-        console.log(`${e('✅', '[OK]')} Auto-configured! Run \`clawdcursor doctor\` to customize.\n`);
-      } else {
-        console.log(`${e('⚠️', '[WARN]')}  No AI providers found. Layer 1 (Action Router) will still work.`);
-        console.log('   Run `clawdcursor doctor` to set up AI providers.\n');
-      }
+  // ── First-run auto-setup — best-effort, never fatal. ──
+  // If no AI providers are found we still boot: the MCP tool surface
+  // works fine without an LLM (the host's brain drives it).
+  const configPath = path.join(getPackageRoot(), '.clawdcursor-config.json');
+  if (!fs.existsSync(configPath)) {
+    console.log(`${e('🔍', '*')} First run — auto-detecting AI providers...\n`);
+    const { quickSetup } = await import('./doctor');
+    const pipeline = await quickSetup();
+    if (pipeline) {
+      console.log(`${e('✅', '[OK]')} Auto-configured! Run \`clawdcursor doctor\` to customize.\n`);
+    } else {
+      console.log(`${e('ℹ️', 'i')}  No AI providers found — booting in tools-only mode.`);
+      console.log('   Your editor host (Claude Code, Cursor, Windsurf, OpenClaw) drives the tools.');
+      console.log('   Run `clawdcursor doctor` later if you want the built-in autonomous agent.\n');
     }
   }
 
@@ -327,11 +334,21 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     debug: resolved.debug,
   };
 
-  console.log(`\x1b[32m✓\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m— desktop control active on ${config.server.host}:${config.server.port}${opts.noLlm ? ' (--no-llm)' : ''}\x1b[0m`);
+  // Auto-detect LLM availability: if neither a text nor a vision model is
+  // resolvable, the daemon still boots, but in tools-only mode. The MCP
+  // surface is fully available; the autonomous-agent path is disabled.
+  const llmAvailable = Boolean(
+    resolved.apiKey || resolved.textApiKey || resolved.visionApiKey
+    || (resolved.baseUrl && (resolved.model || resolved.visionModel))
+    || (resolved.textBaseUrl && resolved.model)
+    || (resolved.visionBaseUrl && resolved.visionModel)
+  );
+  const modeLabel = llmAvailable ? '' : ' (tools-only)';
+  console.log(`\x1b[32m✓\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m— desktop control active on ${config.server.host}:${config.server.port}${modeLabel}\x1b[0m`);
 
-  // ── Agent (only when LLM is enabled) ──
+  // ── Agent (only when an LLM is configured) ──
   let agent: Agent | undefined;
-  if (!opts.noLlm) {
+  if (llmAvailable) {
     agent = new Agent(config, resolved);
     try {
       await agent.connect();
@@ -419,7 +436,7 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     console.log(`  GET  /mcp      — SSE notifications (auth)`);
     console.log(`\nAll mutating endpoints require: \x1b[36mAuthorization: Bearer <token>\x1b[0m`);
 
-    if (!opts.noLlm) {
+    if (llmAvailable) {
       const { loadPipelineConfig } = await import('./doctor');
       const pipelineConfig = loadPipelineConfig();
       if (pipelineConfig && pipelineConfig.layer2.enabled) {
@@ -446,7 +463,7 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
         } catch (err: any) {
           if (err.name === 'LLMAuthError') {
             console.error(`\n${e('❌', '[ERR]')} API key INVALID for ${pipelineConfig.provider.name} (${pipelineConfig.layer2.model})`);
-            console.error(`   The saved config has an expired or revoked key.\n`);
+            console.error(`   The saved config has an expired or revoked key. Tools-only mode still works.\n`);
             const staleConfig = path.join(getPackageRoot(), '.clawdcursor-config.json');
             try { fs.unlinkSync(staleConfig); } catch { /* ok */ }
             console.error(`   ${e('🗑️', '[DEL]')}  Removed stale config. Fix your key and restart:`);
@@ -467,22 +484,8 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
             console.warn(`${e('⚠️', '[WARN]')} Could not validate API key: ${err.message?.substring(0, 100)}`);
           }
         }
-      } else if (!pipelineConfig) {
-        const hasExternalModels = !!(config.ai.model || config.ai.visionModel);
-        if (!hasExternalModels) {
-          console.error(`\n${e('❌', '[ERR]')} No AI providers configured.`);
-          console.error(`   clawdcursor needs at least one working LLM to execute tasks.\n`);
-          console.error(`   Option 1 (Free, local): Install Ollama → https://ollama.ai`);
-          console.error(`      Then: ollama pull qwen2.5:7b\n`);
-          console.error(`   Option 2 (API key): Set an environment variable:`);
-          console.error(`      ANTHROPIC_API_KEY, OPENAI_API_KEY, MOONSHOT_API_KEY, etc.\n`);
-          console.error(`   Or run with --no-llm if you only need the tool surface.\n`);
-          if (agent) gracefulExitOnInitFailure(1, agent);
-          else process.exit(1);
-          return;
-        } else {
-          console.log(`${e('✅', '[OK]')} Using externally configured models: text=${config.ai.model} | vision=${config.ai.visionModel}`);
-        }
+      } else if (config.ai.model || config.ai.visionModel) {
+        console.log(`${e('✅', '[OK]')} Using externally configured models: text=${config.ai.model} | vision=${config.ai.visionModel}`);
       }
 
       const { MIN_RECOMMENDED_CONTEXT } = await import('../llm/providers');
@@ -493,7 +496,11 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
         console.warn(`   Run: clawdcursor doctor   to switch models\n`);
       }
     } else {
-      console.log(`${e('🐾', '>')} Tool surface ready (--no-llm). Connect any AI model.`);
+      // Tools-only mode — the MCP catalog is fully available, the autonomous
+      // agent is disabled (no LLM was configured). External hosts (Claude
+      // Code, Cursor, Windsurf, OpenClaw) drive the verbs directly.
+      console.log(`${e('🐾', '>')} Tools-only mode. Connect any MCP-capable host — your model drives the verbs.`);
+      console.log(`   Run \`clawdcursor doctor\` if you want to enable the built-in autonomous agent later.`);
     }
 
     console.log(`\nReady. ${e('🐾', '')}`);
@@ -525,7 +532,6 @@ program
   .option('--debug', 'Save screenshots to debug/ folder (off by default)')
   .option('--accept', 'Accept desktop control consent non-interactively and start')
   .option('--no-vision', 'Refuse vision fallback — blind-first only (high-security mode)')
-  .option('--no-llm', 'Tool surface only — no autonomous decomposer, no API-key validation')
   .option('--skip-consent', 'Skip consent prompt (requires NODE_ENV=development)')
   .action(async (opts) => {
     await runAgentMode(opts);
@@ -1211,17 +1217,19 @@ program
 
 // ── `serve` deprecation alias (v0.9 PR7.4) ──
 //
-// `clawdcursor serve` was the legacy "tool server only" daemon — same as
-// `clawdcursor agent --no-llm` in the new world. Kept as a deprecation
-// proxy through 0.9.x; removed in v0.10.
+// `clawdcursor serve` was the legacy "tool server only" daemon. v0.9.0
+// folded it into `clawdcursor agent`, which now auto-detects LLM
+// availability — if no model is configured, the daemon boots into
+// tools-only mode automatically. Kept here as a soft-deprecation alias
+// for one release; removed in v0.10.
 program
   .command('serve')
-  .description('[deprecated — use `clawdcursor agent --no-llm`] Start the tool server only')
+  .description('[deprecated — use `clawdcursor agent`] Start the tool server only')
   .option('--port <port>', 'HTTP server port', '3847')
   .option('--skip-consent', 'Skip consent prompt (requires NODE_ENV=development)')
   .action(async (opts) => {
-    console.warn(`${e('⚠', '[WARN]')} \`clawdcursor serve\` is deprecated; use \`clawdcursor agent --no-llm\`. Removed in v0.10.`);
-    await runAgentMode({ ...opts, noLlm: true });
+    console.warn(`${e('⚠', '[WARN]')} \`clawdcursor serve\` is deprecated; use \`clawdcursor agent\`. Removed in v0.10.`);
+    await runAgentMode(opts);
   });
 
 program
