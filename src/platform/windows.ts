@@ -318,7 +318,15 @@ export class WindowsAdapter implements PlatformAdapter {
         ...(title !== undefined ? { title } : {}),
         ...(processId !== undefined ? { processId } : {}),
       }) as any;
-      return result?.success === true;
+      // The PS script reports `success` (target window was found and SetFocus
+      // was attempted) and `foreground` (Win32 SetForegroundWindow actually
+      // promoted the window). We need foreground=true for subsequent keystroke
+      // tools to land on the right app, so treat foreground=false as a focus
+      // failure even if SetFocus succeeded. This is the difference between
+      // "a11y-focused" and "will receive global SendInput keystrokes".
+      if (result?.success !== true) return false;
+      if (result?.foreground === false) return false;
+      return true;
     } catch {
       return false;
     }

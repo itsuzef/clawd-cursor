@@ -109,33 +109,105 @@ try {
         # WindowPattern may not be available
     }
 
-    # Set focus
-    try {
-        $targetWindow.SetFocus()
-    } catch {
-        # Fallback: try using Win32 SetForegroundWindow
-        Add-Type @"
-            using System;
-            using System.Runtime.InteropServices;
-            public class Win32Focus {
-                [DllImport("user32.dll")]
-                public static extern bool SetForegroundWindow(IntPtr hWnd);
-                [DllImport("user32.dll")]
-                public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    # Always load the Win32 helpers; we use them for ForegroundWindow even
+    # on the SetFocus path because UIA SetFocus does NOT change foreground.
+    Add-Type @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class Win32Focus {
+            [DllImport("user32.dll")]
+            public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")]
+            public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")]
+            public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")]
+            public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+            [DllImport("user32.dll")]
+            public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+            [DllImport("kernel32.dll")]
+            public static extern uint GetCurrentThreadId();
+            [DllImport("user32.dll", SetLastError=true)]
+            public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+            [StructLayout(LayoutKind.Sequential)]
+            public struct INPUT { public uint type; public InputUnion u; }
+            [StructLayout(LayoutKind.Explicit)]
+            public struct InputUnion {
+                [FieldOffset(0)] public KEYBDINPUT ki;
             }
+            [StructLayout(LayoutKind.Sequential)]
+            public struct KEYBDINPUT {
+                public ushort wVk;
+                public ushort wScan;
+                public uint dwFlags;
+                public uint time;
+                public IntPtr dwExtraInfo;
+            }
+        }
 "@
-        $hwnd = [IntPtr]$targetWindow.Current.NativeWindowHandle
-        [Win32Focus]::ShowWindow($hwnd, 9) | Out-Null # SW_RESTORE
-        Start-Sleep -Milliseconds 100
-        [Win32Focus]::SetForegroundWindow($hwnd) | Out-Null
+
+    $hwnd = [IntPtr]$targetWindow.Current.NativeWindowHandle
+
+    # Restore from minimized if needed (Win32 path is more reliable than UIA here)
+    [Win32Focus]::ShowWindow($hwnd, 9) | Out-Null # SW_RESTORE
+
+    # Try UIA SetFocus first — it works inside the same process and pokes the
+    # accessibility focus, but it does NOT change the foreground window when
+    # the daemon was launched from a different foreground app.
+    try { $targetWindow.SetFocus() } catch { }
+
+    # Now force foreground. Windows blocks SetForegroundWindow unless the
+    # calling thread is attached to the current foreground thread's input
+    # queue (or one of a few other conditions). Standard Raymond-Chen trick:
+    # nudge SendInput once to satisfy the foreground-lock timeout, then
+    # attach-then-set-then-detach.
+    $foregroundOk = $false
+    try {
+        # 1. Nudge SendInput with a no-op to clear the foreground lock timeout.
+        $blank = New-Object Win32Focus+INPUT
+        $blank.type = 1 # INPUT_KEYBOARD
+        $blank.u.ki.wVk = 0
+        $blank.u.ki.wScan = 0
+        $blank.u.ki.dwFlags = 0
+        [Win32Focus]::SendInput(1, @($blank), [System.Runtime.InteropServices.Marshal]::SizeOf($blank)) | Out-Null
+
+        # 2. Attach this thread's input queue to the foreground thread's.
+        $fgHwnd = [Win32Focus]::GetForegroundWindow()
+        $fgTid  = [Win32Focus]::GetWindowThreadProcessId($fgHwnd, [IntPtr]::Zero)
+        $myTid  = [Win32Focus]::GetCurrentThreadId()
+        $tgtTid = [Win32Focus]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+
+        $attachedFg = $false
+        $attachedTgt = $false
+        if ($fgTid -ne 0 -and $fgTid -ne $myTid) {
+            $attachedFg = [Win32Focus]::AttachThreadInput($myTid, $fgTid, $true)
+        }
+        if ($tgtTid -ne 0 -and $tgtTid -ne $myTid -and $tgtTid -ne $fgTid) {
+            $attachedTgt = [Win32Focus]::AttachThreadInput($myTid, $tgtTid, $true)
+        }
+
+        # 3. Now SetForegroundWindow is permitted.
+        $foregroundOk = [Win32Focus]::SetForegroundWindow($hwnd)
+
+        if ($attachedFg)  { [Win32Focus]::AttachThreadInput($myTid, $fgTid,  $false) | Out-Null }
+        if ($attachedTgt) { [Win32Focus]::AttachThreadInput($myTid, $tgtTid, $false) | Out-Null }
+
+        # 4. Verify: read GetForegroundWindow and confirm it's our hwnd. If
+        # something denied us anyway, surface that to the caller.
+        Start-Sleep -Milliseconds 80
+        $nowFg = [Win32Focus]::GetForegroundWindow()
+        if ($nowFg -ne $hwnd) { $foregroundOk = $false }
+    } catch {
+        $foregroundOk = $false
     }
 
     $c = $targetWindow.Current
     [Console]::Out.Write((@{
-        success     = $true
-        title       = $c.Name
-        processId   = $c.ProcessId
-        handle      = $c.NativeWindowHandle
+        success      = $true
+        foreground   = $foregroundOk
+        title        = $c.Name
+        processId    = $c.ProcessId
+        handle       = $c.NativeWindowHandle
     } | ConvertTo-Json -Compress))
 
 } catch {
