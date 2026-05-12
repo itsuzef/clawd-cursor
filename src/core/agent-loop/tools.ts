@@ -394,13 +394,16 @@ export function buildUnifiedTools(
       },
       changesScreen: true,
       async execute(args, ctx) {
-        const x = Number(args.x ?? 0);
-        const y = Number(args.y ?? 0);
+        const { x, y, warning } = coerceCoord(args.x, args.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return { success: false, isError: true, text: `click: x/y must be finite numbers, got x=${JSON.stringify(args.x)} y=${JSON.stringify(args.y)}` };
+        }
         const button = args.button === 'right' ? 'right' : 'left';
         const count = args.count === 2 ? 2 : 1;
         await ctx.platform.mouseClick(x, y, { button, count });
         await sleep(150);
-        return { success: true, text: `Clicked ${button} x${count} at (${x},${y})` };
+        const note = warning ? ` (${warning})` : '';
+        return { success: true, text: `Clicked ${button} x${count} at (${x},${y})${note}` };
       },
     },
 
@@ -420,13 +423,14 @@ export function buildUnifiedTools(
       },
       changesScreen: true,
       async execute(args, ctx) {
-        const sx = Number(args.startX ?? 0);
-        const sy = Number(args.startY ?? 0);
-        const ex = Number(args.endX ?? 0);
-        const ey = Number(args.endY ?? 0);
-        await ctx.platform.mouseDrag(sx, sy, ex, ey);
+        const start = coerceCoord(args.startX, args.startY);
+        const end = coerceCoord(args.endX, args.endY);
+        if (![start.x, start.y, end.x, end.y].every(Number.isFinite)) {
+          return { success: false, isError: true, text: `drag: startX/startY/endX/endY must be finite numbers, got ${JSON.stringify(args)}` };
+        }
+        await ctx.platform.mouseDrag(start.x, start.y, end.x, end.y);
         await sleep(200);
-        return { success: true, text: `Dragged (${sx},${sy})→(${ex},${ey})` };
+        return { success: true, text: `Dragged (${start.x},${start.y})→(${end.x},${end.y})` };
       },
     },
 
@@ -448,8 +452,14 @@ export function buildUnifiedTools(
       async execute(args, ctx) {
         const dir = args.direction === 'up' ? 'up' : 'down';
         const amount = typeof args.amount === 'number' ? args.amount : 3;
-        let x = typeof args.x === 'number' ? args.x : Math.floor(ctx.screen.logicalWidth / 2);
-        let y = typeof args.y === 'number' ? args.y : Math.floor(ctx.screen.logicalHeight / 2);
+        // Default to screen-center when x/y missing; coerce strings via the helper.
+        const hasXY = args.x !== undefined || args.y !== undefined;
+        let x = Math.floor(ctx.screen.logicalWidth / 2);
+        let y = Math.floor(ctx.screen.logicalHeight / 2);
+        if (hasXY) {
+          const c = coerceCoord(args.x, args.y);
+          if (Number.isFinite(c.x) && Number.isFinite(c.y)) { x = c.x; y = c.y; }
+        }
         await ctx.platform.mouseScroll(x, y, dir, amount);
         await sleep(150);
         return { success: true, text: `Scrolled ${dir} ${amount} at (${x},${y})` };
@@ -829,6 +839,74 @@ export function buildUnifiedTools(
     },
 
     {
+      // app-agnostic, OS-agnostic email composer. Uses RFC 6068 mailto: URIs,
+      // which the OS routes to whatever mail client the user has configured
+      // as their default (Outlook on Windows, Mail.app on macOS, Thunderbird
+      // on Linux, etc.). The compose window opens pre-filled — the agent
+      // does NOT need to type recipient/subject/body via UI Automation,
+      // does NOT need vision, and does NOT need CDP access to a hidden DOM.
+      //
+      // This is the "zero vision" path for email composition. It does not
+      // auto-send (no mail client honours that for security), but a single
+      // ctrl+enter / cmd+enter after this tool completes the flow.
+      name: 'compose_email',
+      description: 'Open the user\'s default mail client with a new message pre-filled (To/Cc/Bcc/Subject/Body). Cross-OS, cross-app, zero a11y or vision needed. The user (or a follow-up keystroke) confirms send.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address. Multiple comma-separated.' },
+          cc: { type: 'string', description: 'Cc recipients (optional, comma-separated).' },
+          bcc: { type: 'string', description: 'Bcc recipients (optional, comma-separated).' },
+          subject: { type: 'string' },
+          body: { type: 'string' },
+        },
+        required: ['to'],
+        additionalProperties: false,
+      },
+      changesScreen: true,
+      async execute(args, ctx) {
+        const to = String(args.to ?? '').trim();
+        if (!to) return { success: false, isError: true, text: 'compose_email: "to" is required' };
+        // Build an RFC 6068 mailto: URI. Encode aggressively so the URL is
+        // safe to pass through every shell:
+        //   - encodeURIComponent handles spaces, newlines, ampersands.
+        //   - We additionally encode `'` (apostrophe) and `"` (quote) because
+        //     standard encodeURIComponent leaves those literal, and they
+        //     would trip a Windows shell-metacharacter guard on launchApp.
+        const safe = (s: string): string =>
+          encodeURIComponent(s).replace(/'/g, '%27').replace(/"/g, '%22');
+        const params: string[] = [];
+        if (args.cc)      params.push(`cc=${safe(String(args.cc))}`);
+        if (args.bcc)     params.push(`bcc=${safe(String(args.bcc))}`);
+        if (args.subject) params.push(`subject=${safe(String(args.subject))}`);
+        if (args.body)    params.push(`body=${safe(String(args.body))}`);
+        const query = params.length ? `?${params.join('&')}` : '';
+        // Recipient: keep `@` and `,` (multiple recipients) literal so the
+        // OS handler parses them correctly.
+        const uri = `mailto:${safe(to).replace(/%40/g, '@').replace(/%2C/g, ',')}${query}`;
+        try {
+          if (ctx.platform.platform === 'darwin') {
+            await ctx.platform.launchApp('open', { url: uri });
+          } else if (ctx.platform.platform === 'linux') {
+            await ctx.platform.launchApp('xdg-open', { url: uri });
+          } else {
+            // Windows: ShellExecute via explorer.exe — OS resolves the
+            // mailto: handler from the registry (HKCR\\mailto\\shell\\open\\command).
+            await ctx.platform.launchApp('explorer.exe', { url: uri });
+          }
+          await sleep(1500);
+          return {
+            success: true,
+            text: `Compose window opened in the default mail client (to=${to}, subject=${args.subject ? `"${truncate(String(args.subject), 60)}"` : '(none)'}). Press ctrl+enter (or cmd+enter on macOS) to send, or wait for the user to confirm.`,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { success: false, isError: true, text: `compose_email failed: ${msg}` };
+        }
+      },
+    },
+
+    {
       name: 'get_system_time',
       description: 'Return current system time (ISO, epoch, timezone). Zero I/O.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -1163,4 +1241,47 @@ function sleep(ms: number): Promise<void> {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+/**
+ * Coerce an LLM-supplied coordinate argument into a clean `{ x, y }` pair.
+ * Models occasionally smush both axes into one field (e.g. `x="390, 79"`,
+ * `x="(390, 79)"`, or `x="390 79"`). The strict number schema makes `Number(...)`
+ * silently produce NaN, which then becomes a click at (NaN, y) — a crash
+ * disguised as a no-op. This helper splits the smushed form when present
+ * and falls back to a clean parse otherwise.
+ *
+ * App-agnostic, OS-agnostic, model-agnostic. Used by every coordinate-taking
+ * tool (click, drag, scroll, hover, move).
+ */
+export function coerceCoord(rawX: unknown, rawY: unknown): { x: number; y: number; warning?: string } {
+  const parseOne = (v: unknown): number => {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      // Strip parens, brackets, leading/trailing whitespace.
+      const cleaned = v.replace(/[()[\]\s]/g, '');
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    return NaN;
+  };
+
+  // Case A: x is a string containing a comma or pair-like "390, 79" / "390 79" / "(390,79)".
+  if (typeof rawX === 'string' && /[\s,]/.test(rawX)) {
+    const parts = rawX.replace(/[()[\]]/g, '').split(/[,\s]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const x = Number(parts[0]);
+      const y = Number(parts[1]);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return {
+          x, y,
+          warning: `coord parser: x came in as "${rawX}" — split into x=${x},y=${y}. Pass x and y as SEPARATE numeric args next time.`,
+        };
+      }
+    }
+  }
+
+  const x = parseOne(rawX);
+  const y = parseOne(rawY);
+  return { x, y };
 }

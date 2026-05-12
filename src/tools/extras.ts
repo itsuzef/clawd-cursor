@@ -537,6 +537,64 @@ export function getExtraTools(): ToolDefinition[] {
     },
 
     {
+      // App-agnostic, OS-agnostic email composer. Uses RFC 6068 mailto: URIs
+      // routed through the OS default-handler registry. Works with Outlook,
+      // Mail.app, Thunderbird, Spark, etc. — whichever the user has set as
+      // default. The compose window opens pre-filled with To/Cc/Bcc/Subject/
+      // Body. ZERO vision and ZERO a11y tree walking needed.
+      //
+      // This is the recommended primitive for the "send an email" use case.
+      // It does NOT auto-send (no mail client honours that for security);
+      // one ctrl+enter / cmd+enter completes the flow.
+      name: 'compose_email',
+      description: 'Open the user\'s default mail client with a new message pre-filled (To/Cc/Bcc/Subject/Body). Cross-OS, cross-app, zero a11y or vision needed.',
+      parameters: {
+        to:      { type: 'string', description: 'Recipient(s), comma-separated.', required: true },
+        cc:      { type: 'string', description: 'Cc recipients (optional, comma-separated).', required: false },
+        bcc:     { type: 'string', description: 'Bcc recipients (optional, comma-separated).', required: false },
+        subject: { type: 'string', description: 'Email subject line.', required: false },
+        body:    { type: 'string', description: 'Email body (plain text; newlines preserved).', required: false },
+      },
+      category: 'orchestration',
+      compactGroup: 'window',
+      safetyTier: 1,
+      handler: async ({ to, cc, bcc, subject, body }, ctx) => {
+        await ctx.ensureInitialized();
+        if (!ctx.platform) return needPlatform('compose_email');
+        const recipient = String(to ?? '').trim();
+        if (!recipient) return { text: 'compose_email: "to" is required', isError: true };
+        // Encode aggressively — standard encodeURIComponent leaves `'` and `"`
+        // literal, which would trip the Windows launchApp shell-meta guard.
+        const safe = (s: string): string =>
+          encodeURIComponent(s).replace(/'/g, '%27').replace(/"/g, '%22');
+        const params: string[] = [];
+        if (cc)      params.push(`cc=${safe(String(cc))}`);
+        if (bcc)     params.push(`bcc=${safe(String(bcc))}`);
+        if (subject) params.push(`subject=${safe(String(subject))}`);
+        if (body)    params.push(`body=${safe(String(body))}`);
+        const query = params.length ? `?${params.join('&')}` : '';
+        // Recipient keeps `@` and `,` literal so the OS handler parses it.
+        const uri = `mailto:${safe(recipient).replace(/%40/g, '@').replace(/%2C/g, ',')}${query}`;
+        try {
+          if (ctx.platform.platform === 'darwin') {
+            await ctx.platform.launchApp('open', { url: uri });
+          } else if (ctx.platform.platform === 'linux') {
+            await ctx.platform.launchApp('xdg-open', { url: uri });
+          } else {
+            await ctx.platform.launchApp('explorer.exe', { url: uri });
+          }
+          const subjPreview = subject ? `"${String(subject).slice(0, 60)}"` : '(none)';
+          return { text: `Compose window opened in the default mail client (to=${recipient}, subject=${subjPreview}). Press ctrl+enter (macOS: cmd+enter) to send.` };
+        } catch (err) {
+          return {
+            text: `compose_email failed: ${err instanceof Error ? err.message : String(err)}`,
+            isError: true,
+          };
+        }
+      },
+    },
+
+    {
       name: 'get_system_time',
       description: 'Return the current system time as ISO 8601 UTC + local components. Zero I/O.',
       parameters: {},

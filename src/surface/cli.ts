@@ -460,6 +460,20 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
             retries: 0,
           });
           console.log(`${e('✅', '[OK]')} API key validated for ${layer2Provider.name}`);
+          // Print the resolved model wiring so the user can see which model
+          // drives reasoning (text) vs perception (vision) BEFORE any task
+          // runs. Without this you only see model names on the task header,
+          // which is too late if the wiring is wrong (mismatched provider,
+          // unexpected default, stale .clawdcursor-config.json).
+          try {
+            const textModel   = pipelineConfig.layer2?.model   || '(default)';
+            const visionModel = pipelineConfig.layer3?.model   || '(default)';
+            const textBase    = pipelineConfig.layer2?.baseUrl || '(provider default)';
+            const visionBase  = pipelineConfig.layer3?.baseUrl || textBase;
+            const visionState = pipelineConfig.layer3?.enabled === false ? ' [disabled]' : '';
+            console.log(`\x1b[90m   text  : ${textModel}   ← ${textBase}\x1b[0m`);
+            console.log(`\x1b[90m   vision: ${visionModel}${visionState}   ← ${visionBase}\x1b[0m`);
+          } catch { /* non-fatal — boot continues either way */ }
         } catch (err: any) {
           if (err.name === 'LLMAuthError') {
             console.error(`\n${e('❌', '[ERR]')} API key INVALID for ${pipelineConfig.provider.name} (${pipelineConfig.layer2.model})`);

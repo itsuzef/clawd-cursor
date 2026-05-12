@@ -52,6 +52,8 @@ export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
     'set_field_value',
     'focus_element',
     'read_screen',
+    // protocol escape — mailto: bypasses UI entirely for any 'send an email' clause
+    'compose_email',
     'done',
     'give_up',
     'cannot_read',
@@ -81,6 +83,9 @@ export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
     'a11y_expand',
     'a11y_get_value',
     'get_element_state',
+    // compose_email is the right shortcut when the form being filled is a
+    // mail compose window (Outlook web, Gmail, etc.) — use mailto: instead.
+    'compose_email',
     'done',
     'give_up',
     'cannot_read',

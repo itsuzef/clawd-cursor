@@ -412,6 +412,39 @@
       }
     },
     {
+      "name": "compose_email",
+      "description": "Open the user's default mail client with a new message pre-filled (To/Cc/Bcc/Subject/Body). Cross-OS, cross-app, zero a11y or vision needed.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Recipient(s), comma-separated."
+          },
+          "cc": {
+            "type": "string",
+            "description": "Cc recipients (optional, comma-separated)."
+          },
+          "bcc": {
+            "type": "string",
+            "description": "Bcc recipients (optional, comma-separated)."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject line."
+          },
+          "body": {
+            "type": "string",
+            "description": "Email body (plain text; newlines preserved)."
+          }
+        },
+        "required": [
+          "to"
+        ]
+      }
+    },
+    {
       "name": "delegate_to_agent",
       "description": "Delegate a task to clawdcursor's autonomous pipeline (runs independently with its own LLM reasoning). Returns when the task completes or times out.",
       "category": "orchestration",
