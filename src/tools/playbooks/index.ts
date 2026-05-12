@@ -1,23 +1,27 @@
 /**
  * Playbook registry.
  *
- * Playbooks are hand-coded keyboard choreographies for known app flows that
- * the vision loop would otherwise re-discover on every run. Ported from
- * src/deterministic-flows.ts.
+ * Playbooks are app-AGNOSTIC keyboard choreographies for known capability
+ * shapes the vision loop would otherwise re-discover on every run. They
+ * are NOT app-specific shortcuts. Each playbook implements ONE capability
+ * (e.g. "compose+submit a form with To/Subject/Body fields") and works
+ * across every app that follows the same UX convention.
  *
- * Exposed to the text-agent as an internal `run_playbook(name)` tool — NOT
- * on the public MCP surface. The text-agent recognizes "send email in
- * Outlook" → calls run_playbook("outlook-send") and the playbook handles
- * the tab-order + mod+Return + Alt+S fallback choreography.
+ * Dispatch: matchPlaybook routes by CAPABILITY (the user's intent),
+ * never by app name. This is the key rule: if the same user intent
+ * routes to two different playbooks because the active app changed,
+ * the playbooks should be merged.
  *
- * Each playbook is a pure function: takes a PlatformAdapter + args, returns
- * a success flag + trace. No per-playbook state, no retries (that's the
- * verifier's job).
+ * Exposed to the text-agent as an internal run_playbook(name) tool \u2014
+ * NOT on the public MCP surface. The first-class path for email-shaped
+ * intents is open_uri(mailto: ...); playbooks are the in-UI fallback.
+ *
+ * Each playbook is a pure function over PlatformAdapter + args. No
+ * per-playbook state, no retries (that's the verifier's job).
  */
 
 import type { PlatformAdapter } from '../../platform/types';
-import { outlookSend } from './outlook-send';
-import { macMailSend } from './mac-mail-send';
+import { composeSend } from './compose-send';
 import { findReplace } from './find-replace';
 
 export interface PlaybookResult {
@@ -36,27 +40,38 @@ export interface PlaybookArgs {
 
 export type Playbook = (args: PlaybookArgs) => Promise<PlaybookResult>;
 
+/**
+ * Capability-keyed playbook registry. Keys describe the INTENT, not the
+ * app. New playbooks SHOULD be added if they generalize across apps;
+ * playbooks that name an app are an antipattern and should be merged
+ * into a capability-keyed sibling.
+ */
 export const PLAYBOOKS: Record<string, Playbook> = {
-  'outlook-send':    outlookSend,
-  'mac-mail-send':   macMailSend,
-  'find-replace':    findReplace,
+  'compose-send': composeSend,
+  'find-replace': findReplace,
 };
 
 /**
- * Match a task + active app to a playbook name. Returns null when nothing
- * matches — caller proceeds with the text-agent instead.
+ * Match a task to a playbook name by CAPABILITY ONLY. activeApp is
+ * intentionally not consulted \u2014 if the same intent needs two different
+ * playbooks for two different apps, merge them. The first-class path
+ * for email is open_uri(mailto: ...); we offer compose-send as the
+ * in-UI fallback when the user explicitly wants to compose in-app.
+ *
+ * Returns null when nothing matches \u2014 caller proceeds with the
+ * text-agent's normal a11y-driven flow.
  */
-export function matchPlaybook(task: string, activeApp: string): string | null {
+export function matchPlaybook(task: string, _activeApp: string): string | null {
   const t = task.toLowerCase();
-  const app = activeApp.toLowerCase();
 
-  // Outlook: "send email" / "send this" with Outlook focused → outlook-send
-  if (/\bsend\b.*\bemail\b|\bcompose\b|\bsend\s+(to|message|mail)/i.test(t)) {
-    if (/outlook|olk/.test(app)) return 'outlook-send';
-    if (app === 'mail' || /mac ?mail/.test(app)) return 'mac-mail-send';
+  // Compose + submit form (mail, message, or any compose-style flow).
+  // Matches any intent that asks to compose AND send/submit AND has a
+  // recipient-like noun. Pure regex \u2014 no app names.
+  if (/\bsend\b.*\b(email|message|mail|note|invite)\b|\bcompose\b.*\b(email|message|mail)\b|\bsend\s+to\s+\S+@/i.test(t)) {
+    return 'compose-send';
   }
 
-  // Find & replace — fires in any text editor context
+  // Find & replace \u2014 universal across text editors, IDEs, browsers, docs.
   if (/\bfind\s+and\s+replace\b|\breplace\s+all\b/i.test(t)) {
     return 'find-replace';
   }
@@ -64,4 +79,4 @@ export function matchPlaybook(task: string, activeApp: string): string | null {
   return null;
 }
 
-export { outlookSend, macMailSend, findReplace };
+export { composeSend, findReplace };

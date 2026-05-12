@@ -200,6 +200,31 @@
       }
     },
     {
+      "name": "build_uri",
+      "description": "Build a properly-encoded URI from a scheme + semantic fields. Returns the URI as text; pair with open_uri to dispatch it. Examples: scheme=\"mailto\" + to/subject/body → RFC 6068 mailto URI. scheme=\"tel\" + path=\"+15551234\" → tel:+15551234. scheme=\"slack\" + team/channel → slack URI.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "scheme": {
+            "type": "string",
+            "description": "URI scheme without the colon: mailto, tel, sms, webcal, slack, vscode, obsidian, spotify, https, etc."
+          },
+          "path": {
+            "type": "string",
+            "description": "Scheme-specific path (for mailto: the recipient address; for tel:/sms: the number; for https: the host+path). URL-encoded for you."
+          },
+          "query": {
+            "type": "string",
+            "description": "JSON object of query parameters, e.g. {\"subject\":\"hi\",\"body\":\"hello\"}. Each value will be URL-encoded."
+          }
+        },
+        "required": [
+          "scheme"
+        ]
+      }
+    },
+    {
       "name": "cdp_click",
       "description": "Click a DOM element by CSS selector or by visible text content.",
       "category": "browser",
@@ -409,39 +434,6 @@
             "description": "Optional title-substring match"
           }
         }
-      }
-    },
-    {
-      "name": "compose_email",
-      "description": "Open the user's default mail client with a new message pre-filled (To/Cc/Bcc/Subject/Body). Cross-OS, cross-app, zero a11y or vision needed.",
-      "category": "orchestration",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "to": {
-            "type": "string",
-            "description": "Recipient(s), comma-separated."
-          },
-          "cc": {
-            "type": "string",
-            "description": "Cc recipients (optional, comma-separated)."
-          },
-          "bcc": {
-            "type": "string",
-            "description": "Bcc recipients (optional, comma-separated)."
-          },
-          "subject": {
-            "type": "string",
-            "description": "Email subject line."
-          },
-          "body": {
-            "type": "string",
-            "description": "Email body (plain text; newlines preserved)."
-          }
-        },
-        "required": [
-          "to"
-        ]
       }
     },
     {
@@ -1304,6 +1296,23 @@
         },
         "required": [
           "path"
+        ]
+      }
+    },
+    {
+      "name": "open_uri",
+      "description": "Open ANY registered URI (mailto:, tel:, sms:, webcal:, file:, slack:, vscode:, obsidian:, spotify:, zoommtg:, https:, custom-scheme:, ...) via the OS protocol-handler registry. The OS routes to whichever app the user has registered as the handler. Replaces dozens of app-specific shortcuts with one general primitive. For mailto:, use the convenience helper compose_uri_mailto, or pass a full pre-built URI.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "A full URI like \"mailto:bob@example.com?subject=hi&body=hello\", \"tel:+15551234\", \"slack://channel?team=T123&id=C456\", \"vscode://file/Users/me/code/x.ts\", \"https://example.com\". Must be properly URL-encoded."
+          }
+        },
+        "required": [
+          "uri"
         ]
       }
     },

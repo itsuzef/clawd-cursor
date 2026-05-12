@@ -537,60 +537,126 @@ export function getExtraTools(): ToolDefinition[] {
     },
 
     {
-      // App-agnostic, OS-agnostic email composer. Uses RFC 6068 mailto: URIs
-      // routed through the OS default-handler registry. Works with Outlook,
-      // Mail.app, Thunderbird, Spark, etc. — whichever the user has set as
-      // default. The compose window opens pre-filled with To/Cc/Bcc/Subject/
-      // Body. ZERO vision and ZERO a11y tree walking needed.
+      // open_uri — the general OS protocol-handler escape route.
       //
-      // This is the recommended primitive for the "send an email" use case.
-      // It does NOT auto-send (no mail client honours that for security);
-      // one ctrl+enter / cmd+enter completes the flow.
-      name: 'compose_email',
-      description: 'Open the user\'s default mail client with a new message pre-filled (To/Cc/Bcc/Subject/Body). Cross-OS, cross-app, zero a11y or vision needed.',
+      // Every OS ships a protocol-handler registry. Windows uses
+      // HKCR\\<scheme>\\shell\\open\\command. macOS uses LaunchServices.
+      // Linux uses xdg-mime + .desktop files. The user's installed apps
+      // register themselves as handlers (or the user picks one):
+      //   mailto:    → default mail client
+      //   tel:       → default phone app (Skype, FaceTime, dialer)
+      //   sms:       → default messaging app
+      //   webcal:    → default calendar
+      //   slack:     → Slack
+      //   vscode:    → VS Code
+      //   obsidian:  → Obsidian
+      //   spotify:   → Spotify
+      //   zoommtg:   → Zoom
+      //   discord:   → Discord
+      //   file:      → OS file-association dispatcher
+      //   http(s):   → default browser
+      //
+      // This is THE app-agnostic escape route. ONE tool, every app that
+      // registers a protocol handler. The agent does not need to know
+      // which app is configured — the OS routes for us. Zero vision,
+      // zero a11y, zero app-specific code.
+      //
+      // The agent constructs the URI from semantic args. For mailto:
+      // that's to/cc/subject/body. For tel: it's just a number. For
+      // slack: it's a workspace and channel. The agent picks the
+      // scheme; we encode and dispatch.
+      name: 'open_uri',
+      description: 'Open ANY registered URI (mailto:, tel:, sms:, webcal:, file:, slack:, vscode:, obsidian:, spotify:, zoommtg:, https:, custom-scheme:, ...) via the OS protocol-handler registry. The OS routes to whichever app the user has registered as the handler. Replaces dozens of app-specific shortcuts with one general primitive. For mailto:, use the convenience helper compose_uri_mailto, or pass a full pre-built URI.',
       parameters: {
-        to:      { type: 'string', description: 'Recipient(s), comma-separated.', required: true },
-        cc:      { type: 'string', description: 'Cc recipients (optional, comma-separated).', required: false },
-        bcc:     { type: 'string', description: 'Bcc recipients (optional, comma-separated).', required: false },
-        subject: { type: 'string', description: 'Email subject line.', required: false },
-        body:    { type: 'string', description: 'Email body (plain text; newlines preserved).', required: false },
+        uri: { type: 'string', description: 'A full URI like "mailto:bob@example.com?subject=hi&body=hello", "tel:+15551234", "slack://channel?team=T123&id=C456", "vscode://file/Users/me/code/x.ts", "https://example.com". Must be properly URL-encoded.', required: true },
       },
       category: 'orchestration',
       compactGroup: 'window',
       safetyTier: 1,
-      handler: async ({ to, cc, bcc, subject, body }, ctx) => {
+      handler: async ({ uri }, ctx) => {
         await ctx.ensureInitialized();
-        if (!ctx.platform) return needPlatform('compose_email');
-        const recipient = String(to ?? '').trim();
-        if (!recipient) return { text: 'compose_email: "to" is required', isError: true };
-        // Encode aggressively — standard encodeURIComponent leaves `'` and `"`
-        // literal, which would trip the Windows launchApp shell-meta guard.
-        const safe = (s: string): string =>
-          encodeURIComponent(s).replace(/'/g, '%27').replace(/"/g, '%22');
-        const params: string[] = [];
-        if (cc)      params.push(`cc=${safe(String(cc))}`);
-        if (bcc)     params.push(`bcc=${safe(String(bcc))}`);
-        if (subject) params.push(`subject=${safe(String(subject))}`);
-        if (body)    params.push(`body=${safe(String(body))}`);
-        const query = params.length ? `?${params.join('&')}` : '';
-        // Recipient keeps `@` and `,` literal so the OS handler parses it.
-        const uri = `mailto:${safe(recipient).replace(/%40/g, '@').replace(/%2C/g, ',')}${query}`;
+        if (!ctx.platform) return needPlatform('open_uri');
+        const u = String(uri ?? '').trim();
+        if (!u) return { text: 'open_uri: uri is required', isError: true };
+        // Surface what the URI scheme is so the operator can audit the
+        // dispatch ("open_uri: mailto: → default handler").
+        const schemeMatch = u.match(/^([a-z][a-z0-9+.-]*):/i);
+        if (!schemeMatch) {
+          return { text: 'open_uri: argument must be a URI with a scheme (e.g. mailto:, tel:, https:, slack:)', isError: true };
+        }
+        const scheme = schemeMatch[1].toLowerCase();
         try {
           if (ctx.platform.platform === 'darwin') {
-            await ctx.platform.launchApp('open', { url: uri });
+            await ctx.platform.launchApp('open', { url: u });
           } else if (ctx.platform.platform === 'linux') {
-            await ctx.platform.launchApp('xdg-open', { url: uri });
+            await ctx.platform.launchApp('xdg-open', { url: u });
           } else {
-            await ctx.platform.launchApp('explorer.exe', { url: uri });
+            // Windows: ShellExecute via explorer.exe — OS resolves the
+            // scheme handler from HKCR\\<scheme>\\shell\\open\\command.
+            await ctx.platform.launchApp('explorer.exe', { url: u });
           }
-          const subjPreview = subject ? `"${String(subject).slice(0, 60)}"` : '(none)';
-          return { text: `Compose window opened in the default mail client (to=${recipient}, subject=${subjPreview}). Press ctrl+enter (macOS: cmd+enter) to send.` };
+          return { text: `Dispatched ${scheme}: URI to the OS default handler. (URI: ${u.length > 120 ? u.slice(0, 120) + '…' : u})` };
         } catch (err) {
           return {
-            text: `compose_email failed: ${err instanceof Error ? err.message : String(err)}`,
+            text: `open_uri failed: ${err instanceof Error ? err.message : String(err)}`,
             isError: true,
           };
         }
+      },
+    },
+
+    {
+      // build_uri — helper for the common case where the agent has
+      // semantic fields (recipient, subject, body) and wants the right
+      // URI without doing the encoding itself. Pure: returns the URI as
+      // text, no I/O. Generalizes the old compose_email by parameterizing
+      // the scheme.
+      name: 'build_uri',
+      description: 'Build a properly-encoded URI from a scheme + semantic fields. Returns the URI as text; pair with open_uri to dispatch it. Examples: scheme="mailto" + to/subject/body → RFC 6068 mailto URI. scheme="tel" + path="+15551234" → tel:+15551234. scheme="slack" + team/channel → slack URI.',
+      parameters: {
+        scheme: { type: 'string', description: 'URI scheme without the colon: mailto, tel, sms, webcal, slack, vscode, obsidian, spotify, https, etc.', required: true },
+        path:   { type: 'string', description: 'Scheme-specific path (for mailto: the recipient address; for tel:/sms: the number; for https: the host+path). URL-encoded for you.', required: false },
+        query:  { type: 'string', description: 'JSON object of query parameters, e.g. {"subject":"hi","body":"hello"}. Each value will be URL-encoded.', required: false },
+      },
+      category: 'orchestration',
+      compactGroup: 'window',
+      safetyTier: 0,
+      handler: async ({ scheme, path, query }) => {
+        const s = String(scheme ?? '').trim().toLowerCase();
+        if (!s || !/^[a-z][a-z0-9+.-]*$/.test(s)) {
+          return { text: 'build_uri: scheme must be lowercase letters/digits/+/./- starting with a letter', isError: true };
+        }
+        // Encode aggressively so cross-shell dispatch is safe; standard
+        // encodeURIComponent leaves `'` and `"` literal which would trip
+        // shell-meta guards.
+        const safe = (v: string): string =>
+          encodeURIComponent(v).replace(/'/g, '%27').replace(/"/g, '%22');
+        // Path: preserve @ and , for mailto-style multi-recipient; preserve
+        // + for tel: numbers. Other punctuation gets encoded.
+        const encodedPath = path
+          ? safe(String(path))
+              .replace(/%40/g, '@')
+              .replace(/%2C/g, ',')
+              .replace(/%2B/g, '+')
+              .replace(/%2F/g, '/')
+          : '';
+        let queryStr = '';
+        if (query) {
+          let obj: Record<string, unknown>;
+          try {
+            obj = typeof query === 'string' ? JSON.parse(query) : (query as Record<string, unknown>);
+          } catch {
+            return { text: 'build_uri: query must be valid JSON object', isError: true };
+          }
+          const parts: string[] = [];
+          for (const [k, v] of Object.entries(obj)) {
+            if (v === undefined || v === null) continue;
+            parts.push(`${safe(k)}=${safe(String(v))}`);
+          }
+          if (parts.length) queryStr = '?' + parts.join('&');
+        }
+        const uri = `${s}:${encodedPath}${queryStr}`;
+        return { text: uri };
       },
     },
 

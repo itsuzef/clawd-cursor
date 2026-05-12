@@ -52,8 +52,11 @@ export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
     'set_field_value',
     'focus_element',
     'read_screen',
-    // protocol escape — mailto: bypasses UI entirely for any 'send an email' clause
-    'compose_email',
+    // OS protocol-handler escape route — single primitive for any
+    // "open the right app to do X" intent (mailto, tel, sms, slack,
+    // vscode, obsidian, spotify, zoommtg, https, ...).
+    'open_uri',
+    'build_uri',
     'done',
     'give_up',
     'cannot_read',
@@ -83,9 +86,11 @@ export const TEXT_PALETTES: Record<Exclude<Capability, 'general'>, string[]> = {
     'a11y_expand',
     'a11y_get_value',
     'get_element_state',
-    // compose_email is the right shortcut when the form being filled is a
-    // mail compose window (Outlook web, Gmail, etc.) — use mailto: instead.
-    'compose_email',
+    // When the "form" is just a wrapper around a known semantic intent
+    // (compose mail, place call, open file, open Slack channel, etc.),
+    // open_uri + build_uri skip the form entirely.
+    'open_uri',
+    'build_uri',
     'done',
     'give_up',
     'cannot_read',

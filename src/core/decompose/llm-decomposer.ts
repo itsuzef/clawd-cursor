@@ -23,15 +23,18 @@ Rules:
   subtasks. So chunky "do the whole thing" subtasks cost less and succeed
   more than micro-steps.
 - SINGLE-APP WORKFLOWS ARE ONE SUBTASK. If the entire task happens in one
-  app (e.g. "send an email in Outlook", "draw a stickman in Paint"), emit
-  just "open <app>" + "do the thing in <app>" — at most 2 subtasks. Do NOT
-  break click/type/click sequences inside one app into separate subtasks.
-    Bad:  ["open Outlook", "click Compose", "type email address", "type subject", "type body", "click Send"]
+  app, emit just "open <app>" + "do the thing in <app>" — at most 2
+  subtasks. Do NOT break click/type/click sequences inside one app into
+  separate subtasks. This rule is app-agnostic; it applies to any app.
+    Bad:  ["open <mail app>", "click Compose", "type address", "type subject", "type body", "click Send"]
     Why:  6 isolated agents, each blind to what prior agents did. Subtask 4
-          runs, sees Outlook but no compose window (subtask 2's window
+          runs, sees the app but no compose window (subtask 2's window
           closed), fails.
-    Good: ["open Outlook", "compose and send an email to john@example.com introducing yourself"]
-    Why:  1 agent opens Outlook, 1 agent does the entire compose flow.
+    Good: ["open <mail app>", "compose and send an email to john@example.com introducing yourself"]
+    Why:  1 agent opens the app, 1 agent does the entire compose flow.
+  Same rule for any app: spreadsheet edits, image edits, document writing,
+  music playback, calendar events, chat messages — always one subtask for
+  "open the app", one subtask for the WHOLE in-app workflow.
 - Each subtask must be SELF-CONTAINED. The downstream agent sees ONLY this
   one string, not the original task or prior subtasks. So every subtask must
   carry enough context to execute correctly on its own.

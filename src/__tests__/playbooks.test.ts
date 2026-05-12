@@ -1,12 +1,16 @@
 /**
- * Playbook tests — registry, match routing, keyboard choreography assertions,
- * keys-blocklist.
+ * Playbook tests \u2014 registry, capability-based match routing, keyboard
+ * choreography assertions, keys-blocklist.
+ *
+ * The v0.9 redesign: playbooks are capability-keyed, NOT app-keyed.
+ * matchPlaybook returns 'compose-send' for any mail-shaped intent regardless
+ * of which app is active. The old outlook-send / mac-mail-send pair was
+ * merged into one app-agnostic compose-send playbook.
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import { PLAYBOOKS, matchPlaybook } from '../tools/playbooks/index';
-import { outlookSend } from '../tools/playbooks/outlook-send';
-import { macMailSend } from '../tools/playbooks/mac-mail-send';
+import { composeSend } from '../tools/playbooks/compose-send';
 import { findReplace } from '../tools/playbooks/find-replace';
 import { isBlockedKey, normalizeCombo, BLOCKED_KEYS } from '../tools/playbooks/keys-blocklist';
 import type { PlatformAdapter } from '../platform/types';
@@ -45,52 +49,64 @@ function makeAdapter(): { adapter: PlatformAdapter; calls: any[] } {
 }
 
 describe('PLAYBOOKS registry', () => {
-  it('exposes three canonical playbooks', () => {
-    expect(Object.keys(PLAYBOOKS).sort()).toEqual(['find-replace', 'mac-mail-send', 'outlook-send']);
+  it('exposes capability-keyed playbooks (NOT app-keyed)', () => {
+    // Keys are capabilities. App names like 'outlook-send' or 'mac-mail-send'
+    // are explicit antipatterns and must never appear here.
+    const keys = Object.keys(PLAYBOOKS).sort();
+    expect(keys).toEqual(['compose-send', 'find-replace']);
+    for (const k of keys) {
+      expect(k).not.toMatch(/outlook|mail\.app|gmail|thunderbird|spark|mac-/i);
+    }
   });
 });
 
-describe('matchPlaybook', () => {
-  it('routes outlook "send email" to outlook-send', () => {
-    expect(matchPlaybook('send email to bob', 'outlook')).toBe('outlook-send');
-    expect(matchPlaybook('compose an email',   'OUTLOOK')).toBe('outlook-send');
+describe('matchPlaybook (capability-based, app-agnostic)', () => {
+  it('routes mail-shaped intents to compose-send regardless of active app', () => {
+    expect(matchPlaybook('send email to bob', 'outlook')).toBe('compose-send');
+    expect(matchPlaybook('send email to bob', 'mail')).toBe('compose-send');
+    expect(matchPlaybook('send email to bob', 'thunderbird')).toBe('compose-send');
+    expect(matchPlaybook('send email to bob', 'spark')).toBe('compose-send');
+    expect(matchPlaybook('compose an email',   'anything')).toBe('compose-send');
+    // No app name in the task either \u2014 still routes by intent.
+    expect(matchPlaybook('send a message to alice@example.com', '')).toBe('compose-send');
   });
-  it('routes mac Mail.app to mac-mail-send', () => {
-    expect(matchPlaybook('send email to bob', 'mail')).toBe('mac-mail-send');
-  });
-  it('routes find-and-replace to find-replace', () => {
+  it('routes find-and-replace to find-replace regardless of active app', () => {
     expect(matchPlaybook('find and replace X with Y', 'vscode')).toBe('find-replace');
+    expect(matchPlaybook('find and replace X with Y', 'word')).toBe('find-replace');
+    expect(matchPlaybook('replace all "foo" with "bar"', 'anything')).toBe('find-replace');
   });
-  it('returns null when nothing matches', () => {
+  it('returns null when no capability matches', () => {
     expect(matchPlaybook('summarize this article', 'chrome')).toBeNull();
+    expect(matchPlaybook('open paint',             'desktop')).toBeNull();
   });
 });
 
-describe('outlook-send keystroke sequence', () => {
-  it('fires mod+n, Tab×2, subject, Tab, body, mod+Return in order', async () => {
+describe('compose-send keystroke sequence', () => {
+  it('fires mod+n, types To, Tab*2, types Subject, Tab, types Body, mod+Return', async () => {
     const { adapter, calls } = makeAdapter();
-    const r = await outlookSend({
+    const r = await composeSend({
       adapter,
       input: { to: 'bob@acme.com', subject: 'hi', body: 'body text' },
     });
     expect(r.success).toBe(true);
     const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
-    // mod+n → Tab → Tab (past Cc/Bcc) → Tab (into body) → mod+Return
     expect(keys[0]).toBe('mod+n');
     expect(keys).toContain('mod+Return');
+    // Last key fired must be the submit shortcut, not a stray Tab.
+    expect(keys[keys.length - 1]).toBe('mod+Return');
     const types = calls.filter(c => c.kind === 'type').map(c => c.text);
-    expect(types).toContain('bob@acme.com');
-    expect(types).toContain('hi');
-    expect(types).toContain('body text');
+    expect(types).toEqual(['bob@acme.com', 'hi', 'body text']);
   });
-});
 
-describe('mac-mail-send keystroke sequence', () => {
-  it('uses mod+shift+d as primary send', async () => {
+  it('skips a field when its value is empty', async () => {
     const { adapter, calls } = makeAdapter();
-    await macMailSend({ adapter, input: { to: 'a@b.c', subject: 's', body: 'b' } });
-    const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
-    expect(keys).toContain('mod+shift+d');
+    const r = await composeSend({
+      adapter,
+      input: { to: 'a@b.c', body: 'only body' },
+    });
+    expect(r.success).toBe(true);
+    const types = calls.filter(c => c.kind === 'type').map(c => c.text);
+    expect(types).toEqual(['a@b.c', 'only body']);
   });
 });
 
