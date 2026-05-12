@@ -101,8 +101,8 @@ $r9 = Call-Tool open_app @{ name = "Outlook" }
 Write-Host "open_app Outlook: $(Tool-Text $r9)"
 Start-Sleep -Seconds 3
 
-$r10 = Call-Tool detect_webview @{}
-Write-Host "detect_webview: $(Tool-Text $r10)"
+$r10 = Call-Tool detect_webview_apps @{}
+Write-Host "detect_webview_apps: $(Tool-Text $r10)"
 
 $r11 = Call-Tool read_screen @{}
 $outlookTree = Tool-Text $r11
