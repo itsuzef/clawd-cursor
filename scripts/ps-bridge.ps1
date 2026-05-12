@@ -272,71 +272,85 @@ function Cmd-FocusWindow {
         } catch {}
     }
 
-    # v0.8.2 force-focus path. Windows' focus-lock blocks SetForegroundWindow
-    # from any process that isn't the current foreground. We work around it
-    # with the AttachThreadInput trick: attach our thread to whatever's
-    # currently foreground, SetForegroundWindow (now allowed because we share
-    # its input queue), then detach. Also toggles HWND_TOPMOST off→on→off to
-    # guarantee the window renders above same-z siblings. Equivalent of what
-    # pywinauto and wmctrl-like tools do on X11.
+    # Force-focus path. Windows' focus-lock blocks SetForegroundWindow from
+    # any process that isn't the current foreground. We ALWAYS run the full
+    # Win32 path (AttachThreadInput + AllowSetForegroundWindow + BringWindowToTop
+    # + SetForegroundWindow) and ALWAYS verify by reading GetForegroundWindow
+    # back. UIA SetFocus alone is NOT sufficient on Windows because it only
+    # signals accessibility focus -- it does not change the global foreground,
+    # which is what subsequent SendInput keystrokes follow. This is the bug
+    # that made New Outlook compose-and-type fail: SetFocus reported success
+    # but the daemon's launching terminal kept the foreground, so mod+n and
+    # type_text landed on PowerShell, not Outlook.
     $hwnd = [IntPtr]$target.Current.NativeWindowHandle
-    $forced = $false
+
+    # Try UIA SetFocus too (cheap, helps with some custom apps); ignore result.
+    try { $target.SetFocus() } catch {}
+
+    # SW_RESTORE = 9. ShowWindow is a no-op when the window is already shown.
+    [Win32UIA]::ShowWindow($hwnd, 9) | Out-Null
+    Start-Sleep -Milliseconds 30
+
+    # Topmost toggle pushes the window to the top of the z-order without
+    # changing its always-on-top behavior afterwards.
+    $HWND_TOPMOST    = [IntPtr]::new(-1)
+    $HWND_NOTOPMOST  = [IntPtr]::new(-2)
+    $SWP_NOMOVE_SIZE = 0x0003  # NOMOVE | NOSIZE
+    [Win32UIA]::SetWindowPos($hwnd, $HWND_TOPMOST,   0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
+    Start-Sleep -Milliseconds 10
+    [Win32UIA]::SetWindowPos($hwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
+
+    # AttachThreadInput dance.
+    $currentThread = [Win32UIA]::GetCurrentThreadId()
+    $fg = [Win32UIA]::GetForegroundWindow()
+    $pidTmp = 0
+    $fgThread = 0
+    if ($fg -ne [IntPtr]::Zero) {
+        $fgThread = [Win32UIA]::GetWindowThreadProcessId($fg, [ref]$pidTmp)
+    }
+    $attached = $false
+    if ($fgThread -ne 0 -and $fgThread -ne $currentThread) {
+        try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $true) | Out-Null; $attached = $true } catch {}
+    }
     try {
-        # Try UIA SetFocus first — cheap, works when the app is cooperative.
-        try { $target.SetFocus(); $forced = $true } catch {}
+        # Give the target's process permission to set foreground, then ask.
+        # ASFW_ANY = -1 (any process can SetForegroundWindow until next user input).
+        [Win32UIA]::AllowSetForegroundWindow(-1) | Out-Null
+        [Win32UIA]::BringWindowToTop($hwnd) | Out-Null
+        [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
+    } catch { }
+    finally {
+        if ($attached) { try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $false) | Out-Null } catch {} }
+    }
 
-        if (-not $forced) {
-            # Make sure the window is not minimized + not hidden. SW_RESTORE = 9.
-            [Win32UIA]::ShowWindow($hwnd, 9) | Out-Null
-            Start-Sleep -Milliseconds 40
+    # Verify -- the only thing that matters.
+    Start-Sleep -Milliseconds 60
+    $foreground = ([Win32UIA]::GetForegroundWindow() -eq $hwnd)
 
-            # Brief topmost toggle to push to the front of z-order.
-            $HWND_TOPMOST    = [IntPtr]::new(-1)
-            $HWND_NOTOPMOST  = [IntPtr]::new(-2)
-            $SWP_NOMOVE_SIZE = 0x0003  # NOMOVE | NOSIZE
-            [Win32UIA]::SetWindowPos($hwnd, $HWND_TOPMOST,   0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
-            Start-Sleep -Milliseconds 20
-            [Win32UIA]::SetWindowPos($hwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP_NOMOVE_SIZE) | Out-Null
-
-            # AttachThreadInput trick — bypasses foreground lock.
-            $currentThread = [Win32UIA]::GetCurrentThreadId()
-            $fg = [Win32UIA]::GetForegroundWindow()
-            $pidTmp = 0
-            $fgThread = 0
-            if ($fg -ne [IntPtr]::Zero) {
-                $fgThread = [Win32UIA]::GetWindowThreadProcessId($fg, [ref]$pidTmp)
-            }
-            $attached = $false
-            if ($fgThread -ne 0 -and $fgThread -ne $currentThread) {
-                try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $true) | Out-Null; $attached = $true } catch {}
-            }
-            try {
-                # Give the target's process permission to set foreground, then ask.
-                [Win32UIA]::AllowSetForegroundWindow(-1) | Out-Null   # ASFW_ANY
-                [Win32UIA]::BringWindowToTop($hwnd) | Out-Null
-                [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
-                $forced = $true
-            } catch {}
-            finally {
-                if ($attached) { try { [Win32UIA]::AttachThreadInput($currentThread, $fgThread, $false) | Out-Null } catch {} }
-            }
-
-            # Final fallback: synthesize an Alt press. The OS briefly drops
-            # foreground-lock when a key event is dispatched, which lets the
-            # next SetForegroundWindow succeed.
-            if (-not $forced) {
-                try {
-                    [System.Windows.Forms.SendKeys]::SendWait('%') | Out-Null
-                    Start-Sleep -Milliseconds 30
-                    [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
-                    $forced = $true
-                } catch {}
-            }
-        }
-    } catch {}
+    # If we still don't have foreground, try the Alt-tap synthesis trick.
+    # Some Windows configurations require a key event to break the lock.
+    if (-not $foreground) {
+        try {
+            [System.Windows.Forms.SendKeys]::SendWait('%') | Out-Null
+            Start-Sleep -Milliseconds 30
+            [Win32UIA]::AllowSetForegroundWindow(-1) | Out-Null
+            [Win32UIA]::SetForegroundWindow($hwnd) | Out-Null
+            Start-Sleep -Milliseconds 50
+            $foreground = ([Win32UIA]::GetForegroundWindow() -eq $hwnd)
+        } catch {}
+    }
 
     $c = $target.Current
-    return [ordered]@{ success=$true; title=$c.Name; processId=$c.ProcessId; handle=$c.NativeWindowHandle; forced=$forced }
+    # success is now an honest report: the window was found AND it actually
+    # became the foreground window. Callers that need to trust this for
+    # downstream SendInput must check `foreground`.
+    return [ordered]@{
+        success    = $foreground
+        foreground = $foreground
+        title      = $c.Name
+        processId  = $c.ProcessId
+        handle     = $c.NativeWindowHandle
+    }
 }
 
 # ── Command: find-element (fuzzy name match) ──────────────────────────────────

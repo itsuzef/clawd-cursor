@@ -300,6 +300,13 @@ export class Pipeline {
       // completed (1 soft-fail continued)" instead of pretending nothing
       // failed. Hard fail still aborts; soft fail is a warning.
       let subtaskSoftFails = 0;
+      // Tracks subtasks where the agent itself failed to finish (max_turns,
+      // stagnation, give_up, cannot_read, etc.). Distinct from the broader
+      // softFails count which also includes low-confidence verifier doubt
+      // on otherwise-finished work. Aggregate success demotes only on
+      // agent-side failures so the v0.8.0 "agent reports, caller decides"
+      // contract still applies to verifier-doubt cases.
+      let subtaskAgentFails = 0;
 
       let subtasks = outerDecision.subtasks.length > 0
         ? outerDecision.subtasks
@@ -451,6 +458,20 @@ export class Pipeline {
                 : `non-fatal failure (${reason}) — chain continues; aggregate result reports soft-fail`,
             });
             subtaskSoftFails += 1;
+            // Distinguish agent-side soft-fails (the agent itself gave up
+            // or ran out of turns / stagnated) from verifier-doubt soft-fails
+            // (agent claimed `done` but verifier wasn't certain).
+            // Aggregate `success` reflects whether the agent's work was
+            // completed end-to-end; verifier doubt at low confidence doesn't
+            // demote success since the previous design rationale ("agent
+            // reports, caller decides") was specifically aimed at idempotent
+            // no-op rejections like "create new canvas" after "open Paint".
+            const isAgentSideFailure =
+              reason === 'max_turns' || reason === 'stagnation' ||
+              reason === 'give_up' || reason === 'cannot_read' ||
+              reason === 'no_text_model' || reason === 'vision_disabled' ||
+              reason === 'router_miss' || reason === 'no_llm' || reason === 'no_ladder';
+            if (isAgentSideFailure) subtaskAgentFails += 1;
             // Don't update lastText with a failure message — the next
             // subtask should see "what came before" as the agent's claim.
           } else {
@@ -484,11 +505,25 @@ export class Pipeline {
       }
 
       this.recordSkillOnPass(input.task, aggregateTrace, outerActive?.processName).catch(() => {});
+      // success boolean reflects whether the agent's work actually finished,
+      // not whether the pipeline machinery ran without an exception. A
+      // subtask hitting max_turns / give_up / stagnation / cannot_read /
+      // verifier_rejected is the agent failing to complete its work; the
+      // aggregate must NOT silently report success in that case. The
+      // soft-fail-continue path (chain doesn't hard-abort on a single bad
+      // subtask) is still useful for partial work, but the aggregate
+      // boolean has to be honest. The previous unconditional `success: true`
+      // gave callers (CLI, MCP clients, the user) a false positive every
+      // time anything soft-failed, e.g. the Outlook send-email run that
+      // hit max_turns on subtask 2 yet showed up as `done`.
+      const aggregateSuccess = subtaskAgentFails === 0;
       const result = this.buildResult({
-        success: true, path: lastPath, costMeter, startedAt, correlationId,
+        success: aggregateSuccess, path: lastPath, costMeter, startedAt, correlationId,
         text: subtasks.length > 1
-          ? `All ${subtasks.length} subtasks completed${subtaskSoftFails ? ` (${subtaskSoftFails} soft-fail continued)` : ''}. Last: ${lastText}`
-          : lastText,
+          ? (aggregateSuccess
+              ? `All ${subtasks.length} subtasks completed${subtaskSoftFails ? ` (${subtaskSoftFails} verifier-doubt continued)` : ''}. Last: ${lastText}`
+              : `${subtasks.length - subtaskAgentFails}/${subtasks.length} subtasks completed by the agent; ${subtaskAgentFails} agent-side failures. Last: ${lastText}`)
+          : (aggregateSuccess ? lastText : `Subtask did not finish: ${lastText}`),
         trace: aggregateTrace,
       });
       log.info(EVENTS.PIPELINE_DONE, {

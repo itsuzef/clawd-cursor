@@ -191,9 +191,15 @@ export const keyboardCompound: UnifiedTool = {
       case 'press': {
         const k = String(args.key ?? '');
         if (!k) return { success: false, text: 'keyboard.press: key is required' };
+        // Capture the foreground app BEFORE sending the keystroke so the
+        // response message tells the agent honestly where the keys landed.
+        // Without this, key_press lies-by-omission: the agent thinks it
+        // sent ctrl+n to Outlook when it actually went to PowerShell.
+        const before = await ctx.platform.getActiveWindow().catch(() => null);
         await ctx.platform.keyPress(k);
         await sleep(120);
-        return { success: true, text: `Pressed ${k}` };
+        const where = before ? ` -> [${before.processName}] "${before.title}"` : '';
+        return { success: true, text: `Pressed ${k}${where}` };
       }
       case 'down': {
         const k = String(args.key ?? '');
@@ -210,9 +216,13 @@ export const keyboardCompound: UnifiedTool = {
       case 'type': {
         const text = String(args.text ?? '');
         if (!text) return { success: false, text: 'keyboard.type: text is required' };
+        // Same honesty fix as keyboard.press -- report where the keys went
+        // so the agent can detect focus drift and react.
+        const before = await ctx.platform.getActiveWindow().catch(() => null);
         await ctx.platform.typeText(text);
         await sleep(150);
-        return { success: true, text: `Typed ${text.length} chars: "${truncate(text, 60)}"` };
+        const where = before ? ` -> [${before.processName}] "${before.title}"` : '';
+        return { success: true, text: `Typed ${text.length} chars: "${truncate(text, 60)}"${where}` };
       }
       default:
         return { success: false, text: `keyboard: unknown action "${action}"` };
@@ -260,7 +270,17 @@ export const windowCompound: UnifiedTool = {
       case 'focus': {
         const ok = await ctx.platform.focusWindow(query ?? {});
         await sleep(250);
-        return { success: ok, text: ok ? 'Focused window.' : 'No matching window.' };
+        if (!ok) return { success: false, text: 'No matching window or failed to bring it to foreground.' };
+        // Confirm what's foreground NOW so the agent can react if focus drifts.
+        // platform.focusWindow already returns false when the underlying script
+        // verified SetForegroundWindow didn't hold, but the platform layer can
+        // succeed and the foreground can still drift in the 250ms wait above
+        // (e.g. an app rejecting focus from another modal). Re-read.
+        const active = await ctx.platform.getActiveWindow().catch(() => null);
+        if (active) {
+          return { success: true, text: `Focused: [${active.processName}] "${active.title}"` };
+        }
+        return { success: true, text: 'Focused window (active-window probe unavailable).' };
       }
       case 'maximize': {
         const ok = await ctx.platform.setWindowState('maximize', query);
