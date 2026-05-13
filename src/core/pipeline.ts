@@ -53,6 +53,10 @@ import type { Capability } from './classify/capability';
 import { decomposeWithLlm, DECOMPOSE_SYSTEM_PROMPT } from './decompose/llm-decomposer';
 import { callLLMWithTools } from '../llm/client';
 import { OcrEngine } from '../platform/ocr-engine';
+import { PLAYBOOKS } from '../tools/playbooks';
+import { composeSend as composeSendPlaybook } from '../tools/playbooks/compose-send';
+import { extractComposeFields } from '../tools/playbooks/extract-compose';
+import { resolveSchemeHandlerExecutable, launchHandlerAndVerify } from '../platform/uri-handler';
 
 /**
  * Patterns that gate the LLM decomposer (v0.9: opt-in instead of always-on).
@@ -634,13 +638,19 @@ export class Pipeline {
       // Verifier post-check. Only runs when:
       //   • a verifier is active (not disabled)
       //   • the rung claims success
-      //   • the rung was an AGENT rung (router is exempt — it has its own
-      //     deterministic window-diff verification baked in)
+      //   • the rung was an AGENT rung (router and playbook are exempt —
+      //     both have stronger deterministic evidence than the pixel-diff
+      //     verifier. router verifies via window-list-diff; playbook
+      //     verifies via launchHandlerAndVerify() seeing a new compose
+      //     window appear with the expected title. Letting the pixel-diff
+      //     verifier overrule those was the bug that escalated a successful
+      //     2-second mailto send into 20 wasted LLM turns trying to redo it.
       //   • we managed to capture a `before` state earlier
       if (
         attempt.success
         && this.verifier
         && rung !== 'router'
+        && rung !== 'playbook'
         && before
       ) {
         const verdict = await this.runVerifier(
@@ -832,6 +842,12 @@ export class Pipeline {
     if (initial === 'router') {
       return ['router', 'blind', 'hybrid', 'vision'];
     }
+    if (initial === 'playbook') {
+      // Playbook is the cheapest non-router path. Failure escalates into
+      // the normal LLM ladder so a broken keyboard shortcut on a custom
+      // app still recovers via the agent.
+      return ['playbook', 'blind', 'hybrid', 'vision'];
+    }
     if (initial === 'blind') {
       return ['blind', 'hybrid', 'vision'];
     }
@@ -849,10 +865,11 @@ export class Pipeline {
     prevFeedback?: ReflectionFeedback,
   ): Promise<StrategyResult> {
     switch (strategy) {
-      case 'router':  return this.runRouter(task, env);
-      case 'blind':   return this.runUnifiedAgent(task, decision, env, 'blind', prevFeedback);
-      case 'hybrid':  return this.runUnifiedAgent(task, decision, env, 'hybrid', prevFeedback);
-      case 'vision':  return this.runUnifiedAgent(task, decision, env, 'vision', prevFeedback);
+      case 'router':   return this.runRouter(task, env);
+      case 'playbook': return this.runPlaybook(task, decision, env);
+      case 'blind':    return this.runUnifiedAgent(task, decision, env, 'blind', prevFeedback);
+      case 'hybrid':   return this.runUnifiedAgent(task, decision, env, 'hybrid', prevFeedback);
+      case 'vision':   return this.runUnifiedAgent(task, decision, env, 'vision', prevFeedback);
     }
   }
 
@@ -868,6 +885,134 @@ export class Pipeline {
       path: 'router',
       failureReason: 'router_miss',
     };
+  }
+
+  /**
+   * Run a deterministic capability playbook with zero LLM turns.
+   *
+   * The preprocessor sets strategy='playbook' when matchPlaybook() returns
+   * a registry key for the task. The pipeline calls this method, which
+   * dispatches to PLAYBOOKS[name] with extracted fields. On any failure
+   * (extraction returned empty, playbook threw, no compose window appeared)
+   * the rung returns failureReason='playbook_miss' and the ladder escalates
+   * into blind→hybrid→vision normally.
+   *
+   * compose-send specifically: prefer the OS mailto: handler path (one
+   * URI dispatch pre-fills To/Subject/Body atomically, then one mod+Return
+   * sends it). Fall back to the in-app keyboard choreography if no mailto
+   * handler is registered or the dispatched compose never appears.
+   *
+   * Cost target: zero LLM calls, zero screenshots, <3 seconds wall clock.
+   */
+  private async runPlaybook(
+    task: string,
+    decision: ReturnType<typeof preprocess>,
+    env: StrategyEnv,
+  ): Promise<StrategyResult> {
+    const name = decision.hints.playbookName;
+    if (!name) {
+      return { success: false, text: 'playbook: no name in hints', path: 'playbook', failureReason: 'playbook_miss' };
+    }
+
+    if (name === 'compose-send') {
+      return this.runComposeSendPlaybook(task, env);
+    }
+
+    const playbook = PLAYBOOKS[name];
+    if (!playbook) {
+      return { success: false, text: `playbook: unknown name "${name}"`, path: 'playbook', failureReason: 'playbook_miss' };
+    }
+    try {
+      const result = await playbook({ adapter: this.deps.adapter, input: {} });
+      env.log.info('pipeline.playbook.run', { name, success: result.success, steps: result.steps.length });
+      return {
+        success: result.success,
+        text: result.text,
+        path: 'playbook',
+        failureReason: result.success ? undefined : 'playbook_miss',
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      env.log.warn('pipeline.playbook.threw', { name, error: msg });
+      return { success: false, text: `playbook "${name}" threw: ${msg}`, path: 'playbook', failureReason: 'playbook_miss' };
+    }
+  }
+
+  /**
+   * compose-send specialized path. Two execution strategies, in order:
+   *
+   *   1. mailto: URI dispatch — single OS call pre-fills To/Subject/Body.
+   *      Confirmed working for New Outlook via the resolved-handler path
+   *      (commit 740ead8). If a new compose window appears AND fields
+   *      could be extracted, this is ~1.5 seconds end-to-end with one
+   *      mod+Return to send.
+   *
+   *   2. In-app keyboard choreography — PLAYBOOKS['compose-send']. Used
+   *      when the URI dispatch fails (no registered handler, or the
+   *      target app ignores the dispatch). Drives the app's native
+   *      compose UI with mod+n + Tab + type, finished with mod+Return.
+   *
+   * Returns failureReason='playbook_miss' on either path failure so the
+   * ladder escalates to blind. Doesn't mark the chain as hard-failed —
+   * the agent ladder is a legitimate recovery mode.
+   */
+  private async runComposeSendPlaybook(task: string, env: StrategyEnv): Promise<StrategyResult> {
+    const fields = extractComposeFields(task);
+    if (!fields.recipient) {
+      env.log.info('pipeline.playbook.compose_send.no_recipient', { task });
+      return { success: false, text: 'compose-send: could not extract recipient email from task', path: 'playbook', failureReason: 'playbook_miss' };
+    }
+
+    // Strategy 1: mailto: URI — pre-fill everything in one shot.
+    if (process.platform === 'win32') {
+      const uri = buildMailtoUri(fields);
+      env.log.info('pipeline.playbook.compose_send.try_mailto', { recipient: fields.recipient, hasSubject: !!fields.subject, hasBody: !!fields.body });
+      try {
+        const exe = await resolveSchemeHandlerExecutable('mailto');
+        if (exe) {
+          const launchResult = await launchHandlerAndVerify(exe, uri, { waitMs: 5000 });
+          if (launchResult.success && launchResult.windowOpened) {
+            // Compose appeared with everything pre-filled. Send it.
+            await this.deps.adapter.keyPress('mod+Return');
+            await new Promise(r => setTimeout(r, 600));
+            env.log.info('pipeline.playbook.compose_send.sent_via_mailto', {
+              recipient: fields.recipient,
+              handlerExe: exe,
+              composeTitle: launchResult.hwndLabel,
+            });
+            return {
+              success: true,
+              text: `compose-send (mailto): opened compose "${launchResult.hwndLabel ?? '(unknown)'}" and sent to ${fields.recipient}.`,
+              path: 'playbook',
+            };
+          }
+          env.log.info('pipeline.playbook.compose_send.mailto_no_window', { handlerExe: exe });
+        } else {
+          env.log.info('pipeline.playbook.compose_send.no_handler', {});
+        }
+      } catch (err) {
+        env.log.warn('pipeline.playbook.compose_send.mailto_threw', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // Strategy 2: in-app keyboard choreography fallback.
+    try {
+      const result = await composeSendPlaybook({
+        adapter: this.deps.adapter,
+        input: { to: fields.recipient, subject: fields.subject, body: fields.body },
+      });
+      env.log.info('pipeline.playbook.compose_send.in_app', { success: result.success, steps: result.steps.length });
+      return {
+        success: result.success,
+        text: result.text,
+        path: 'playbook',
+        failureReason: result.success ? undefined : 'playbook_miss',
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      env.log.warn('pipeline.playbook.compose_send.in_app_threw', { error: msg });
+      return { success: false, text: `compose-send (in-app): ${msg}`, path: 'playbook', failureReason: 'playbook_miss' };
+    }
   }
 
   /**
@@ -1043,6 +1188,24 @@ export type { TaskResult } from './pipeline-types';
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Build an RFC 6068 mailto: URI from extracted compose fields. Encoding
+ * preserves @ and , in the recipient path (multi-recipient is valid in
+ * the path component) and URL-encodes subject/body so newlines and
+ * special chars survive the OS dispatch.
+ */
+function buildMailtoUri(fields: { recipient: string; subject: string; body: string }): string {
+  const safeQuery = (v: string): string =>
+    encodeURIComponent(v).replace(/'/g, '%27').replace(/"/g, '%22');
+  const safePath = encodeURIComponent(fields.recipient)
+    .replace(/%40/g, '@')
+    .replace(/%2C/g, ',');
+  const params: string[] = [];
+  if (fields.subject) params.push(`subject=${safeQuery(fields.subject)}`);
+  if (fields.body)    params.push(`body=${safeQuery(fields.body)}`);
+  return params.length ? `mailto:${safePath}?${params.join('&')}` : `mailto:${safePath}`;
 }
 
 function actionToCachedStep(action: PipelineAction): any | null {

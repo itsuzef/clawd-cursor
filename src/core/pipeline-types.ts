@@ -158,7 +158,7 @@ export interface VerifierResult {
 export interface TaskResult {
   success: boolean;
   /** The path the pipeline took — useful for telemetry and debugging. */
-  path: 'router' | 'skill-cache' | 'text-agent' | 'vision-agent';
+  path: 'router' | 'playbook' | 'skill-cache' | 'text-agent' | 'vision-agent';
   /** Final verifier result. */
   verifier?: VerifierResult;
   /** Total cost for this task (USD). */

@@ -26,10 +26,13 @@ import { classifyTask } from '../classify/classify';
 import { classifyCapability, type Capability } from '../classify/capability';
 import { decompose as regexDecompose } from '../decompose/parser';
 import { detectApp, loadGuide, getWorkflowForTask } from '../../llm/knowledge/loader';
+import { matchPlaybook } from '../../tools/playbooks';
 
 export type Strategy =
   /** Router handled it zero-LLM — no executor invocation needed. */
   | 'router'
+  /** Deterministic capability playbook (e.g. compose-send). Zero LLM. */
+  | 'playbook'
   /** Text-LLM over structured perception (a11y + OCR). Cheapest LLM path. */
   | 'blind'
   /** Vision-LLM from turn 1. For canvas / drag / image-only tasks. */
@@ -57,6 +60,11 @@ export interface PreprocessDecision {
      * Vision agent ignores this and uses compound tools regardless.
      */
     capability?: Capability;
+    /**
+     * Playbook name (key into PLAYBOOKS registry) when strategy === 'playbook'.
+     * Set by the preprocess match step; executor reads this to dispatch.
+     */
+    playbookName?: string;
   };
   /** Underlying classification, preserved for telemetry / debugging. */
   classification: ClassifyResult;
@@ -151,6 +159,26 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
       strategy: 'hybrid',
       subtasks,
       hints: { appKey, guide, reason: 'visual-wording match → blind-first with screenshot tool', capability },
+      classification,
+    };
+  }
+
+  // Deterministic playbook: when the task matches a capability-shaped
+  // pattern (compose-send, find-replace, ...) we can run a fixed
+  // keyboard choreography with zero LLM. Tried AFTER router (which is
+  // strictly cheaper for things like "open X") but BEFORE the blind
+  // ladder, because a playbook beats burning 26 turns on the same work.
+  // The executor still falls through to blind if the playbook fails
+  // (e.g. fields couldn't be extracted, or the keystrokes didn't land).
+  const playbookName = matchPlaybook(trimmed, ctx.activeWindowProcessName ?? '');
+  if (playbookName) {
+    return {
+      strategy: 'playbook',
+      subtasks,
+      hints: {
+        appKey, guide, reason: `playbook:${playbookName}`, capability,
+        playbookName,
+      },
       classification,
     };
   }

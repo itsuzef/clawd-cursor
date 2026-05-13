@@ -39,9 +39,28 @@ describe('preprocess — strategy selection', () => {
     'compute 5 plus 7 in calculator',
     'summarize this screen',
     'fill out the registration form',
-    'send email to bob@x.com',
   ])('%s → blind', (task) => {
     expect(preprocess(task).strategy).toBe('blind');
+  });
+
+  it.each([
+    'send email to bob@x.com',
+    'send an email to alice@example.org with subject Hello',
+    'compose an email to team@corp.com',
+    'send message to support@vendor.io introducing yourself',
+  ])('%s → playbook(compose-send)', (task) => {
+    const r = preprocess(task);
+    expect(r.strategy).toBe('playbook');
+    expect(r.hints.playbookName).toBe('compose-send');
+  });
+
+  it.each([
+    'find and replace foo with bar',
+    'replace all "old" with "new"',
+  ])('%s → playbook(find-replace)', (task) => {
+    const r = preprocess(task);
+    expect(r.strategy).toBe('playbook');
+    expect(r.hints.playbookName).toBe('find-replace');
   });
 });
 
