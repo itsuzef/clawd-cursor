@@ -149,7 +149,19 @@ export async function startMcpHttp(
   //
   // This is per-request boilerplate, not per-connection — there's
   // still one McpServer (and one tool registry) for the whole daemon.
-  const newTransport = () => new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  // `enableJsonResponse: true` makes the SDK serialize tools/call results as
+  // plain JSON-RPC instead of SSE (`event: message\ndata: {...}`). Without
+  // this, MCP clients that expect a single JSON body (Claude Code's MCP
+  // client among them) blow up with `Unexpected token 'e', "event: mes"...`
+  // because the SDK defaults to text/event-stream for everything. We don't
+  // need streaming progress here — `submit_task` is the only long-running
+  // call, and even there a single final JSON response is the cleaner
+  // contract for callers. Editor hosts that DO want streaming use stdio
+  // MCP which has its own framing.
+  const newTransport = () => new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
 
   const handle = async (req: any, res: any, body?: unknown) => {
     const transport = newTransport();

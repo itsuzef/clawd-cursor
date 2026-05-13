@@ -176,10 +176,25 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
       focusProcessId: firstSnapshot.activeWindow?.processId,
     });
 
+    // DPI/scale header — tells the model how screenshot pixels map to
+    // tool-input pixels. The mouse_* tools accept IMAGE-SPACE coords
+    // (matching whatever the screenshot was sized at) and scale them
+    // internally. The model still needs to know to NOT pre-multiply
+    // when looking at the screenshot — passing image coords straight
+    // through is correct. Spelled out here because models that DO
+    // know about DPI sometimes try to "help" by pre-scaling.
+    const ssScale = screen.physicalWidth > 0 && screen.logicalWidth > 0
+      ? (screen.physicalWidth / screen.logicalWidth).toFixed(2)
+      : '1.00';
+    const dpiNote =
+      input.mode === 'vision'
+        ? `\nDISPLAY: ${screen.physicalWidth}×${screen.physicalHeight} physical, DPI scale ${ssScale}×. Screenshots are downsampled to 1280px wide. Pass screenshot pixel coords DIRECTLY to mouse_* tools — they scale internally. Do NOT pre-multiply.`
+        : `\nDISPLAY: ${screen.physicalWidth}×${screen.physicalHeight} physical, DPI scale ${ssScale}×.`;
+
     const initialBlocks: LLMUserBlock[] = [
       {
         type: 'text',
-        text: `TASK: ${input.task}\n\nACCESSIBILITY SNAPSHOT:\n${wrapUntrustedScreenContent(snapshotText)}\n\nPICK ONE TOOL CALL.`,
+        text: `TASK: ${input.task}${dpiNote}\n\nACCESSIBILITY SNAPSHOT:\n${wrapUntrustedScreenContent(snapshotText)}\n\nPICK ONE TOOL CALL.`,
       },
     ];
 

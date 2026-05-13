@@ -385,6 +385,15 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     const cdp = (agent as any).cdpDriver ?? new CDPDriver(DEFAULT_CDP_PORT);
     if (!(agent as any).cdpDriver) (agent as any).cdpDriver = cdp;
 
+    // Mouse-scale: agent mode used to hardcode 1, which broke every
+    // vision-driven click on HiDPI. The contract for mouse_* tools is
+    // "input is image-space coords, scale internally to whatever the
+    // input driver expects." On Windows + recent nut-js the driver
+    // operates in physical-pixel space, so the right factor is
+    // physical / image = getScaleFactor(). On 2× DPI: image (418, 453)
+    // × 2 → click at physical (836, 906) — which IS image (418, 453)
+    // visually. On 1× DPI: factor = 1, no change. Fixes the "agent
+    // sees the orange circle, clicks the sidebar 2× to the left" bug.
     toolCtx = {
       desktop: agent.getDesktop(),
       a11y: (agent as any).a11y,
@@ -392,7 +401,7 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
       platform,
       agent,
       getLogBuffer: getServerLogBuffer,
-      getMouseScaleFactor: () => 1,
+      getMouseScaleFactor: () => agent!.getDesktop().getScaleFactor(),
       getScreenshotScaleFactor: () => agent!.getDesktop().getScaleFactor(),
       ensureInitialized: async () => {},  // agent already initialized
     };
@@ -1133,33 +1142,20 @@ async function createToolContext() {
       await desktop.connect();
       platform = await getPlatform();
       screenshotScaleFactor = desktop.getScaleFactor();
-      try {
-        const { execFileSync } = await import('child_process');
-        let logicalW = 0;
-        if (process.platform === 'win32') {
-          const result = execFileSync('powershell.exe', [
-            '-NoProfile', '-Command',
-            "Add-Type -AssemblyName System.Windows.Forms; $s=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \"$($s.Width),$($s.Height)\"",
-          ], { timeout: 10000, encoding: 'utf-8' }).trim();
-          logicalW = parseInt(result.split(',')[0]);
-        } else if (process.platform === 'darwin') {
-          const result = execFileSync('osascript', ['-e',
-            'use framework "AppKit"\nreturn (current application\'s NSScreen\'s mainScreen\'s frame()\'s size\'s width) as integer',
-          ], { timeout: 5000, encoding: 'utf-8' }).trim();
-          logicalW = parseInt(result);
-        } else {
-          // Linux: try xrandr primary resolution
-          const output = execFileSync('xrandr', ['--query'], { timeout: 5000, encoding: 'utf-8' });
-          const match = output.match(/primary\s+(\d+)x(\d+)/);
-          if (match) logicalW = parseInt(match[1]);
-        }
-        if (logicalW > 0) mouseScaleFactor = logicalW / 1280;
-      } catch {
-        mouseScaleFactor = screenshotScaleFactor;
-      }
+      // mouseScaleFactor: image-space → driver input coords.
+      // Use screenshotScaleFactor (= physical/image) as the source of
+      // truth — recent nut-js on Windows is physical-pixel-aware, and
+      // macOS / Linux X11 don't have logical/physical divergence to
+      // worry about. Earlier code derived this from `logicalW / 1280`
+      // which is wrong on HiDPI (Windows reports logical bounds at the
+      // scaled size, so 2× DPI yielded factor=1 and clicks landed
+      // half-way across the screen). screenshotScaleFactor is the
+      // physical/image ratio captured from the actual screen, the
+      // single value that's right on every platform we ship.
+      mouseScaleFactor = screenshotScaleFactor;
       await a11y.warmup();
       initialized = true;
-      console.log('Subsystems initialized');
+      console.log(`Subsystems initialized (mouseScale=${mouseScaleFactor}, screenshotScale=${screenshotScaleFactor})`);
     })();
     return initPromise;
   };
