@@ -24,6 +24,7 @@ import type { Capability } from '../classify/capability';
 import { paletteFor } from './palettes';
 import { getCompoundTools, COMPOUND_REPLACES } from './compound';
 import { resolveAlias } from '../router/aliases';
+import { resolveSchemeHandlerExecutable, launchHandlerAndVerify } from '../../platform/uri-handler';
 
 /**
  * Hedging-language phrases that indicate the agent is GUESSING about
@@ -883,15 +884,54 @@ export function buildUnifiedTools(
         try {
           if (ctx.platform.platform === 'darwin') {
             await ctx.platform.launchApp('open', { url: u });
-          } else if (ctx.platform.platform === 'linux') {
-            await ctx.platform.launchApp('xdg-open', { url: u });
-          } else {
-            await ctx.platform.launchApp('explorer.exe', { url: u });
+            await sleep(1500);
+            return {
+              success: true,
+              text: `Dispatched ${scheme}: URI to the OS default handler. The configured app for ${scheme}: should now be focused. Verify with read_screen / list_windows. To complete (e.g. send a composed mail), use one more keystroke (cmd+enter on macOS).`,
+            };
           }
-          await sleep(1500);
+          if (ctx.platform.platform === 'linux') {
+            await ctx.platform.launchApp('xdg-open', { url: u });
+            await sleep(1500);
+            return {
+              success: true,
+              text: `Dispatched ${scheme}: URI to the OS default handler. The configured app for ${scheme}: should now be focused. Verify with read_screen / list_windows. To complete (e.g. send a composed mail), use one more keystroke (ctrl+enter on Linux).`,
+            };
+          }
+          // Windows: shell-routed dispatch (explorer.exe mailto:, rundll32
+          // url.dll, cmd /c start) silently fails for New Outlook and other
+          // UWP-packaged handlers — the handler returns without opening a
+          // new window. The reliable path is to resolve the registered
+          // handler executable and invoke IT directly with the URI, then
+          // VERIFY a new visible window appeared. Without verification
+          // open_uri returned "success" while nothing actually happened on
+          // screen, sending the agent into stagnation loops.
+          const exe = await resolveSchemeHandlerExecutable(scheme);
+          if (!exe) {
+            return {
+              success: false,
+              isError: true,
+              text: `open_uri: no registered Windows handler found for "${scheme}:". Try a different scheme or drive the app's UI directly.`,
+            };
+          }
+          const launchResult = await launchHandlerAndVerify(exe, u, { waitMs: 5000 });
+          if (!launchResult.success) {
+            return {
+              success: false,
+              isError: true,
+              text: `open_uri: failed to launch handler "${exe}" for ${scheme}: — ${launchResult.error ?? 'unknown error'}`,
+            };
+          }
+          if (!launchResult.windowOpened) {
+            return {
+              success: false,
+              isError: true,
+              text: `open_uri: handler "${exe}" was launched with ${scheme}: but no new window appeared within 5s. The handler probably routed the URI into an existing instance silently. Drive the app's UI directly (focus_window + click + type_text) instead of relying on the protocol dispatch.`,
+            };
+          }
           return {
             success: true,
-            text: `Dispatched ${scheme}: URI to the OS default handler. The configured app for ${scheme}: should now be focused. Verify with read_screen / list_windows. To complete (e.g. send a composed mail), use one more keystroke (ctrl+enter on Windows/Linux, cmd+enter on macOS).`,
+            text: `Opened ${scheme}: in the registered handler. New window appeared: "${launchResult.hwndLabel ?? '(handle unknown)'}". To complete (e.g. send a composed mail), use one more keystroke (ctrl+enter).`,
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

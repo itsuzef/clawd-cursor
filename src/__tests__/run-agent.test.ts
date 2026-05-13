@@ -192,6 +192,42 @@ describe('runAgent — stagnation exit', () => {
     // We should have stopped well before maxTurns (20).
     expect(result.steps.length).toBeLessThan(20);
   });
+
+  it('does NOT count pure-compute tools (build_uri, list_windows) toward stagnation', async () => {
+    // Regression test for the Outlook send-email run: the agent had
+    // called build_uri to construct a mailto URI and was one turn away
+    // from dispatching it via open_uri when the stagnation hard-abort
+    // fired. build_uri is changesScreen:false — it's a pure encoder —
+    // and shouldn't count as a stale-screen turn.
+    //
+    // Mix: changesScreen:false tools (build_uri, list_windows) sprinkled
+    // between changesScreen:true ones that keep the fingerprint stable.
+    // Without the fix, the false tools also count toward the stagnation
+    // counter and the hard-abort fires after 5. With the fix, only the
+    // changesScreen:true tools count, so we can have many more turns
+    // before tripping the limit.
+    const sequence: Array<{ name: string; args: Record<string, unknown> }> = [
+      { name: 'build_uri',    args: { scheme: 'mailto', path: 'a@b.com' } },
+      { name: 'list_windows', args: {} },
+      { name: 'build_uri',    args: { scheme: 'mailto', path: 'c@d.com' } },
+      { name: 'list_windows', args: {} },
+      { name: 'build_uri',    args: { scheme: 'mailto', path: 'e@f.com' } },
+      { name: 'list_windows', args: {} },
+      { name: 'done',         args: { evidence: 'computed the URIs we needed' } },
+    ];
+    for (const t of sequence) llmTurnQueue.push(turnCall(t.name, t.args));
+
+    const result = await runAgent(
+      { task: 'use compute tools', mode: 'blind', maxTurns: 20 },
+      { adapter: makeAdapter(), llm: LLM_CONFIG },
+    );
+
+    // The previous behavior would have aborted with exit:'stagnation'
+    // after STAGNATION_HARD_LIMIT (5) of those pure-compute turns. With
+    // the fix the agent reaches the done() call cleanly.
+    expect(result.exit).toBe('done');
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('runAgent — no-tool-call loop exit', () => {

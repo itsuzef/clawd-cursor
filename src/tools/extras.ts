@@ -588,14 +588,41 @@ export function getExtraTools(): ToolDefinition[] {
         try {
           if (ctx.platform.platform === 'darwin') {
             await ctx.platform.launchApp('open', { url: u });
-          } else if (ctx.platform.platform === 'linux') {
-            await ctx.platform.launchApp('xdg-open', { url: u });
-          } else {
-            // Windows: ShellExecute via explorer.exe — OS resolves the
-            // scheme handler from HKCR\\<scheme>\\shell\\open\\command.
-            await ctx.platform.launchApp('explorer.exe', { url: u });
+            return { text: `Dispatched ${scheme}: URI to the OS default handler. (URI: ${u.length > 120 ? u.slice(0, 120) + '…' : u})` };
           }
-          return { text: `Dispatched ${scheme}: URI to the OS default handler. (URI: ${u.length > 120 ? u.slice(0, 120) + '…' : u})` };
+          if (ctx.platform.platform === 'linux') {
+            await ctx.platform.launchApp('xdg-open', { url: u });
+            return { text: `Dispatched ${scheme}: URI to the OS default handler. (URI: ${u.length > 120 ? u.slice(0, 120) + '…' : u})` };
+          }
+          // Windows: shell-routed dispatch (explorer.exe mailto:, rundll32
+          // url.dll, cmd /c start) silently fails for New Outlook and other
+          // UWP-packaged handlers — the call returns without opening a new
+          // window. The reliable path is to resolve the registered handler
+          // executable and invoke IT directly, then verify a new visible
+          // top-level window actually appeared.
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { resolveSchemeHandlerExecutable, launchHandlerAndVerify } = await import('../platform/uri-handler');
+          const exe = await resolveSchemeHandlerExecutable(scheme);
+          if (!exe) {
+            return {
+              text: `open_uri: no registered Windows handler found for "${scheme}:". URI was not dispatched.`,
+              isError: true,
+            };
+          }
+          const launchResult = await launchHandlerAndVerify(exe, u, { waitMs: 5000 });
+          if (!launchResult.success) {
+            return {
+              text: `open_uri: failed to launch handler "${exe}" for ${scheme}: — ${launchResult.error ?? 'unknown error'}`,
+              isError: true,
+            };
+          }
+          if (!launchResult.windowOpened) {
+            return {
+              text: `open_uri: handler "${exe}" was launched with ${scheme}: but no new window appeared within 5s. The handler probably routed the URI into an existing instance silently. Drive the app's UI directly instead.`,
+              isError: true,
+            };
+          }
+          return { text: `Opened ${scheme}: in the registered handler. New window appeared: "${launchResult.hwndLabel ?? '(handle unknown)'}". (URI: ${u.length > 120 ? u.slice(0, 120) + '…' : u})` };
         } catch (err) {
           return {
             text: `open_uri failed: ${err instanceof Error ? err.message : String(err)}`,

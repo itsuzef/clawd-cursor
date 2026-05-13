@@ -338,6 +338,15 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
       //    and all results flow back on the next turn.
       const toolResults: Array<{ id: string; text: string; isError: boolean; screenshot?: ScreenshotResult; stop?: boolean; terminalExit?: AgentExit }> = [];
       let terminal: { exit: AgentExit; text: string } | null = null;
+      // Tracks whether ANY tool in this turn was supposed to change the
+      // screen. Pure-compute tools (build_uri, wait, list_windows,
+      // read_screen, etc.) don't move the fingerprint by design, so they
+      // must NOT count as stagnant turns. Without this, the agent's last
+      // turn before dispatching a mailto URI (build_uri -> open_uri) was
+      // killed by the stagnation hard-abort because build_uri is
+      // changesScreen=false. The agent had the right plan and got cut off
+      // one step before execution.
+      let anyScreenChangingTool = false;
 
       for (const call of llmResult.toolCalls) {
         if (isAborted()) return finish('aborted', 'aborted by user', steps, llmCalls, screenshotsCaptured.n, startedAt);
@@ -537,6 +546,7 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
         // this AFTER the tool, BEFORE stagnation detection.
         let postSnapshot: Awaited<ReturnType<typeof captureSnapshot>> | null = null;
         if (tool.changesScreen) {
+          anyScreenChangingTool = true;
           try {
             postSnapshot = await captureSnapshot(deps.adapter);
             activeApp = postSnapshot.activeWindow?.processName ?? activeApp;
@@ -636,12 +646,22 @@ export async function runAgent(input: AgentInput, deps: AgentDeps): Promise<Agen
       //  The counter is reset to 0 every turn the fingerprint moves, so
       //  legitimate stagnant patches (slow window opening, transient a11y
       //  hiccup) don't trip the hard limit.
+      // Stagnation is only meaningful for turns where the agent *tried* to
+      // change the screen. Pure-compute tools (build_uri, wait, list_windows,
+      // read_screen, screenshot, ...) legitimately leave the fingerprint
+      // unchanged and must not be counted as stale. The previous behavior
+      // killed the Outlook send-email run mid-plan: the agent had called
+      // build_uri to construct a mailto URI and was one turn away from
+      // dispatching it via open_uri when the stagnation hard-abort fired.
       const stagnant = fph.isStagnant(STAGNATION_WINDOW);
-      if (stagnant) {
+      if (stagnant && anyScreenChangingTool) {
         consecutiveStagnantTurns += 1;
-      } else {
+      } else if (!stagnant) {
         consecutiveStagnantTurns = 0;
       }
+      // else: stagnant && no screen-changing tool -> neutral turn, leave
+      // the counter alone so the agent gets a chance to use its compute
+      // tools (build_uri, list_windows) without being punished for them.
 
       if (consecutiveStagnantTurns >= STAGNATION_HARD_LIMIT) {
         log.warn(EVENTS.AGENT_STAGNATION, {
