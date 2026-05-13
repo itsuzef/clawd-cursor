@@ -1,7 +1,5 @@
 <p align="center">
-  <img src="docs/hero.gif" width="720" alt="Claude (Sonnet) drawing a stickman in Microsoft Paint, end to end, through Clawd Cursor">
-  <br>
-  <sub><em>Sonnet driving Microsoft Paint over MCP — no Paint plugin, no app integration, just verbs.</em></sub>
+  <img src="docs/favicon.svg" width="96" alt="Clawd Cursor">
 </p>
 
 <h1 align="center">Clawd Cursor</h1>
@@ -16,7 +14,7 @@
   <a href="https://github.com/AmrDab/clawdcursor/releases/latest"><img src="https://img.shields.io/github/v/release/AmrDab/clawdcursor?color=22c55e&label=release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A520-339933?logo=nodedotjs&logoColor=white" alt="Node 20+">
   <img src="https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-0ea5e9" alt="Cross-platform">
-  <a href="https://github.com/AmrDab/clawdcursor/actions"><img src="https://img.shields.io/github/actions/workflow/status/AmrDab/clawdcursor/ci.yml?branch=main&label=tests" alt="Tests"></a>
+  <a href="https://github.com/AmrDab/clawdcursor/actions"><img src="https://img.shields.io/github/actions/workflow/status/AmrDab/clawdcursor/cross-platform.yml?branch=main&label=tests" alt="Tests"></a>
   <a href="https://discord.gg/hW29nrEZ8G"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 

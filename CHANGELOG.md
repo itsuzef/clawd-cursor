@@ -2,6 +2,68 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.9.0] - 2026-05-13 — Architecture redesign: MCP-only, 5 directories, Reflector feedback, professional polish
+
+The largest release since v0.7. Net change vs v0.8.17: **−10,200 LOC, +12 new MCP tools, one protocol instead of two, five directories instead of seven**, plus a Reflector feedback channel that closes the loop between verifier signals and planner decisions.
+
+### Architectural rewrite
+
+- **One protocol, two transports.** REST surface (`/task`, `/tools`, `/execute/:name`, `/favorites`, `/learn`, `/screenshot`, `/abort`, `/confirm`, `/logs`, `/task-logs`) is gone. Every former REST endpoint is now an MCP tool. The HTTP daemon serves stateless MCP at `POST /mcp` alongside `/health`, `/stop`, and `/` (dashboard).
+- **Five directories under `src/`.** `core/` (agent loop + pipeline + verifier + safety + skills), `tools/` (one registry, 87 granular + 6 compound), `platform/` (Windows / macOS / Linux X11 / Linux Wayland adapters + Swift host app), `llm/` (providers + credentials + knowledge), `surface/` (CLI + MCP server + dashboard). One concern per directory, no upward dependencies.
+- **Legacy cascade removed.** The v0.7-era cascade (`computer-use.ts`, `ai-brain.ts`, `action-router.ts`, `generic-computer-use.ts`, 14 more modules — ~12 k LOC) deleted along with the `--legacy` flag and `_executeTaskInternal`. Tag `v0.8.17-legacy` preserves the cascade for emergency cherry-pick.
+- **CLI verb rename.** `clawdcursor start` → `clawdcursor agent`; `clawdcursor serve` → `clawdcursor agent --no-llm`. Old verbs still work as deprecation aliases through 0.9.x; removed in 0.10.
+
+### Reflector feedback (CLAWD_REFLECTOR=1)
+
+The verifier now produces structured `ReflectionFeedback` with typed `Cause[]` and an optional `suggestedStrategy`. Six cause kinds: `no_pixel_change`, `wrong_window_focused`, `modal_intercept`, `a11y_target_missing`, `webview_blind`, `partial_text_match`. The pipeline ladder reroutes based on the dominant cause instead of just rolling down — `webview_blind` jumps straight to vision, `modal_intercept` retries after dismissal. Behind a feature flag for one cycle; default-on in 0.9.1 if telemetry is positive.
+
+### Safety + correctness
+
+- **Five tools promoted to Tier 2 (mutation)** after an external audit: `open_file`, `open_url`, `open_uri`, `navigate_browser`, `write_clipboard`. Each can trigger arbitrary OS handlers, network egress, or clipboard hijack — Tier 1 understated the risk.
+- **Sensitive-app safety gate now actually elevates** instead of just logging. Clicking inside Outlook / 1Password / Mail / banking / private-messaging with no target label → `confirm` (not `allow`).
+- **App-pattern data consolidated** into `src/core/app-categories.ts`. Single source of truth for the WebView2 settle list + sensitive-app list. The autonomous pipeline never imports it.
+- **Stateless MCP HTTP transport.** Per-request transport lifecycle, `enableJsonResponse: true` so clients receive plain JSON-RPC instead of SSE event-stream framing they choke on.
+
+### Agent-loop reliability
+
+- **Soft-fail subtask policy.** Low-confidence verifier rejection (< 0.5) on a single subtask logs a warning and continues. Idempotent operations like "create new canvas" after `open_app("Paint")` (pixel-change zero because Paint already opened blank) no longer kill the chain at subtask 2.
+- **Runaway guard on consecutive no-tool-call turns.** Three turns of degenerate model output (e.g. Kimi hitting `max_tokens` with token-loop garbage) trigger a clean rung exit instead of burning the full 5-minute task timeout.
+- **Kimi `moonshot-v1-*` prose-tool-call parser updated** for the new `functions.NAME:N->{_{...}}` format the model now emits.
+- **Per-task PIPELINE_DONE footer always fires** with `success/failed (reason) · path · N/M subtasks · $cost · duration`. Was missing on chain-abort + isAborted paths.
+- **DPI mouse-scale fix.** Both stdio MCP and `clawdcursor agent` now use `physical/image` as the mouseScaleFactor source. Vision-driven clicks land where intended on HiDPI Windows / Retina macOS instead of being 2× too far towards top-left.
+- **DPI info injected into agent prompt** so models that try to "help" by self-scaling don't pre-multiply.
+
+### Tools
+
+- **Tool count 75 → 87.** Twelve new MCP tools absorbed the former REST endpoints: `submit_task`, `abort_task`, `agent_status`, `screenshot_full`, `favorites_list/_add/_remove`, `task_logs_list/_current`, `logs_recent`, `learn_app`, `submit_report`.
+- **Tool registry unified.** Compact (6 compounds) is now a transform over the granular registry, not a parallel catalog. One source of truth, no drift.
+- **MCP `open_app` uses alias table + PlatformAdapter** instead of raw `Start-Process`. Calculator, Win11 Notepad, and other UWP apps work correctly.
+- **`focus_window` AND-matches** when given both pid + title — needed for Win11's tabbed Notepad where multiple windows share a pid.
+- **`type_text` preserves the user's clipboard** around its paste-as-type operation. Was silently clobbering.
+
+### Cross-platform integrity
+
+- **All four OS adapters preserved.** Windows (1,220 LOC) + macOS (903 LOC) + Linux X11 (1,285 LOC) + Linux Wayland (343 LOC) — 3,751 LOC of adapter code, no regression from v0.8.
+- **macOS host app intact.** `ClawdCursorHost` Swift bundle, `permission-check`, `screenshot-helper`, `clawdcursor grant` flow — all preserved + path-resolution fixed (`getPackageRoot()`) so the host app is found correctly after the directory restructure.
+
+### Documentation
+
+- **Professional README rewrite** (340 lines): hero badge row, Mermaid pipeline diagram with Reflector feedback edges, transport / cost-tier / cross-platform / compound-tool tables, 5-directory architecture summary. Modeled on `ollama`, `vercel/ai`, `microsoft/playwright`, `modelcontextprotocol/typescript-sdk`.
+- **Post-install + post-build banners are state-aware**: skip "Run consent" / "Run doctor" lines when the user already did them on a prior install.
+- **Two-path next-step routing** at install / consent / doctor: autonomous agent (`doctor` → `agent`) vs MCP-only (register `clawdcursor mcp` with editor host).
+- **SKILL.md reordered**: fallback discipline first, "no task impossible" confidence second, CAN/MUST/SHOULD third — load-bearing identity preserved verbatim.
+- **MACOS-SETUP, agent-guide, OPENCLAW-INTEGRATION-RECOMMENDATIONS, dashboard, website** all migrated from REST to MCP HTTP transport language.
+- **`docs/v0.9-readme-building-blocks.md`** + **`docs/agnostic-audit-report.md`** added as design records.
+
+### Release hygiene
+
+- Removed orphan `docs/v0.7.5/` (v0.7-era landing page not linked anywhere).
+- `package.json` gains `repository`, `homepage`, `bugs`, `author`, `keywords`.
+- `.nvmrc` added (Node 20).
+- CI badge URL corrected to the actual workflow filename.
+
+---
+
 ## [0.8.8] - 2026-05-05 — Reliability + correctness: mod modifier, compact set_value, smart_click foreground OCR, invoke-element timeout
 
 A focused reliability release closing several real bugs surfaced by a production session (issue #71) and a thorough ultrareview of the v0.8.5 work. Two of the bugs were silent failures — the worst kind for an agent — and one was a hard hang in the standalone PowerShell scripts. Plus a routine round of major-version dependency bumps (express 5, commander 14, dotenv 17, sharp 0.34) and a lint cleanup pass.

@@ -2,6 +2,30 @@
   "name": "clawdcursor",
   "version": "0.9.0",
   "description": "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
+  "homepage": "https://clawdcursor.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmrDab/clawdcursor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AmrDab/clawdcursor/issues"
+  },
+  "author": "Amr Dabbas",
+  "keywords": [
+    "agent",
+    "ai-agent",
+    "mcp",
+    "model-context-protocol",
+    "desktop-automation",
+    "computer-use",
+    "accessibility",
+    "claude",
+    "gpt",
+    "openai",
+    "anthropic",
+    "skill",
+    "cli"
+  ],
   "bin": {
     "clawdcursor": "dist/surface/cli.js"
   },
