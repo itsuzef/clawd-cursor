@@ -1241,7 +1241,7 @@
     },
     {
       "name": "navigate_browser",
-      "description": "Open a URL in the browser. Launches with CDP enabled (port 9223) for DOM interaction. Call cdp_connect after.",
+      "description": "Open a URL in the browser. Launches with CDP enabled (port 9223) for DOM interaction. Call cdp_connect after. Tier 2 (mutation): triggers network egress to an arbitrary destination + spawns/attaches to a browser process.",
       "category": "orchestration",
       "parameters": {
         "type": "object",
@@ -1284,7 +1284,7 @@
     },
     {
       "name": "open_file",
-      "description": "Open a file or folder in the OS default application. Uses `open` (macOS), `xdg-open` (Linux), and explorer / ShellExecute (Windows).",
+      "description": "Open a file or folder in the OS default application. Uses `open` (macOS), `xdg-open` (Linux), and explorer / ShellExecute (Windows). Tier 2 (mutation): on some platforms \"opening\" a file may execute it (.exe on Windows, .app on macOS, scripts with executable bit on Linux), and the registered handler can be privileged or destructive.",
       "category": "orchestration",
       "parameters": {
         "type": "object",
@@ -1301,7 +1301,7 @@
     },
     {
       "name": "open_uri",
-      "description": "Open ANY registered URI (mailto:, tel:, sms:, webcal:, file:, slack:, vscode:, obsidian:, spotify:, zoommtg:, https:, custom-scheme:, ...) via the OS protocol-handler registry. The OS routes to whichever app the user has registered as the handler. Replaces dozens of app-specific shortcuts with one general primitive. For mailto:, use the convenience helper compose_uri_mailto, or pass a full pre-built URI.",
+      "description": "Open ANY registered URI (mailto:, tel:, sms:, webcal:, file:, slack:, vscode:, obsidian:, spotify:, zoommtg:, https:, custom-scheme:, ...) via the OS protocol-handler registry. The OS routes to whichever app the user has registered as the handler. Replaces dozens of app-specific shortcuts with one general primitive. For mailto:, use the convenience helper compose_uri_mailto, or pass a full pre-built URI. Tier 2 (mutation): the OS will dispatch to whatever app is registered for the scheme — that handler may be privileged or destructive (file: opens files which on Windows can execute .exe; vscode: opens a workspace; zoommtg: joins a call). The dispatcher does no scheme allowlist — callers + the agent loop are responsible for not constructing dangerous URIs.",
       "category": "orchestration",
       "parameters": {
         "type": "object",
@@ -1318,7 +1318,7 @@
     },
     {
       "name": "open_url",
-      "description": "Open a URL in the OS default browser. Non-browser-agnostic counterpart to navigate_browser.",
+      "description": "Open a URL in the OS default browser. Non-browser-agnostic counterpart to navigate_browser. Tier 2 (mutation): triggers network egress to an arbitrary destination and may launch the registered HTTP handler (which can be any app, not strictly a browser).",
       "category": "orchestration",
       "parameters": {
         "type": "object",
@@ -1760,7 +1760,7 @@
     },
     {
       "name": "write_clipboard",
-      "description": "Write text to the OS clipboard.",
+      "description": "Write text to the OS clipboard. Tier 2 (mutation): overwrites the user's clipboard, which can hijack subsequent copy/paste flows. Reversibility is via a fresh user-initiated copy, not by the agent.",
       "category": "clipboard",
       "parameters": {
         "type": "object",

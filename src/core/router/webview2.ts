@@ -10,9 +10,16 @@
  * Not in PlatformAdapter because:
  *  - the data is OS-agnostic (same apps misbehave on Windows + mac)
  *  - the action is just a sleep; no per-OS syscall to abstract
+ *
+ * The list of apps this matches against lives in `src/core/app-categories.ts`
+ * as the single source of truth for app pattern data. To add a new
+ * Electron / WebView2 app to the settle rule, edit `WEBVIEW2_APPS` there
+ * — not this file.
  */
 
-export const WEBVIEW2_APPS_PATTERN = /\b(olk|outlook|teams|slack|discord|spotify|vscode|code)\b/i;
+import { WEBVIEW2_APPS_PATTERN } from '../app-categories';
+
+export { WEBVIEW2_APPS_PATTERN }; // re-exported for back-compat with existing callers
 
 export const WEBVIEW2_SETTLE_MS = 4_000;
 

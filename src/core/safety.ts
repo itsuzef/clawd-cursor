@@ -22,6 +22,7 @@
 import { isBlockedKey, blockReason } from '../tools/playbooks/keys-blocklist';
 import { logger } from './observability/logger';
 import { getCorrelationId } from './observability/correlation';
+import { SENSITIVE_APPS_PATTERN as SENSITIVE_APPS } from './app-categories';
 
 export type Tier = 'read' | 'input' | 'destructive' | 'system';
 
@@ -147,8 +148,8 @@ const CONFIRM_LABEL_PATTERNS: RegExp[] = [
   /\bconfirm\b/i,          // confirm dialogs themselves — require user
 ];
 
-/** Apps where even innocuous clicks should elevate to Confirm. */
-const SENSITIVE_APPS = /\b(outlook|olk|mail|gmail|banking|1password|lastpass|bitwarden|keeper|signal|whatsapp|messages|telegram|imessage)\b/i;
+// Sensitive-app list lives at src/core/app-categories.ts as the single
+// source of truth — imported at the top of this file. Edit there, not here.
 
 /** Tool name → default tier. */
 const TOOL_TIER: Record<string, Tier> = {
@@ -481,12 +482,35 @@ export function evaluate(ctx: EvaluationContext): Decision {
     }
   }
 
-  // 6. Sensitive-app elevation: clicks/typing inside email/banking/messaging apps.
+  // 6. Sensitive-app elevation: clicks/typing inside email/banking/messaging
+  //    apps. The previous implementation here only LOGGED — the code comment
+  //    promised elevation but the function fell through to allow. That left
+  //    a real gap: an agent could click anywhere in Outlook / 1Password /
+  //    Mail with no target label and the safety layer treated it as a
+  //    plain Input action.
+  //
+  //    New policy:
+  //      - Sensitive app + click-family tool + NO/EMPTY target label
+  //        → `confirm` (we can't tell if this lands on "Send" / "Delete")
+  //      - Sensitive app + click-family tool + non-destructive target label
+  //        → allow (e.g. invoke_element name="Reply" is fine; destructive
+  //          target names are already caught by step 5 above)
+  //      - Sensitive app + non-click tool (read, screenshot, focus, etc.)
+  //        → allow (reads stay free)
   if (ctx.activeApp && SENSITIVE_APPS.test(ctx.activeApp)) {
-    // Only elevate for actions that could send/delete. Reads stay allowed.
-    if (['smart_click', 'cdp_click', 'mouse_click', 'a11y_click', 'click', 'invoke_element'].includes(ctx.tool)) {
-      // Without a target label, we can't be sure — mark Input but audit.
-      logger.debug('safety.sensitive_app.click', { app: ctx.activeApp, tool: ctx.tool, correlationId });
+    const clickFamily = ['smart_click', 'cdp_click', 'mouse_click', 'a11y_click', 'click', 'invoke_element'];
+    if (clickFamily.includes(ctx.tool)) {
+      const labelEmpty = !ctx.targetLabel || String(ctx.targetLabel).trim().length === 0;
+      if (labelEmpty) {
+        logger.debug('safety.sensitive_app.elevated', { app: ctx.activeApp, tool: ctx.tool, correlationId });
+        return emit({
+          decision: 'confirm',
+          tier: 'destructive',
+          reason: `Sensitive app (${ctx.activeApp}) + ${ctx.tool} with no target label — cannot verify the action isn't destructive (Send/Delete/Transfer). Ask the user.`,
+        });
+      }
+      // Has a label and it didn't match a destructive pattern in step 5 — let it through.
+      logger.debug('safety.sensitive_app.allowed_with_label', { app: ctx.activeApp, tool: ctx.tool, label: ctx.targetLabel, correlationId });
     }
   }
 
