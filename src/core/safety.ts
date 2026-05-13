@@ -206,7 +206,6 @@ const TOOL_TIER: Record<string, Tier> = {
   'scroll': 'input',
   'drag': 'input',
   'screenshot': 'read',
-  'run_playbook': 'input',
   'done': 'read',
   'give_up': 'read',
   'cannot_read': 'read',

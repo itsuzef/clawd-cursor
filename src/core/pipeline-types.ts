@@ -128,7 +128,6 @@ export type PipelineAction =
   | { type: 'drag'; startX: number; startY: number; endX: number; endY: number }
   | { type: 'screenshot' }
   | { type: 'wait'; ms: number }
-  | { type: 'run_playbook'; name: string; args?: Record<string, unknown> }
   | { type: 'cannot_read'; reason: string }
   | { type: 'done'; reason: string }
   | { type: 'give_up'; reason: string };

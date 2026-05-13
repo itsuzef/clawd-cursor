@@ -12,9 +12,13 @@
  * routes to two different playbooks because the active app changed,
  * the playbooks should be merged.
  *
- * Exposed to the text-agent as an internal run_playbook(name) tool \u2014
- * NOT on the public MCP surface. The first-class path for email-shaped
- * intents is open_uri(mailto: ...); playbooks are the in-UI fallback.
+ * Dispatched by the pipeline as a first-class Strategy ('playbook') sitting
+ * between the router and the LLM ladder; NOT exposed on the public MCP
+ * surface. compose-send specifically prefers the OS protocol-handler path
+ * (mailto://, tel://, slack://, vscode://, ...) via
+ * resolveSchemeHandlerExecutable + launchHandlerAndVerify; the in-app
+ * keyboard choreography here is the fallback when no protocol handler is
+ * registered or the dispatched window never appears.
  *
  * Each playbook is a pure function over PlatformAdapter + args. No
  * per-playbook state, no retries (that's the verifier's job).

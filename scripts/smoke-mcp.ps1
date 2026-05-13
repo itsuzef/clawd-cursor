@@ -110,7 +110,7 @@ $emptyTree = ($outlookTree.Length -lt 400 -or $outlookTree -match 'empty a11y tr
 Write-Host "Outlook a11y tree size: $($outlookTree.Length) chars; sparse/empty: $emptyTree"
 if ($emptyTree) {
   Write-Host "REPRO  Outlook a11y is sparse/empty (matches your failed run)"
-  Write-Host "       Agent should have used detect_webview + relaunch_with_cdp"
+  Write-Host "       Agent should have used detect_webview_apps + relaunch_with_cdp"
 } else {
   Write-Host "NEW    Outlook surfaced a real tree (webview hint may not be needed)"
 }
