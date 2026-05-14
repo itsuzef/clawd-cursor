@@ -1,9 +1,14 @@
 # seed-registry/
 
-**This is the source-of-truth for the `clawdcursor/clawdcursor-guides`
+**Source-of-truth for the [AmrDab/clawdcursor-guides](https://github.com/AmrDab/clawdcursor-guides)
 GitHub registry.** The files here are not bundled into the clawdcursor
-binary — they're seeds that get uploaded to the public GitHub repo,
-which the agent fetches from at runtime.
+binary — they were used to seed the public GitHub repo, which the agent
+fetches from at runtime (served at `clawdcursor.com/app-guides`).
+
+These files in this `seed-registry/` directory are the **canonical
+maintainer-side authoring copies**. The live versions on GitHub may
+diverge as PRs land; if you're authoring a new guide, write it in the
+guides repo directly via PR — don't sync through here.
 
 See [docs/guide-marketplace.md](../docs/guide-marketplace.md) for the
 full architecture.

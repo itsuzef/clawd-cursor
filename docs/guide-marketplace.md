@@ -1,8 +1,11 @@
 # ClawdCursor Guides Marketplace
 
-Status: design + client implementation shipped in v0.9 Phase 3. The
-server-side GitHub repo (`clawdcursor/clawdcursor-guides`) is the contract
-this client expects to talk to; this doc is the spec for setting it up.
+Status: live. Client implementation shipped in v0.9 Phase 3; the server-side
+repo went live the same release. This doc is the architecture spec.
+
+- **Public URL**: <https://clawdcursor.com/app-guides>
+- **Source repo**: <https://github.com/AmrDab/clawdcursor-guides>
+- **Submissions**: PRs to the source repo. See its `CONTRIBUTING.md`.
 
 ## Why
 
@@ -63,36 +66,48 @@ Next task involving YouTube
 
 `CLAWD_HOME` overrides `~/` for both cache locations.
 
-## GitHub repo layout (`clawdcursor/clawdcursor-guides`)
+## GitHub repo layout (`AmrDab/clawdcursor-guides`)
 
 ```
 clawdcursor-guides/
-├── README.md                Submission + maintainer flow
-├── CONTRIBUTING.md          PR template + review SLAs
-├── CODEOWNERS               Required reviewers for guides/* changes
-├── guides/
-│   ├── youtube.json
-│   ├── reddit.json
-│   ├── notion.json
-│   └── …
-├── index.json               Aggregated metadata (auto-generated, see below)
+├── README.md                Submission + browse listing
+├── CONTRIBUTING.md          PR flow + schema + linter rules
+├── CODEOWNERS               Required reviewers
+├── LICENSE                  MIT
+├── youtube.json             ← guides at repo root, NOT under guides/
+├── gmail.json
+├── outlook.json
+├── slack.json
+├── …
+├── index.json               Aggregated metadata (auto-generated nightly)
+├── scripts/
+│   ├── lint-guide.mjs       Standalone Node linter (vendored from clawdcursor)
+│   └── aggregate-index.mjs  Reads vote-issue reactions → index.json
 └── .github/
     ├── workflows/
-    │   ├── validate.yml     Runs schema + lint on every PR
-    │   └── aggregate.yml    Builds index.json from guides/ + vote issues
-    └── ISSUE_TEMPLATE/
-        └── vote.yml         "vote: <app>" issue template (👍/👎 source)
+    │   ├── validate.yml     Lints PR-changed guides
+    │   └── aggregate.yml    Nightly + on-merge index rebuild
+    ├── ISSUE_TEMPLATE/
+    │   ├── vote.yml         "vote: <app>" template (👍/👎 → ratings)
+    │   └── bug.yml          Report broken guides
+    └── PULL_REQUEST_TEMPLATE.md
 ```
 
-### `guides/{app}.json`
+Guides live at the **root** of the repo (not under `guides/`) so any
+static-file hosting layer can serve them at `clawdcursor.com/app-guides/<app>.json`
+without path rewriting.
 
-The same `AppGuide` schema as the bundled guides. See
+### `<app>.json`
+
+The same `AppGuide` schema clawdcursor uses internally. See
 [`src/core/pipeline-types.ts`](../src/core/pipeline-types.ts) and
 [`seed-registry/guides/youtube.json`](../seed-registry/guides/youtube.json)
 for a reference example. Required fields: `app`, plus at least one of
 `shortcuts` / `workflows` / `tips` / `layout`. The client linter at
 [`src/llm/knowledge/guide-linter.ts`](../src/llm/knowledge/guide-linter.ts)
-runs both client-side (defense-in-depth) and as the validate.yml CI step.
+runs both client-side (defense-in-depth) and as the validate.yml CI step
+(vendored copy at `scripts/lint-guide.mjs` in the guides repo — must
+stay in sync, see the SYNC RULE comment in that file).
 
 ### `index.json`
 
@@ -175,7 +190,7 @@ first-principles reasoning, same as for any unknown app.
 ### Environment variables
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `CLAWD_GUIDES_REGISTRY_URL` | `https://raw.githubusercontent.com/clawdcursor/clawdcursor-guides/main` | Base URL for fetches |
+| `CLAWD_GUIDES_REGISTRY_URL` | `https://clawdcursor.com/app-guides` | Base URL for fetches |
 | `CLAWD_GUIDES_REGISTRY_OFF` | unset | `1` to disable all remote fetches (bundled-only mode) |
 | `CLAWD_GUIDES_FETCH_TIMEOUT` | `4000` | Fetch timeout in ms |
 | `CLAWD_BUNDLED_GUIDES_DIR` | the build dir | Override bundle path (used by tests) |
@@ -200,21 +215,53 @@ clawdcursor guides lint <file.json>     Validate a local JSON
 clawdcursor guides submit <file.json>   Print PR instructions
 ```
 
-## Migration plan
+## What's live
 
-Phase 3 (this commit):
-- Client: linter, cache, remote-loader, CLI rewrite all shipped.
-- Bundle: trimmed to msedge + notepad. The other 10 curated guides
-  moved to `seed-registry/guides/` — the source files for the GitHub repo.
+Phase 3 shipped both the client and the server-side repo:
 
-Next steps (separate from this commit):
-1. Create the `clawdcursor/clawdcursor-guides` GitHub repo.
-2. Seed `guides/` from `seed-registry/guides/` (10 files: gmail, outlook,
-   slack, youtube, figma, discord, excel, mspaint, olk, spotify).
-3. Add `index.json` with all 10 marked `trust: verified`.
-4. Wire `validate.yml` to run the same `lintGuide` we ship in the client.
-5. Wire `aggregate.yml` to read `vote: <app>` issue reactions nightly.
-6. Document submission flow in `CONTRIBUTING.md`.
+| Layer | Status | Where |
+|-------|--------|-------|
+| Client linter, cache, remote-loader, CLI | shipped in clawdcursor v0.9.0 | `src/llm/knowledge/` |
+| Public registry repo | live | <https://github.com/AmrDab/clawdcursor-guides> |
+| Initial 10 verified guides | seeded | discord, excel, figma, gmail, mspaint, olk, outlook, slack, spotify, youtube |
+| Vote-issues for ratings | seeded (👍/👎 each on their own issue) | `Issues` tab of the guides repo |
+| Validate CI on every PR | wired | `.github/workflows/validate.yml` |
+| Nightly index aggregation | wired (06:00 UTC) | `.github/workflows/aggregate.yml` |
+| Public URL routing | pending: `clawdcursor.com/app-guides` → guides repo | DNS / hosting config |
 
-Once the repo is live, no further client changes are needed — the agent
-already fetches from `CLAWD_GUIDES_REGISTRY_URL` by default.
+## What's left for full live operation
+
+The client defaults to `https://clawdcursor.com/app-guides`. That URL
+needs to map to the GitHub repo's raw content. Two options:
+
+### Option A — Cloudflare / Vercel rewrite (recommended)
+
+Add a route on clawdcursor.com that proxies `/app-guides/*` →
+`https://raw.githubusercontent.com/AmrDab/clawdcursor-guides/main/*`.
+
+Cloudflare Worker example:
+```js
+addEventListener('fetch', e => {
+  const url = new URL(e.request.url);
+  if (url.pathname.startsWith('/app-guides/')) {
+    const file = url.pathname.replace('/app-guides/', '');
+    return e.respondWith(fetch(`https://raw.githubusercontent.com/AmrDab/clawdcursor-guides/main/${file}`));
+  }
+  return e.respondWith(fetch(e.request));
+});
+```
+
+### Option B — GitHub Pages with custom domain
+
+Enable Pages on the guides repo with custom domain `app-guides.clawdcursor.com`.
+Then change `CLAWD_GUIDES_REGISTRY_URL` to that subdomain in a follow-up
+clawdcursor release. (Slightly worse: path is on a subdomain, not the
+main site; requires a separate clawdcursor release to switch URLs.)
+
+### Option C — Use the raw GitHub URL directly (interim)
+
+Set `CLAWD_GUIDES_REGISTRY_URL=https://raw.githubusercontent.com/AmrDab/clawdcursor-guides/main`
+as an environment variable, or change the default in
+`src/llm/knowledge/remote-loader.ts`. Works today with zero hosting setup
+but every install hits GitHub directly — fine for low traffic, rate-limited
+on heavy use.

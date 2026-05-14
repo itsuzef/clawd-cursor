@@ -43,9 +43,12 @@ import { lintGuide } from './guide-linter';
 import { getCached, setCached, touchUsage } from './cache';
 import type { AppGuide } from '../../core/pipeline-types';
 
-const DEFAULT_REGISTRY_URL =
-  'https://raw.githubusercontent.com/clawdcursor/clawdcursor-guides/main';
+const DEFAULT_REGISTRY_URL = 'https://clawdcursor.com/app-guides';
 const DEFAULT_TIMEOUT_MS = 4000;
+// URL layout: `${registryUrl()}/{app}.json` and `${registryUrl()}/index.json`.
+// The flat (no `/guides/` prefix) layout lets the user host this through any
+// CDN / Pages / proxy without rewriting paths. The clawdcursor-guides GitHub
+// repo serves files from its root for the same reason.
 
 function registryUrl(): string {
   return (process.env.CLAWD_GUIDES_REGISTRY_URL || DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
@@ -150,7 +153,7 @@ export async function fetchGuide(app: string, opts: FetchOptions = {}): Promise<
   }
 
   const cached = getCached(app);
-  const url = `${registryUrl()}/guides/${encodeURIComponent(app)}.json`;
+  const url = `${registryUrl()}/${encodeURIComponent(app)}.json`;
   const res = await httpGet(url, cached?.meta.etag);
 
   if (res.status === 304 && cached) {

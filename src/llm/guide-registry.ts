@@ -39,7 +39,7 @@ import { lintGuide, formatLintReport } from './knowledge/guide-linter';
 // Where users go to submit. Read from env so tests / forks can override.
 function repoUrl(): string {
   return process.env.CLAWD_GUIDES_REPO_URL
-    || 'https://github.com/clawdcursor/clawdcursor-guides';
+    || 'https://github.com/AmrDab/clawdcursor-guides';
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -275,11 +275,12 @@ function submitInstructions(file?: string): void {
    To submit "${app}" to the marketplace:
 
    1. Fork ${repoUrl()}
-   2. Add your file as guides/${app}.json
+   2. Add your file as ${app}.json at the repo root
    3. Open a Pull Request — CI re-runs lint + schema checks
    4. Once merged, every clawdcursor install will fetch it on demand
+      from https://clawdcursor.com/app-guides/${app}.json
 
-   Trust levels (set by reviewers in the PR):
+   Trust levels (set by reviewers via PR label):
      verified     — curated by maintainers, fetched by default
      community    — vetted PR, available with opt-in
      experimental — un-vetted, opt-in only
