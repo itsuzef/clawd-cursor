@@ -393,7 +393,8 @@ export class Router {
   }
 
   private async handleFocus(appName: string): Promise<RouteResult> {
-    const normalized = normalizeAppName(appName);
+    // alias resolution handles normalization internally; the routing-table
+    // process-name list is what we actually need to scan.
     const alias = resolveAlias(appName);
     const processNames = alias?.processNames ?? [appName];
     for (const pn of processNames) {

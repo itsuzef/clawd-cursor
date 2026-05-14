@@ -8,6 +8,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Locked-down GITHUB_TOKEN. Job steps only need to clone + run npm/test; no
+# write access required. Closes the CodeQL actions/missing-workflow-permissions
+# advisory.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: ${{ matrix.os }} / Node ${{ matrix.node-version }}

@@ -39,10 +39,6 @@
  */
 
 import type { ToolDefinition, ToolResult, ToolContext } from './types';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Known Electron / WebView2 app fingerprints. Match is case-insensitive

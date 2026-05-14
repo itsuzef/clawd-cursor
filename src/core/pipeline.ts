@@ -50,7 +50,7 @@ import type { AgentLlmConfig, AgentLlmDeps, AgentMode, AgentResult } from './age
 import type { Verifier, StateSnapshot, TaskType, ReflectionFeedback } from './verifier-types';
 import { GroundTruthVerifier } from './verifier';
 import type { Capability } from './classify/capability';
-import { decomposeWithLlm, DECOMPOSE_SYSTEM_PROMPT } from './decompose/llm-decomposer';
+import { decomposeWithLlm } from './decompose/llm-decomposer';
 import { callLLMWithTools } from '../llm/client';
 import { OcrEngine } from '../platform/ocr-engine';
 import { PLAYBOOKS } from '../tools/playbooks';

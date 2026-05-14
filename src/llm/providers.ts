@@ -789,7 +789,6 @@ export function buildMixedPipeline(
   const primaryApiKey = scanForPrimary?.apiKey || '';
 
   const textProviderKey = bestText?.providerKey || primaryKey;
-  const textScan = scanResults.find(s => s.key === textProviderKey);
   const textProvider = PROVIDERS[textProviderKey] || PROVIDERS['ollama'];
 
   const visionProviderKey = bestVision?.providerKey || primaryKey;

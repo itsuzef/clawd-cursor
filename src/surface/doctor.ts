@@ -1112,11 +1112,12 @@ function savePipelineConfig(pipeline: PipelineConfig, scanResults: ProviderScanR
   // Always save to the package directory so loadPipelineConfig finds it reliably
   const configPath = path.join(getPackageRoot(), CONFIG_FILE);
 
-  // Determine which providers are actually used
+  // Determine which providers are actually used (kept inline to surface
+  // them in logs if debugging routing). The matching scanResults rows
+  // aren't needed downstream — the pipeline already has its API keys.
   const layer2ProviderKey = providerKeyForUrl(pipeline.layer2.baseUrl) || pipeline.providerKey;
   const layer3ProviderKey = providerKeyForUrl(pipeline.layer3.baseUrl) || pipeline.providerKey;
-  const layer2Scan = scanResults.find(s => s.key === layer2ProviderKey);
-  const layer3Scan = scanResults.find(s => s.key === layer3ProviderKey);
+  void layer2ProviderKey; void layer3ProviderKey;
 
   const textModelEntry = {
     enabled: pipeline.layer2.enabled,

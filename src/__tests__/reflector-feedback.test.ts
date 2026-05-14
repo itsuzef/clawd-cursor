@@ -187,7 +187,6 @@ describe('ReflectionFeedback — Cause kinds', () => {
 describe('ReflectionFeedback — suggestedStrategy mapping', () => {
   it('no dominant cause → suggestedStrategy is undefined', async () => {
     // Pass case — no failure, no suggested strategy.
-    const verifier = makeVerifier();
     // Construct a pass scenario by providing different windows (window_change passes)
     // and different OCR text. Even so, we may not get pass=true due to pixel diff
     // erroring. We test the pass branch via a patched test double.

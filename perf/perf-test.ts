@@ -301,8 +301,9 @@ async function runScreenshotHashCacheTests(): Promise<void> {
   const optimizedTime = performance.now() - optimizedStart;
   const optimizedLLMCalls = brain.getLLMCallCount();
 
-  const timeImprovement = ((baselineTime - optimizedTime) / baselineTime * 100).toFixed(1);
   const llmReduction = ((baselineLLMCalls - optimizedLLMCalls) / baselineLLMCalls * 100).toFixed(1);
+  // timeImprovement removed — wasn't surfaced anywhere; relying on the
+  // raw `baselineTime` / `optimizedTime` numbers in the printed report.
 
   results.push({
     testName: 'Screenshot Hash Cache Hit',
