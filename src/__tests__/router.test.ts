@@ -227,6 +227,63 @@ describe('Router.route — URL nav with verification', () => {
   });
 });
 
+describe('Router.route — web-service redirect (v0.9.0 fix)', () => {
+  // Closes the "agent typed 'default browser' into a search bar" bug.
+  // "open <web-service>" misses APP_ALIASES → would fall through Start-Menu
+  // search → blind-agent escalation. The web-service table catches it first
+  // and routes to handleUrlNav so the OS opens the registered http handler.
+
+  it('"open youtube" redirects to https://www.youtube.com via url_nav', async () => {
+    const adapter = makeStatefulAdapter({ postLaunchWindows: [] });
+    const r = new Router(adapter);
+    const res = await r.route('open youtube');
+    expect(res.handled).toBe(true);
+    expect(res.path).toBe('url_nav');
+    expect(adapter.launchApp).toHaveBeenCalledWith(
+      'default-browser',
+      expect.objectContaining({ url: 'https://www.youtube.com' }),
+    );
+    expect(r.telemetry.webServiceRedirects).toBe(1);
+  });
+
+  it('"open reddit" routes to reddit.com', async () => {
+    const adapter = makeStatefulAdapter({ postLaunchWindows: [] });
+    const r = new Router(adapter);
+    await r.route('open reddit');
+    expect(adapter.launchApp.mock.calls[0][1].url).toBe('https://www.reddit.com');
+  });
+
+  it('"open gmail" routes to mail.google.com (no desktop Gmail client)', async () => {
+    const adapter = makeStatefulAdapter({ postLaunchWindows: [] });
+    const r = new Router(adapter);
+    await r.route('open gmail');
+    expect(adapter.launchApp.mock.calls[0][1].url).toBe('https://mail.google.com');
+  });
+
+  it('"open chrome" still goes through the desktop alias (NOT the web table)', async () => {
+    // chrome has an APP_ALIASES entry, so the desktop client wins. Verifies
+    // we didn't accidentally shadow native apps.
+    const chrome = mkWindow({ processName: 'chrome', title: 'Chrome', processId: 99 });
+    const adapter = makeStatefulAdapter({ postLaunchWindows: [chrome] });
+    const r = new Router(adapter);
+    await r.route('open chrome');
+    expect(r.telemetry.webServiceRedirects).toBe(0);
+    // launchApp called with the alias's launch args, not 'default-browser'
+    expect(adapter.launchApp.mock.calls[0][0]).not.toBe('default-browser');
+  });
+
+  it('"open the youtube app" — filler-suffix stripped, still redirects', async () => {
+    // normalizeAppName turns "the youtube app" into "youtube". Verifies the
+    // web-service resolver runs through the same normalization as alias
+    // resolution so phrasings line up.
+    const adapter = makeStatefulAdapter({ postLaunchWindows: [] });
+    const r = new Router(adapter);
+    const res = await r.route('open the youtube app');
+    expect(res.path).toBe('url_nav');
+    expect(adapter.launchApp.mock.calls[0][1].url).toBe('https://www.youtube.com');
+  });
+});
+
 describe('Router.route — misc paths', () => {
   it('handles "focus Chrome"', async () => {
     const adapter = makeStatefulAdapter();

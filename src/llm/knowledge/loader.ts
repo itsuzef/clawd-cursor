@@ -218,70 +218,174 @@ export function mergeIntoUserGuide(
   }
 }
 
+// ── Prompt rendering ────────────────────────────────────────────────────────
+
+/**
+ * Hard cap on the prompt fragment in characters (~1500 tokens at 4:1).
+ * Generous so a rich guide (30+ shortcuts, 20+ workflows, full layout +
+ * tips) survives intact for the agent to reason from. Modern models cache
+ * the system prompt so re-injection across turns is cheap.
+ *
+ * Section order below is chosen so graceful degradation drops TIPS first,
+ * then LAYOUT, while preserving the active workflow + shortcuts.
+ */
+const PROMPT_FRAGMENT_MAX = 6000;
+/** Per-workflow prose cap. The ★ active workflow gets the full text; the
+ *  rest are truncated so a 20-workflow guide doesn't crowd out LAYOUT/TIPS. */
+const INACTIVE_WORKFLOW_PROSE_MAX = 180;
+
+/** Render an `AppWorkflow` (structured steps) as a single prose line. */
+function renderWorkflow(workflow: AppWorkflow | string): string {
+  if (typeof workflow === 'string') return workflow;
+  return workflow.steps.map((s, i) => {
+    if (s.type === 'pressKey')    return `${i + 1}. pressKey ${s.key}${s.note ? ` (${s.note})` : ''}`;
+    if (s.type === 'typeAtFocus') return `${i + 1}. typeAtFocus — the ${s.field}${s.note ? ` (${s.note})` : ''}`;
+    if (s.type === 'click')       return `${i + 1}. click ${s.target}${s.note ? ` (${s.note})` : ''}`;
+    if (s.type === 'wait')        return `${i + 1}. wait ${s.ms}ms${s.note ? ` (${s.note})` : ''}`;
+    return `${i + 1}. verify ${s.name ?? ''}`;
+  }).join(' ');
+}
+
+/**
+ * Render the whole guide as a compact, rich prompt fragment. Surfaces
+ * layout, workflows (prose or structured), shortcuts, tips — capped at
+ * PROMPT_FRAGMENT_MAX chars.
+ *
+ * Philosophy: guides are HINTS, not scripts. The fragment offers the agent
+ * raw knowledge (here are the workflows, here are the shortcuts, here's the
+ * layout) and trusts it to reason about which apply to the current task.
+ * No "follow these EXACT steps" — the agent picks what fits.
+ *
+ * @param guide       parsed AppGuide
+ * @param activeKey   optional workflow key to highlight first (set when a
+ *                    matcher determined "this is the most relevant workflow")
+ */
+export function renderAppKnowledge(guide: AppGuide, activeKey?: string): string {
+  const lines: string[] = [];
+  const title = (guide.name || guide.app).toUpperCase();
+  lines.push(`APP KNOWLEDGE — ${title}`);
+  lines.push('(Reference data. Use what fits the task, ignore the rest. Not a script.)');
+
+  // Order matters for graceful degradation. If the fragment overflows the
+  // cap, sections at the END are truncated first — so put high-information-
+  // density / most-essential sections at the top:
+  //   1. SHORTCUTS  (compact, universally useful, ~1 line)
+  //   2. WORKFLOWS  (the matched one ★-promoted, the rest as references)
+  //   3. LAYOUT     (helpful for navigation when the agent is blind)
+  //   4. TIPS       (gotchas, failure modes, supplementary)
+  // Keyboard nudge always appended last but is short enough to survive.
+
+  if (guide.shortcuts && Object.keys(guide.shortcuts).length > 0) {
+    const pairs = Object.entries(guide.shortcuts).map(([k, v]) => `${k}=${v}`);
+    lines.push(`SHORTCUTS: ${pairs.join(', ')}`);
+  }
+
+  const allWorkflows = { ...(guide.workflows ?? {}), ...(guide.learnedWorkflows ?? {}) };
+  const workflowKeys = Object.keys(allWorkflows);
+  if (workflowKeys.length > 0) {
+    lines.push('WORKFLOWS:');
+    const ordered = activeKey && allWorkflows[activeKey]
+      ? [activeKey, ...workflowKeys.filter(k => k !== activeKey)]
+      : workflowKeys;
+    for (const key of ordered) {
+      const wf = allWorkflows[key];
+      const isActive = key === activeKey;
+      let prose = renderWorkflow(wf);
+      // Active workflow keeps its full text; the rest are truncated so a
+      // 20-workflow guide doesn't drown out LAYOUT and TIPS.
+      if (!isActive && prose.length > INACTIVE_WORKFLOW_PROSE_MAX) {
+        prose = prose.slice(0, INACTIVE_WORKFLOW_PROSE_MAX - 1) + '…';
+      }
+      const star = isActive ? '★ ' : '  ';
+      lines.push(`${star}${key}: ${prose}`);
+    }
+  }
+
+  if (guide.layout && Object.keys(guide.layout).length > 0) {
+    lines.push('LAYOUT:');
+    for (const [region, desc] of Object.entries(guide.layout)) {
+      lines.push(`  ${region}: ${desc}`);
+    }
+  }
+
+  if (guide.tips && guide.tips.length > 0) {
+    lines.push('TIPS:');
+    for (const tip of guide.tips) lines.push(`  - ${tip}`);
+  }
+
+  lines.push('Prefer keyboard over mouse where a shortcut exists; verify before declaring done.');
+
+  let out = lines.join('\n');
+  if (out.length > PROMPT_FRAGMENT_MAX) {
+    out = out.slice(0, PROMPT_FRAGMENT_MAX - 24) + '\n  …(truncated, guide cont.)';
+  }
+  return out;
+}
+
 /**
  * Resolve a task description + current URL/title to an injected prompt
  * fragment describing the known workflow, if any.
  *
- * Returns null when no app is detected or no matching workflow exists.
+ * Returns null when no app is detected; non-null when the URL/title matches
+ * a known app, regardless of whether a workflow keyword matched. When a
+ * keyword DOES match, the matched workflow is promoted to the top of the
+ * fragment with a ★ marker — but the rest of the guide travels along so the
+ * agent has full context. (Prior versions returned null on no keyword match,
+ * which silently suppressed guide injection for any task the legacy email-
+ * specific keyword table didn't recognize.)
+ *
  * The text-agent consumes this as a trusted prompt addendum.
  */
 export function getWorkflowForTask(taskText: string, urlOrTitle: string): {
   guide: AppGuide;
-  workflow: AppWorkflow;
+  workflow: AppWorkflow | string | null;
   promptFragment: string;
 } | null {
   const app = detectApp(urlOrTitle);
   if (!app) return null;
 
   const guide = loadGuide(app);
-  if (!guide || !guide.workflows) return null;
+  if (!guide) return null;
 
   const taskLower = taskText.toLowerCase();
 
-  // Keyword → workflow key mapping. Kept identical to v0.8.0 legacy to avoid
-  // accidentally changing which workflow fires on which phrase.
+  // Keyword → workflow key mapping. Kept identical to v0.8.0 legacy for the
+  // email-heavy entries; extended in v0.9 with general web-service verbs so
+  // the matcher actually fires for YouTube / Reddit / etc. The MATCH table
+  // is consulted top-down; first key whose keywords hit AND whose entry
+  // exists in this guide wins.
   const MATCH: Record<string, string[]> = {
     compose_and_send: ['send email', 'compose', 'write email', 'new email', 'email to'],
     reply:            ['reply', 'respond'],
     reply_all:        ['reply all'],
     forward:          ['forward'],
-    search:           ['search', 'find email', 'look for'],
     archive:          ['archive'],
     delete_:          ['delete email', 'trash'],
     go_to_inbox:      ['go to inbox', 'open inbox', 'inbox'],
+    // Generic media / web verbs
+    search_and_play:  ['play', 'listen to', 'watch'],
+    play_song_by_artist: ['song by', 'song from', 'track by'],
+    queue_video:      ['queue', 'add to queue'],
+    subscribe:        ['subscribe'],
+    like_video:       ['like', 'thumbs up'],
+    comment:          ['comment'],
+    fullscreen:       ['fullscreen', 'full screen'],
+    search:           ['search', 'find', 'look for'],
   };
 
-  let workflow: AppWorkflow | null = null;
+  const allWorkflows = { ...(guide.workflows ?? {}), ...(guide.learnedWorkflows ?? {}) };
+  let activeKey: string | null = null;
   for (const [key, keywords] of Object.entries(MATCH)) {
-    if (keywords.some(kw => taskLower.includes(kw)) && guide.workflows[key]) {
-      workflow = guide.workflows[key];
+    if (keywords.some(kw => taskLower.includes(kw)) && allWorkflows[key]) {
+      activeKey = key;
       break;
     }
   }
 
-  if (!workflow) return null;
-
-  const steps = workflow.steps.map((s, i) => {
-    if (s.type === 'pressKey')    return `${i + 1}. pressKey ${s.key}${s.note ? ` (${s.note})` : ''}`;
-    if (s.type === 'typeAtFocus') return `${i + 1}. typeAtFocus — the ${s.field}${s.note ? ` (${s.note})` : ''}`;
-    if (s.type === 'click')       return `${i + 1}. click ${s.target}${s.note ? ` (${s.note})` : ''}`;
-    if (s.type === 'wait')        return `${i + 1}. wait ${s.ms}ms${s.note ? ` (${s.note})` : ''}`;
-    return `${i + 1}. verify ${s.name ?? ''}`;
-  }).join('\n');
-
-  const shortcutLine = guide.shortcuts && Object.keys(guide.shortcuts).length
-    ? `Known shortcuts: ${Object.entries(guide.shortcuts).slice(0, 10).map(([k, v]) => `${k}=${v}`).join(', ')}`
-    : '';
-  const notesLine = guide.tips?.length ? `Tips: ${guide.tips.join('; ')}` : '';
-
-  const promptFragment = [
-    `APP KNOWLEDGE — ${guide.name.toUpperCase()}:`,
-    `Use this EXACT sequence for "${workflow.name}":`,
-    steps,
-    shortcutLine,
-    notesLine,
-    'Follow this sequence precisely. Prefer keyboard over mouse.',
-  ].filter(Boolean).join('\n');
-
-  return { guide, workflow, promptFragment };
+  const promptFragment = renderAppKnowledge(guide, activeKey ?? undefined);
+  return {
+    guide,
+    workflow: activeKey ? (allWorkflows[activeKey] ?? null) : null,
+    promptFragment,
+  };
 }

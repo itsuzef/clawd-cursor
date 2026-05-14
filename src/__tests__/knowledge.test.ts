@@ -190,15 +190,19 @@ describe('learn_app write path (saveLearnedLesson + mergeIntoUserGuide)', () => 
 });
 
 describe('getWorkflowForTask', () => {
-  it('matches "send email" to compose_and_send in Gmail', () => {
+  it('matches "send email" to compose_and_send in Gmail (★-highlighted)', () => {
     const r = getWorkflowForTask(
       'send email to bob@acme.com about lunch',
       'https://mail.google.com/mail',
     );
     expect(r).not.toBeNull();
     expect(r!.guide.app).toBe('gmail');
-    expect(r!.workflow.name).toMatch(/compose/i);
-    expect(r!.promptFragment).toContain('APP KNOWLEDGE — GMAIL:');
+    expect(r!.workflow).not.toBeNull();
+    // Gmail's compose_and_send is a structured AppWorkflow.
+    const wf = r!.workflow as { name: string };
+    expect(wf.name).toMatch(/compose/i);
+    expect(r!.promptFragment).toContain('APP KNOWLEDGE — GMAIL');
+    expect(r!.promptFragment).toContain('★ compose_and_send'); // marked as the active workflow
     expect(r!.promptFragment).toContain('pressKey c');
   });
 
@@ -207,10 +211,19 @@ describe('getWorkflowForTask', () => {
     expect(r).not.toBeNull();
     expect(r!.guide.app).toBe('outlook');
     expect(r!.promptFragment).toContain('mod+r');
+    expect(r!.promptFragment).toContain('★ reply');
   });
 
-  it('returns null when the task has no matching workflow', () => {
-    expect(getWorkflowForTask('schedule a meeting tomorrow', 'mail.google.com')).toBeNull();
+  it('still returns the guide when no keyword matches (richer-by-default)', () => {
+    // The legacy behavior was to return null on no keyword match, silently
+    // suppressing all app context. v0.9: return the full guide with no
+    // ★ marker. The agent gets context; the matcher just couldn't pick
+    // a single workflow.
+    const r = getWorkflowForTask('schedule a meeting tomorrow', 'mail.google.com');
+    expect(r).not.toBeNull();
+    expect(r!.workflow).toBeNull();
+    expect(r!.promptFragment).toContain('APP KNOWLEDGE — GMAIL');
+    expect(r!.promptFragment).not.toContain('★ '); // no workflow promoted
   });
 
   it('returns null when no app is detected', () => {
@@ -220,5 +233,20 @@ describe('getWorkflowForTask', () => {
   it('prompt fragment ends with a prefer-keyboard nudge', () => {
     const r = getWorkflowForTask('search for invoice', 'mail.google.com')!;
     expect(r.promptFragment).toContain('Prefer keyboard over mouse');
+  });
+
+  it('matches "play" on youtube.com → search_and_play workflow', () => {
+    const r = getWorkflowForTask(
+      'play a song by adele',
+      'https://www.youtube.com',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.guide.app).toBe('youtube');
+    expect(r!.promptFragment).toContain('APP KNOWLEDGE — YOUTUBE');
+    expect(r!.promptFragment).toContain('★ search_and_play');
+    // Layout and tips are surfaced too — guide is rich, not a script.
+    expect(r!.promptFragment).toMatch(/LAYOUT:/);
+    expect(r!.promptFragment).toMatch(/SHORTCUTS:/);
+    expect(r!.promptFragment).toMatch(/TIPS:/);
   });
 });

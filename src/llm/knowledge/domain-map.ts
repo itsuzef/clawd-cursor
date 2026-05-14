@@ -32,6 +32,11 @@ export const DOMAIN_MAP: Record<string, string> = {
   'notion.so':            'notion',
   'canva.com':            'canva',
   'linear.app':           'linear',
+  // Media / streaming
+  'youtube.com':          'youtube',
+  'www.youtube.com':      'youtube',
+  'm.youtube.com':        'youtube',
+  'music.youtube.com':    'youtube',
   // Dev / analytics
   'github.com':           'github',
   'app.posthog.com':      'posthog',
@@ -66,6 +71,7 @@ export const TITLE_FALLBACKS: Array<{ pattern: RegExp; app: string }> = [
   { pattern: /\bdiscord\b/i,                    app: 'discord' },
   { pattern: /\bvs ?code\b/i,                   app: 'vscode' },
   { pattern: /\blinear\b/i,                     app: 'linear' },
+  { pattern: /\byoutube\b/i,                    app: 'youtube' },
 
   // Native desktop apps — matched against process name OR title
   { pattern: /\b(?:notepad|note ?pad)\b/i,      app: 'notepad' },

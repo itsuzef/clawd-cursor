@@ -25,8 +25,10 @@ import { logger } from '../observability/logger';
 import { APP_ALIASES, resolveAlias, type AppAlias } from './aliases';
 import { normalizeAppName } from './normalize';
 import { needsWebView2Settle, settleIfWebView2 } from './webview2';
+import { resolveWebService } from './web-services';
 
 export { APP_ALIASES, resolveAlias, needsWebView2Settle, settleIfWebView2 };
+export { WEB_SERVICES, resolveWebService } from './web-services';
 
 export interface RouteResult {
   handled: boolean;
@@ -48,6 +50,8 @@ export interface RouterTelemetry {
   compoundRefused: number;
   /** Launch attempts that returned with NO new window observed — false-positive saves. */
   launchUnverified: number;
+  /** "open <web-service>" redirected to URL nav — closes the v0.9 "default browser typed in search bar" hole. */
+  webServiceRedirects: number;
 }
 
 /** Settle + polling budget — ported from v0.6.3 action-router `waitForAppReady`. */
@@ -123,6 +127,7 @@ export class Router {
     llmFallbacks: 0,
     compoundRefused: 0,
     launchUnverified: 0,
+    webServiceRedirects: 0,
   };
 
   constructor(private readonly adapter: PlatformAdapter) {}
@@ -227,6 +232,22 @@ export class Router {
     // hint, so we want the cleaned form there too.
     const normalized = normalizeAppName(appName);
     const alias = resolveAlias(appName);
+
+    // Web-service shortcut. If the name isn't a known native app but IS a
+    // known web service (youtube, reddit, gmail, …), route to URL nav so the
+    // OS opens the registered default browser. Prevents the v0.9 failure
+    // where "open youtube" missed APP_ALIASES, fell through Start-Menu
+    // search, escalated to the blind agent, and ended with the agent typing
+    // "default browser" into a search bar.
+    if (!alias) {
+      const webUrl = resolveWebService(appName);
+      if (webUrl) {
+        logger.debug('router.open_app.web_service_redirect', { appName, url: webUrl });
+        this.telemetry.webServiceRedirects += 1;
+        return this.handleUrlNav(webUrl);
+      }
+    }
+
     // Search term used by Start-Menu / Spotlight fallback. Prefer the
     // alias's curated `searchTerm` ("Edge", "File Explorer"); fall back
     // to the normalized name (not the raw `appName`) so a phrase like

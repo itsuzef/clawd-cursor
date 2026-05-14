@@ -25,7 +25,7 @@ import type { ClassifyResult } from '../pipeline-types';
 import { classifyTask } from '../classify/classify';
 import { classifyCapability, type Capability } from '../classify/capability';
 import { decompose as regexDecompose } from '../decompose/parser';
-import { detectApp, loadGuide, getWorkflowForTask } from '../../llm/knowledge/loader';
+import { detectApp, loadGuide, getWorkflowForTask, renderAppKnowledge } from '../../llm/knowledge/loader';
 import { matchPlaybook } from '../../tools/playbooks';
 
 export type Strategy =
@@ -108,6 +108,10 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
   // This hint goes to the executor regardless of strategy.
   const appHint = ctx.activeWindowTitle ?? ctx.activeWindowProcessName ?? '';
   const appKey = appHint ? detectApp(appHint) ?? undefined : undefined;
+  // `getWorkflowForTask` now returns a fragment whenever the app is detected
+  // (with the matched workflow ★-highlighted if a keyword matched). The
+  // separate `loadGuide` fallback below stays as a safety net for the rare
+  // case where getWorkflowForTask returns null (no detectApp hit).
   const workflow = appHint ? getWorkflowForTask(trimmed, appHint) : null;
   let guide: PreprocessDecision['hints']['guide'] = undefined;
   if (workflow) {
@@ -115,11 +119,7 @@ export function preprocess(task: string, ctx: PreprocessContext = {}): Preproces
   } else if (appKey) {
     const g = loadGuide(appKey);
     if (g) {
-      const shortcuts = g.shortcuts && Object.keys(g.shortcuts).length
-        ? `Known shortcuts: ${Object.entries(g.shortcuts).slice(0, 8).map(([k, v]) => `${k}=${v}`).join(', ')}`
-        : '';
-      const frag = [`APP: ${g.name}`, shortcuts].filter(Boolean).join('\n');
-      guide = { appName: g.app, promptFragment: frag };
+      guide = { appName: g.app, promptFragment: renderAppKnowledge(g) };
     }
   }
 
