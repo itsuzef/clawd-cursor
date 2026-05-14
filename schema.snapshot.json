@@ -1439,6 +1439,80 @@
       }
     },
     {
+      "name": "scheduled_task_create",
+      "description": "Create a recurring task that runs on a cron schedule. The task submits to the autonomous agent each time the cron tick fires; if the agent is busy at that moment, the tick is skipped (no queue). Cron is standard 5-field syntax (`* * * * *` = every minute) or 6-field with leading seconds. Returns the created task with id + next-run timestamp. Persisted across daemon restarts.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "Natural-language task to run on each tick"
+          },
+          "cron": {
+            "type": "string",
+            "description": "Cron expression (e.g. \"0 9 * * 1-5\" = 9am weekdays)"
+          },
+          "tz": {
+            "type": "string",
+            "description": "Optional timezone (e.g. \"America/New_York\"). Defaults to server local."
+          }
+        },
+        "required": [
+          "task",
+          "cron"
+        ]
+      }
+    },
+    {
+      "name": "scheduled_task_delete",
+      "description": "Delete one scheduled task by id. No-op if id is unknown.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ScheduledTask.id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "scheduled_task_list",
+      "description": "Return every scheduled task: id, cron expression, task text, enabled state, run/skip counters, last-run / last-error, next-run timestamp.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "scheduled_task_toggle",
+      "description": "Pause/resume a scheduled task without deleting it. When disabled the cron job is unregistered (no firing); state stays persisted.",
+      "category": "orchestration",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ScheduledTask.id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true=enable, false=pause"
+          }
+        },
+        "required": [
+          "id",
+          "enabled"
+        ]
+      }
+    },
+    {
       "name": "screenshot_full",
       "description": "Capture the full primary display and return it as a base64-encoded PNG. Equivalent to desktop_screenshot but returns the full frame unconditionally (no region cropping). Useful for the dashboard's /screenshot REST replacement.",
       "category": "perception",

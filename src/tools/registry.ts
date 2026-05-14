@@ -18,6 +18,7 @@ import { getElectronBridgeTools } from './electron_bridge';
 import { getCompactTools } from './compact';
 import { getAgentTools } from './agent';
 import { getFavoritesTools } from './favorites';
+import { getSchedulerTools } from './scheduler';
 import type { ToolDefinition, ToolContext, ToolResult, CompactGroup } from './types';
 import { toOpenAiFunctions, toJsonSchema } from './types';
 
@@ -71,6 +72,7 @@ export function getTools(options?: GetToolsOptions): ToolDefinition[] {
     ...getElectronBridgeTools(),
     ...getAgentTools(),
     ...getFavoritesTools(),
+    ...getSchedulerTools(),
   ];
 
   if (options?.compactGroup) {

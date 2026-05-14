@@ -15,10 +15,10 @@ import { findReplace } from '../tools/playbooks/find-replace';
 import { isBlockedKey, normalizeCombo, BLOCKED_KEYS } from '../tools/playbooks/keys-blocklist';
 import type { PlatformAdapter } from '../platform/types';
 
-function makeAdapter(): { adapter: PlatformAdapter; calls: any[] } {
+function makeAdapter(platform: 'win32' | 'darwin' | 'linux' = 'win32'): { adapter: PlatformAdapter; calls: any[] } {
   const calls: any[] = [];
   const adapter = {
-    platform: 'win32' as const,
+    platform,
     init: () => Promise.resolve(),
     shutdown: () => Promise.resolve(),
     checkPermissions: () => Promise.resolve({ input: true, accessibility: true, screenRecording: true }),
@@ -82,31 +82,116 @@ describe('matchPlaybook (capability-based, app-agnostic)', () => {
 });
 
 describe('compose-send keystroke sequence', () => {
-  it('fires mod+n, types To, Tab*2, types Subject, Tab, types Body, mod+Return', async () => {
-    const { adapter, calls } = makeAdapter();
-    const r = await composeSend({
-      adapter,
-      input: { to: 'bob@acme.com', subject: 'hi', body: 'body text' },
-    });
-    expect(r.success).toBe(true);
-    const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
-    expect(keys[0]).toBe('mod+n');
-    expect(keys).toContain('mod+Return');
-    // Last key fired must be the submit shortcut, not a stray Tab.
-    expect(keys[keys.length - 1]).toBe('mod+Return');
-    const types = calls.filter(c => c.kind === 'type').map(c => c.text);
-    expect(types).toEqual(['bob@acme.com', 'hi', 'body text']);
+  // ── Test scaffolding ────────────────────────────────────────────────
+  // process.platform is read inside the playbook to pick the Tab count.
+  // vitest can override it via vi.stubGlobal. We restore in afterEach.
+  const ORIG_PLATFORM = process.platform;
+  const setPlatform = (p: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+  const restorePlatform = () => {
+    Object.defineProperty(process, 'platform', { value: ORIG_PLATFORM, configurable: true });
+  };
+
+  it('fires mod+n, types To, Tab×3 (win), types Subject, Tab, types Body, mod+Return', async () => {
+    setPlatform('win32');
+    try {
+      const { adapter, calls } = makeAdapter('win32');
+      const r = await composeSend({
+        adapter,
+        input: { to: 'bob@acme.com', subject: 'hi', body: 'body text' },
+      });
+      expect(r.success).toBe(true);
+      const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
+      // mod+n, then 3 Tabs (To→Cc→Bcc→Subject on Outlook desktop default), then
+      // 1 Tab (Subject→Body), then mod+Return.
+      expect(keys[0]).toBe('mod+n');
+      expect(keys.filter(k => k === 'Tab')).toHaveLength(4);
+      expect(keys[keys.length - 1]).toBe('mod+Return');
+      const types = calls.filter(c => c.kind === 'type').map(c => c.text);
+      expect(types).toEqual(['bob@acme.com', 'hi', 'body text']);
+    } finally { restorePlatform(); }
   });
 
-  it('skips a field when its value is empty', async () => {
-    const { adapter, calls } = makeAdapter();
-    const r = await composeSend({
-      adapter,
-      input: { to: 'a@b.c', body: 'only body' },
-    });
-    expect(r.success).toBe(true);
-    const types = calls.filter(c => c.kind === 'type').map(c => c.text);
-    expect(types).toEqual(['a@b.c', 'only body']);
+  it('fires mod+n, types To, Tab×1 (mac), types Subject, Tab, types Body, mod+Return', async () => {
+    // The v0.9.1 fix. Mac Mail.app default Tab order is To → Subject → Body
+    // (no Cc/Bcc inline), so only 1 Tab after the recipient. The previous
+    // hardcoded 2-Tab path on darwin overshot to Body and the user's body
+    // landed in the wrong field.
+    setPlatform('darwin');
+    try {
+      const { adapter, calls } = makeAdapter('darwin');
+      const r = await composeSend({
+        adapter,
+        input: { to: 'bob@acme.com', subject: 'hi', body: 'body text' },
+      });
+      expect(r.success).toBe(true);
+      const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
+      expect(keys[0]).toBe('mod+n');
+      // 1 Tab (To→Subject) + 1 Tab (Subject→Body) = 2 Tabs total.
+      expect(keys.filter(k => k === 'Tab')).toHaveLength(2);
+      expect(keys[keys.length - 1]).toBe('mod+Return');
+      const types = calls.filter(c => c.kind === 'type').map(c => c.text);
+      expect(types).toEqual(['bob@acme.com', 'hi', 'body text']);
+    } finally { restorePlatform(); }
+  });
+
+  it('always advances Tab to body even when subject is empty (v0.9.1 regression fix)', async () => {
+    // Real user bug on macOS Mail (run on 2026-05-14): task was "send an
+    // email to X introducing yourself" with NO explicit subject. The old
+    // code coupled the post-subject Tab to `if (subject)`, so when subject
+    // was empty the body got typed wherever focus happened to be (Subject
+    // field on Mac default, with the wrong-Tab-count compounding it).
+    setPlatform('darwin');
+    try {
+      const { adapter, calls } = makeAdapter('darwin');
+      const r = await composeSend({
+        adapter,
+        input: { to: 'a@b.c', subject: '', body: 'introducing myself' },
+      });
+      expect(r.success).toBe(true);
+      const keys = calls.filter(c => c.kind === 'key').map(c => c.combo);
+      // Still 2 Tabs: 1 To→Subject, 1 Subject→Body. The advance must fire
+      // unconditionally, not be gated on subject having content.
+      expect(keys.filter(k => k === 'Tab')).toHaveLength(2);
+      // Body event must follow both Tabs (i.e. body typed last, into the
+      // body field, not into Subject).
+      const ordered = calls.map(c => c.kind === 'type' ? `T(${c.text})` : `K(${c.combo})`);
+      expect(ordered.join('|')).toMatch(/K\(Tab\)\|K\(Tab\)\|T\(introducing myself\)\|K\(mod\+Return\)$/);
+    } finally { restorePlatform(); }
+  });
+
+  it('skips a field when its value is empty (subject)', async () => {
+    setPlatform('win32');
+    try {
+      const { adapter, calls } = makeAdapter('win32');
+      const r = await composeSend({
+        adapter,
+        input: { to: 'a@b.c', body: 'only body' },
+      });
+      expect(r.success).toBe(true);
+      const types = calls.filter(c => c.kind === 'type').map(c => c.text);
+      expect(types).toEqual(['a@b.c', 'only body']);
+    } finally { restorePlatform(); }
+  });
+
+  it('summary text reports parsed fields explicitly (debug aid)', async () => {
+    setPlatform('darwin');
+    try {
+      const { adapter } = makeAdapter('darwin');
+      const r = await composeSend({
+        adapter,
+        input: { to: 'a@b.c', subject: 's', body: 'hello' },
+      });
+      // v0.9.1: summary string includes the body length and tab count so the
+      // trailing PIPELINE_DONE line surfaces whether the playbook actually
+      // had the data it was supposed to have. Empty subject was the original
+      // signal in the user-reported bug.
+      expect(r.text).toMatch(/to=a@b\.c/);
+      expect(r.text).toMatch(/subject=s/);
+      expect(r.text).toMatch(/body=5ch/);
+      expect(r.text).toMatch(/tabs-after-to=1/); // darwin
+    } finally { restorePlatform(); }
   });
 });
 

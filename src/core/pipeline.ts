@@ -638,19 +638,27 @@ export class Pipeline {
       // Verifier post-check. Only runs when:
       //   • a verifier is active (not disabled)
       //   • the rung claims success
-      //   • the rung was an AGENT rung (router and playbook are exempt —
-      //     both have stronger deterministic evidence than the pixel-diff
-      //     verifier. router verifies via window-list-diff; playbook
-      //     verifies via launchHandlerAndVerify() seeing a new compose
-      //     window appear with the expected title. Letting the pixel-diff
-      //     verifier overrule those was the bug that escalated a successful
-      //     2-second mailto send into 20 wasted LLM turns trying to redo it.
+      //   • the rung was NOT the router (router has its own window-list-diff
+      //     evidence — it only reports success when a new matching window
+      //     was observed after launch. The pre-v0.9 pixel-diff verifier
+      //     used to overrule that and escalate a successful 2-second mailto
+      //     into 20 wasted LLM turns; the router exemption survives.)
+      //   • playbooks are NO LONGER exempt (v0.9.1). The deterministic
+      //     keyboard choreography in compose-send returns success=true
+      //     unconditionally — it cannot tell from inside whether a "no
+      //     subject" dialog intercepted, whether the message stuck in
+      //     Outbox, or whether Send fired at all. Real user report on
+      //     macOS Mail showed subject + body collapsing into one field
+      //     with the playbook still claiming success. The send_email task
+      //     assertions in verifier.ts (compose_closed via window-list,
+      //     recipient_visible, not_just_saved_as_draft) catch exactly this
+      //     class of bug — but only if we let them run. Verifier is <500ms;
+      //     soft-fail on low confidence already exists for idempotent ops.
       //   • we managed to capture a `before` state earlier
       if (
         attempt.success
         && this.verifier
         && rung !== 'router'
-        && rung !== 'playbook'
         && before
       ) {
         const verdict = await this.runVerifier(

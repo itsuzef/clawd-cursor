@@ -445,6 +445,94 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     font-size: 1rem;
   }
 
+  /* Scheduled tab (v0.9.1) */
+  .sched-help {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.55;
+    margin-bottom: 18px;
+  }
+  .sched-help code {
+    background: rgba(0,0,0,0.3);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 0.85em;
+  }
+  .sched-form {
+    display: grid;
+    grid-template-columns: 200px 1fr 180px auto;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .sched-input {
+    background: var(--bg-tertiary);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.92rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .sched-input:focus { outline: none; border-color: var(--accent); }
+  .sched-add-btn { padding: 10px 20px; }
+  .sched-list-section { }
+  .sched-title {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+  .sched-list { list-style: none; padding: 0; margin: 0; }
+  .sched-item {
+    display: grid;
+    grid-template-columns: 160px 1fr auto auto auto;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    font-size: 0.88rem;
+  }
+  .sched-item.disabled { border-left-color: var(--text-muted); opacity: 0.6; }
+  .sched-item-cron {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-size: 0.85rem;
+  }
+  .sched-item-task {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sched-item-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .sched-toggle-btn, .sched-delete-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    transition: all 0.15s;
+  }
+  .sched-toggle-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .sched-delete-btn:hover { color: #e74c3c; border-color: #e74c3c; }
+
   /* Responsive */
   @media (max-width: 640px) {
     .header { padding: 10px 14px; gap: 10px; }
@@ -478,6 +566,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <!-- Tabs -->
 <div class="tab-bar">
   <button class="tab-btn active" onclick="switchTab('task')" id="tabTask">📋 Tasks</button>
+  <button class="tab-btn" onclick="switchTab('scheduled')" id="tabScheduled">⏰ Scheduled</button>
   <button class="tab-btn" onclick="switchTab('logs')" id="tabLogs">📜 Logs</button>
 </div>
 
@@ -520,6 +609,31 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     <div class="empty-state" id="emptyTask">
       <p>🐾 No tasks yet. Type a task above and press Send.</p>
+    </div>
+  </div>
+
+  <!-- Scheduled Tab (v0.9.1) -->
+  <div class="tab-content" id="panelScheduled">
+    <div class="sched-help">
+      Recurring tasks fire through the same agent pipeline as <code>submit_task</code>.
+      If the agent is busy when a tick fires, the tick is skipped (no queue).
+      Cron is standard 5-field syntax — <code>0 9 * * 1-5</code> = 9am weekdays.
+    </div>
+
+    <div class="sched-form">
+      <input type="text" class="sched-input sched-cron"
+             id="schedCron" placeholder='Cron: e.g. "0 9 * * 1-5"'>
+      <input type="text" class="sched-input sched-task"
+             id="schedTask" placeholder='Task: e.g. "open Outlook and read latest unread"'>
+      <input type="text" class="sched-input sched-tz"
+             id="schedTz" placeholder='TZ (optional): e.g. America/New_York'>
+      <button class="send-btn sched-add-btn" onclick="addSchedule()">＋ Add Schedule</button>
+    </div>
+
+    <div class="sched-list-section">
+      <div class="sched-title">Active &amp; paused schedules</div>
+      <ul class="sched-list" id="schedList"></ul>
+      <div class="empty-state" id="emptySched">No schedules yet. Add one above.</div>
     </div>
   </div>
 
@@ -629,7 +743,107 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
     document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
     document.getElementById('panel' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+    // Refresh the Scheduled tab whenever it's opened.
+    if (tab === 'scheduled') loadSchedules();
   };
+
+  // ── Scheduled tasks (v0.9.1) ──────────────────────────────────────
+  // Each handler calls the matching scheduled_task_* MCP tool. Errors are
+  // surfaced inline; the panel re-fetches on every mutation so the list
+  // stays in sync with the daemon's in-process cron registry.
+  async function loadSchedules() {
+    var list = document.getElementById('schedList');
+    var empty = document.getElementById('emptySched');
+    try {
+      var res = await mcpCall('scheduled_task_list', {});
+      var tasks = (res && res.tasks) || [];
+      list.innerHTML = '';
+      if (tasks.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      tasks.forEach(function(t) {
+        var li = document.createElement('li');
+        li.className = 'sched-item' + (t.enabled ? '' : ' disabled');
+        var meta = 'runs=' + (t.runCount || 0) + ' skips=' + (t.skipCount || 0);
+        if (t.nextRun) meta += ' next=' + new Date(t.nextRun).toLocaleString();
+        else if (t.lastError) meta += ' err';
+        li.innerHTML =
+          '<div class="sched-item-cron">' + escapeHtml(t.cron) + '</div>' +
+          '<div class="sched-item-task" title="' + escapeHtml(t.task) + '">' + escapeHtml(t.task) + '</div>' +
+          '<div class="sched-item-meta">' + escapeHtml(meta) + '</div>' +
+          '<button class="sched-toggle-btn" data-id="' + t.id + '" data-enabled="' + (!t.enabled) + '">' +
+            (t.enabled ? '⏸ Pause' : '▶ Resume') + '</button>' +
+          '<button class="sched-delete-btn" data-id="' + t.id + '">✕</button>';
+        list.appendChild(li);
+      });
+      // Wire toggle + delete buttons.
+      list.querySelectorAll('.sched-toggle-btn').forEach(function(b) {
+        b.onclick = function() {
+          toggleSchedule(b.getAttribute('data-id'), b.getAttribute('data-enabled') === 'true');
+        };
+      });
+      list.querySelectorAll('.sched-delete-btn').forEach(function(b) {
+        b.onclick = function() { deleteSchedule(b.getAttribute('data-id')); };
+      });
+    } catch (err) {
+      list.innerHTML = '<li class="sched-item">Could not load schedules: ' + escapeHtml(String(err && err.message || err)) + '</li>';
+    }
+  }
+
+  window.addSchedule = async function() {
+    var cronInput = document.getElementById('schedCron');
+    var taskInput = document.getElementById('schedTask');
+    var tzInput   = document.getElementById('schedTz');
+    var cron = cronInput.value.trim();
+    var task = taskInput.value.trim();
+    var tz   = tzInput.value.trim();
+    if (!cron || !task) {
+      alert('Both a cron expression and a task are required.');
+      return;
+    }
+    try {
+      var args = { cron: cron, task: task };
+      if (tz) args.tz = tz;
+      var res = await mcpCall('scheduled_task_create', args);
+      if (res && res.ok) {
+        cronInput.value = '';
+        taskInput.value = '';
+        tzInput.value = '';
+        loadSchedules();
+      } else {
+        alert('Could not add schedule: ' + JSON.stringify(res));
+      }
+    } catch (err) {
+      alert('Could not add schedule: ' + (err && err.message || err));
+    }
+  };
+
+  async function toggleSchedule(id, enabled) {
+    try {
+      await mcpCall('scheduled_task_toggle', { id: id, enabled: enabled });
+      loadSchedules();
+    } catch (err) {
+      alert('Toggle failed: ' + (err && err.message || err));
+    }
+  }
+
+  async function deleteSchedule(id) {
+    if (!confirm('Delete this schedule?')) return;
+    try {
+      await mcpCall('scheduled_task_delete', { id: id });
+      loadSchedules();
+    } catch (err) {
+      alert('Delete failed: ' + (err && err.message || err));
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
 
   // Status polling
   async function pollStatus() {

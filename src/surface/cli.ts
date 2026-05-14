@@ -360,10 +360,43 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     }
   }
 
+  // ── Scheduler (recurring tasks via cron) ──
+  // Loads persisted ScheduledTask[] from ~/.clawdcursor/scheduled-tasks.json
+  // and registers every enabled cron job. Idempotent. Only active when an
+  // agent is wired — the scheduler dispatches through agent.executeTask().
+  // Stdio MCP and `agent --no-llm` skip this; the scheduler tools still load
+  // but return an error explaining that no agent context is bound.
+  if (agent) {
+    try {
+      const { initScheduler } = await import('../tools/scheduler');
+      const minimalLog = {
+        info:  (event: string, data?: unknown) => console.log(`[scheduler] ${event}`, data ?? ''),
+        warn:  (event: string, data?: unknown) => console.warn(`[scheduler] ${event}`, data ?? ''),
+        error: (event: string, data?: unknown) => console.error(`[scheduler] ${event}`, data ?? ''),
+      };
+      const result = initScheduler(agent, minimalLog);
+      if (result.registered > 0 || result.failed > 0) {
+        console.log(`   ${e('⏰', '[CRN]')} Scheduler: ${result.registered} active job(s)${result.failed ? `, ${result.failed} failed` : ''}`);
+      }
+    } catch (err) {
+      console.warn(`   ${e('⚠️', '[WARN]')} Scheduler init failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   // ── HTTP utility surface (/, /health, /stop) + MCP transport at /mcp ──
   const app = createUtilityServer({
     host: config.server.host,
-    onStop: () => { agent?.disconnect(); },
+    onStop: () => {
+      try {
+        // Lazy require — only attempt when agent existed (scheduler bound).
+        if (agent) {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { stopScheduler } = require('../tools/scheduler');
+          stopScheduler();
+        }
+      } catch { /* non-fatal */ }
+      agent?.disconnect();
+    },
   });
 
   // Build the ToolContext shared by every MCP handler. In agent mode it

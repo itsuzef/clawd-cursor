@@ -1,6 +1,6 @@
 {
   "name": "clawdcursor",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
   "homepage": "https://clawdcursor.com",
   "repository": {
@@ -50,6 +50,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@nut-tree-fork/nut-js": "^4.2.0",
     "commander": "^14.0.3",
+    "croner": "^9.1.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "playwright": "^1.59.1",

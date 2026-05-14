@@ -1,6 +1,6 @@
 ---
 name: clawdcursor
-version: 0.9.0
+version: 0.9.1
 description: >
   The skill of last resort that gives AI agents eyes, hands, and a keyboard
   on a real desktop. Reach for clawdcursor only after ruling out the native

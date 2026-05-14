@@ -2,6 +2,90 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.9.1] - 2026-05-14 — compose-send fix + scheduled tasks
+
+A user-reported regression on macOS plus a long-missing daemon feature. No
+breaking changes; safe upgrade from v0.9.0.
+
+### Fixed — compose-send playbook (real user-reported bug)
+
+A v0.9.0 user on macOS asked "open mail app and send an email to X
+introducing yourself." The trace reported `✅ done · path=playbook · 2/2
+subtasks · $0.0000`, but the actual send was broken: the body landed in
+the wrong field (and/or merged with the subject field). **No LLM was
+called and no vision fallback ever fired** — the bug was 100% in the
+deterministic playbook plus a verifier bypass that let the playbook
+self-certify. Three layered fixes:
+
+- **Platform-aware Tab count after recipient** in
+  `src/tools/playbooks/compose-send.ts`. The previous code fired TWO Tabs
+  after typing the recipient, assuming every mail app shows Cc/Bcc inline.
+  macOS Mail.app's default layout has Cc/Bcc collapsed — Tab order is
+  `To → Subject → Body`. Two Tabs overshot Subject and landed on Body.
+  New: 1 Tab on darwin/linux, 3 Tabs on win32 (Outlook desktop default),
+  via a `tabsAfterRecipient()` helper. Documented per-platform in the
+  module header.
+- **Decoupled the post-subject Tab from `if (subject)`**. The advance to
+  Body now fires unconditionally so a task with no explicit subject (the
+  user's "introducing yourself" case) still lands the body in the right
+  field instead of typing it into whatever the previous Tab happened to
+  leave focus on.
+- **Removed playbook exemption from the verifier** in
+  `src/core/pipeline.ts:649-655`. The router exemption stays (router has
+  its own window-list-diff evidence). Playbooks now go through the
+  ground-truth verifier like every other rung — the rich `send_email`
+  task assertions (`compose_closed` via full window list, `recipient_visible`,
+  `not_just_saved_as_draft` anti-signal) were designed for exactly this
+  bug class but couldn't catch it because they never ran. Verifier is
+  <500ms; soft-fail-on-low-confidence policy stays in place for legitimate
+  idempotent operations.
+- **Better summary line**: `compose-send: to=… subject=… body=…ch
+  tabs-after-to=…` now reports parsed field state and platform Tab count
+  in the trailing PIPELINE_DONE line. Empty subject was the original
+  diagnostic signal in the user-reported bug — now it's visible at a
+  glance.
+
+### Added — Scheduled tasks (new feature, requested)
+
+Cron-driven recurring tasks that fire through the same agent pipeline as
+`submit_task`. Persisted across daemon restarts. **Dashboard gets a new
+⏰ Scheduled tab** with cron + task inputs, an active-schedule list, and
+per-row pause / delete buttons.
+
+- **`src/tools/scheduler.ts`** — 4 new MCP tools:
+  - `scheduled_task_create({ task, cron, tz? })` — validates the cron up
+    front (`croner`), persists, registers an in-process cron job that
+    dispatches via `agent.executeTask`.
+  - `scheduled_task_list()` — returns every persisted task with run /
+    skip / lastError counters and a computed `nextRun` ISO timestamp.
+  - `scheduled_task_delete({ id })` — unregisters + removes from disk.
+  - `scheduled_task_toggle({ id, enabled })` — pause/resume without
+    deleting; disabled tasks stay persisted but their cron job is
+    unregistered.
+- **Storage**: `~/.clawdcursor/scheduled-tasks.json`. Path is computed
+  dynamically (honors `CLAWD_HOME`) so tests and forks can redirect.
+- **Reentrancy**: if a tick fires while the agent is busy, the task is
+  skipped and `skipCount` increments. No queue, no pile-up. Predictable.
+- **Boot lifecycle**: `clawdcursor agent` calls `initScheduler(agent)` on
+  startup (only when an LLM is configured — the scheduler requires the
+  autonomous agent to dispatch into). Daemon shutdown calls
+  `stopScheduler()` to cleanly unregister all jobs.
+- **Auth**: every scheduler tool sits behind the same bearer-token gate
+  as the rest of the MCP HTTP surface (`/mcp` already wraps `requireAuth`).
+- **Dependency**: adds `croner@^9.1.0` (zero-dep cron parser, ~7 KB).
+
+### Stats
+
+- Tool count: **89 → 93** (+4 scheduled_task_* tools)
+- Tests: **759 → 776** (+5 playbook tests + 14 scheduler tests, all green)
+- Schema snapshot regenerated.
+
+### Migration
+
+None. Drop-in upgrade from v0.9.0.
+
+---
+
 ## [0.9.0] - 2026-05-14 — Architecture redesign + guides marketplace
 
 The largest release since v0.7. Net change vs v0.8.17: **−10,200 LOC, +14 new MCP tools, one protocol instead of two, five directories instead of seven**, plus a Reflector feedback channel that closes the loop between verifier signals and planner decisions, plus a public guides marketplace where community-contributed app knowledge ships independently of the binary.
