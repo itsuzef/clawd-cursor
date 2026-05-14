@@ -204,7 +204,7 @@ curl -s -X POST http://127.0.0.1:3847/mcp \
   }'
 ```
 
-The legacy REST `/task` endpoint was deleted in v0.9 — every former REST endpoint is now an MCP tool. See `docs/v0.9-design.md` for the full mapping.
+The legacy REST `/task` endpoint was deleted in v0.9 — every former REST endpoint is now an MCP tool. See `docs/internal/v0.9-design.md` for the full mapping.
 
 ---
 

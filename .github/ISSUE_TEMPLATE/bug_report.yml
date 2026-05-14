@@ -41,11 +41,12 @@ body:
       label: Which surface
       description: Which entry point did you hit the bug through?
       options:
-        - MCP (granular, default)
-        - MCP (compact, --compact flag)
-        - REST (clawdcursor serve)
-        - Autonomous agent (clawdcursor start)
-        - Installer
+        - MCP stdio (clawdcursor mcp)
+        - MCP stdio compact (clawdcursor mcp --compact)
+        - MCP HTTP (clawdcursor agent — daemon at :3847/mcp)
+        - Autonomous agent (clawdcursor agent + LLM configured via doctor)
+        - Guides marketplace (fetch, cache, lint, CLI)
+        - Installer (install.sh / install.ps1)
         - Other / not sure
     validations:
       required: true

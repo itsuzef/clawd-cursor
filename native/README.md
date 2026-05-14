@@ -53,7 +53,7 @@ The app process now owns IPC over localhost (`127.0.0.1:3848` by default):
 - `GET /status` permission status
 - `POST /rpc` JSON-RPC proxy for desktop methods
 
-The CLI checks/launches this app on `clawdcursor start`.
+The CLI checks/launches this app on `clawdcursor agent` (the v0.9 successor to `clawdcursor start`).
 
 ### `clawdcursor-helper`
 Worker binary used by the host app for JSON-RPC methods:

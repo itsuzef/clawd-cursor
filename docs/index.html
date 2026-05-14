@@ -579,6 +579,40 @@ clawdcursor guides submit my-app.json</code></pre>
     </div>
   </section>
 
+  <!-- CLI reference -->
+  <section class="sect" id="cli">
+    <div class="sect-label">CLI</div>
+    <h2>Every command.</h2>
+    <p class="sub">The CLI is for humans diagnosing an install or managing the guide cache. Agents connect via MCP.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;">
+      <pre style="background:transparent;font-size:0.82rem;line-height:1.55;color:var(--text);overflow-x:auto;"><code><span style="color:var(--text3)"># Install &amp; setup</span>
+clawdcursor consent          <span style="color:var(--text3)"># one-time desktop-control authorization</span>
+clawdcursor grant            <span style="color:var(--text3)"># macOS Accessibility + Screen Recording prompts</span>
+clawdcursor doctor           <span style="color:var(--text3)"># verify permissions, configure AI provider</span>
+clawdcursor status           <span style="color:var(--text3)"># readiness check (consent, permissions, AI config)</span>
+
+<span style="color:var(--text3)"># Run</span>
+clawdcursor mcp              <span style="color:var(--text3)"># stdio MCP server for editor hosts</span>
+clawdcursor mcp --compact    <span style="color:var(--text3)"># same, with 6 compound tools (recommended)</span>
+clawdcursor agent            <span style="color:var(--text3)"># HTTP MCP daemon at :3847/mcp, optional built-in LLM</span>
+clawdcursor agent --no-llm   <span style="color:var(--text3)"># tool surface only — your agent brings its own brain</span>
+clawdcursor stop             <span style="color:var(--text3)"># stop every running mode</span>
+clawdcursor uninstall        <span style="color:var(--text3)"># remove all clawdcursor config and data</span>
+
+<span style="color:var(--text3)"># Guides marketplace</span>
+clawdcursor guides list                  <span style="color:var(--text3)"># what's cached + ratings</span>
+clawdcursor guides info &lt;app&gt;            <span style="color:var(--text3)"># cache metadata for one app</span>
+clawdcursor guides available             <span style="color:var(--text3)"># browse the public registry</span>
+clawdcursor guides install &lt;app&gt;         <span style="color:var(--text3)"># pre-warm cache (--all for offline prep)</span>
+clawdcursor guides refresh &lt;app&gt;         <span style="color:var(--text3)"># force re-fetch</span>
+clawdcursor guides remove &lt;app&gt;          <span style="color:var(--text3)"># evict from cache</span>
+clawdcursor guides clean                 <span style="color:var(--text3)"># wipe cache</span>
+clawdcursor guides lint &lt;file.json&gt;      <span style="color:var(--text3)"># validate a local guide</span>
+clawdcursor guides submit &lt;file.json&gt;    <span style="color:var(--text3)"># lint + print PR instructions</span></code></pre>
+    </div>
+  </section>
+
   <!-- Install -->
   <section id="install" class="sect">
     <div class="sect-label">Install</div>

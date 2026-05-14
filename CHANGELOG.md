@@ -82,7 +82,7 @@ clawdcursor reasons about every app from screenshots and a11y trees. For popular
 - **Two-path next-step routing** at install / consent / doctor: autonomous agent (`doctor` → `agent`) vs MCP-only (register `clawdcursor mcp` with editor host).
 - **SKILL.md reordered**: fallback discipline first, "no task impossible" confidence second, CAN/MUST/SHOULD third — load-bearing identity preserved verbatim.
 - **MACOS-SETUP, agent-guide, OPENCLAW-INTEGRATION-RECOMMENDATIONS, dashboard, website** all migrated from REST to MCP HTTP transport language.
-- **`docs/v0.9-readme-building-blocks.md`** + **`docs/agnostic-audit-report.md`** added as design records.
+- **`docs/internal/v0.9-readme-building-blocks.md`** + **`docs/internal/agnostic-audit-report.md`** archived as design records (moved out of the published website root before release).
 
 ### Release hygiene
 

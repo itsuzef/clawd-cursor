@@ -21,7 +21,7 @@ Useful scripts:
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | `tsx watch src/index.ts` — rebuild on save |
+| `npm run dev` | `tsx watch src/surface/cli.ts` — rebuild on save |
 | `npm run typecheck` | `tsc --noEmit` — must be clean |
 | `npm run lint` | ESLint over `src/` |
 | `npm run test` | `vitest` watch mode |
@@ -34,7 +34,7 @@ CI runs typecheck + lint + tests + schema snapshot on every PR across Windows, m
 
 - TypeScript strict mode is on. No `any` unless you have a real reason and a comment explaining it.
 - Business logic does not see `process.platform`. Cross-OS branches live in `src/platform/{windows,macos,linux,wayland-backend}.ts` behind the `PlatformAdapter` interface. If you find yourself writing `if (IS_MAC)` outside `src/platform/`, move it.
-- Every tool call goes through the SafetyLayer (`src/core/safety/layer.ts`). Do not add a tool that bypasses it. Destructive verbs (send, delete, close_window, blocked keyboard combos) must escalate to confirm.
+- Every tool call goes through the SafetyLayer (`src/core/safety.ts`). Do not add a tool that bypasses it. Destructive verbs (send, delete, close_window, blocked keyboard combos) must escalate to confirm.
 - New compact tool actions: define them in `src/tools/compact.ts`, then run `npm run test:mcp-schema-snapshot:update` and commit the snapshot diff. The `argRemap` field is how you alias agent-friendly arg names onto granular tools — see the `key`/`combo` example.
 - Tests live alongside the modules they cover under `src/__tests__/` (Vitest). Prefer integration tests that hit the real adapter over mocks.
 

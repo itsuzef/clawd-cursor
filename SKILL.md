@@ -491,7 +491,7 @@ Per-OS setup notes:
 ## Full documentation
 
 - **Tool catalog (granular or compact):** `tools/list` JSON-RPC over stdio MCP or HTTP `/mcp`
-- **Architecture detail:** README.md and `docs/v0.9-design.md` in the repo
+- **Architecture detail:** README.md and `docs/internal/v0.9-design.md` in the repo
 - **Changelog:** CHANGELOG.md
 
 ---
@@ -504,7 +504,7 @@ Per-OS setup notes:
 - **Reflector feedback channel.** The verifier now emits typed `Cause[]` (no_pixel_change, modal_intercept, wrong_window_focused, webview_blind, partial_text_match, a11y_target_missing) and an optional `suggestedStrategy`. Behind `CLAWD_REFLECTOR=1`, the pipeline ladder reroutes based on the dominant cause instead of just rolling down - e.g. webview_blind → skip blind/hybrid, jump to vision.
 - **Soft-fail subtask policy.** Verifier rejection at confidence < 0.8 on a single subtask no longer kills the whole chain - it logs a warning and continues. Idempotent operations like "create new canvas in Paint" right after Paint launched (pixel-change = 0 because Paint already opened with a blank canvas) used to abort the chain at subtask 2; now the chain proceeds to the actual work.
 - **Footer on every exit.** Every task ends with a single visible line - `✅ done · path=... · 6/6 subtasks · $0.00X · 18.4s` or `❌ failed (verifier_rejected) · path=... · 2/6 subtasks · ...` - including aborts and errors. No more ambiguous trailing logs.
-- **Tool fixes that surfaced under direct MCP testing:** `open_app` now uses the cross-OS alias table + `PlatformAdapter.launchApp` (was raw `Start-Process`, broke for UWP / Win11 Notepad / Calculator); `focus_window` AND-matches `pid + title` to disambiguate Win11 tabbed Notepad windows; `type_text` saves/restores the user's clipboard around its paste-as-type; `clawdcursor task` and `delegate_to_agent` migrated from deleted REST endpoints to MCP `submit_task`. Tool count: 75 → 87 (12 new MCP tools cover the former REST endpoints).
+- **Tool fixes that surfaced under direct MCP testing:** `open_app` now uses the cross-OS alias table + `PlatformAdapter.launchApp` (was raw `Start-Process`, broke for UWP / Win11 Notepad / Calculator); `focus_window` AND-matches `pid + title` to disambiguate Win11 tabbed Notepad windows; `type_text` saves/restores the user's clipboard around its paste-as-type; `clawdcursor task` and `delegate_to_agent` migrated from deleted REST endpoints to MCP `submit_task`. Tool count: 75 → 89 (14 new MCP tools cover the former REST endpoints + the marketplace surface).
 - **macOS work fully preserved.** `clawdcursor consent`, `clawdcursor grant` (TCC permission dialogs), the Swift `ClawdCursorHost` IPC bridge, screenshot helper, and 901-LOC macOS `PlatformAdapter` all intact and updated to use the new path-resolution helper (`getPackageRoot()`) so the host app is found correctly post-directory-move.
 
 **What's new in 0.8.8:**
