@@ -94,8 +94,10 @@ describe('preprocess — knowledge injection', () => {
   });
 
   it('no guide when app is unknown', () => {
+    // Use a fictional app name that no detectApp rule matches. Real apps like
+    // 'Notepad' now resolve to a bundled guide, so they can't stand in for "unknown".
     const r = preprocess('type something', {
-      activeWindowTitle: 'Notepad',
+      activeWindowTitle: 'SomeObscureNicheApp_v3.2.1',
     });
     expect(r.hints.guide).toBeUndefined();
   });

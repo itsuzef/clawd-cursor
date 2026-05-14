@@ -8,7 +8,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { detectApp } from '../llm/knowledge/domain-map';
-import { loadGuide, clearCache, getWorkflowForTask } from '../llm/knowledge/loader';
+import {
+  loadGuide, clearCache, getWorkflowForTask,
+  saveLearnedLesson, mergeIntoUserGuide, resolveAppKey,
+} from '../llm/knowledge/loader';
 
 describe('detectApp', () => {
   it.each([
@@ -96,6 +99,93 @@ describe('loadGuide — user override takes precedence', () => {
     const g = loadGuide('gmail');
     expect(g!.name).toBe('Gmail (user-override)');
     expect(g!.shortcuts?.compose).toBe('C-OVERRIDE');
+  });
+});
+
+describe('learn_app write path (saveLearnedLesson + mergeIntoUserGuide)', () => {
+  let tmpHome: string;
+  const origClawdHome = process.env.CLAWD_HOME;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-knowledge-write-test-'));
+    process.env.CLAWD_HOME = tmpHome;
+    clearCache();
+  });
+
+  afterEach(() => {
+    if (origClawdHome === undefined) delete process.env.CLAWD_HOME;
+    else process.env.CLAWD_HOME = origClawdHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    clearCache();
+  });
+
+  it('resolveAppKey maps process names to canonical app keys', () => {
+    expect(resolveAppKey('Notepad')).toBe('notepad');
+    expect(resolveAppKey('EXCEL')).toBe('excel');
+    expect(resolveAppKey('mail.google.com')).toBe('gmail');
+    expect(resolveAppKey('SomeRandomApp_v3')).toBe('somerandomapp_v3');
+  });
+
+  it('saveLearnedLesson writes to user-override dir, not the bundle', () => {
+    saveLearnedLesson('Notepad', 'create haiku poem', [
+      { action: 'key',   description: 'press: Ctrl+N' },
+      { action: 'type',  description: 'type haiku text' },
+      { action: 'key',   description: 'press: Ctrl+S' },
+      { action: 'done',  description: 'finished' },
+    ]);
+
+    const overridePath = path.join(tmpHome, '.clawdcursor', 'ui-knowledge', 'notepad.json');
+    expect(fs.existsSync(overridePath)).toBe(true);
+    const written = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
+    expect(written.learnedWorkflows.create_haiku_poem).toMatch(/Press Ctrl\+N/);
+    expect(written.learnedWorkflows.create_haiku_poem).not.toMatch(/finished/); // 'done' filtered
+    // Seeded from bundled — preserves curated shortcuts.
+    expect(written.shortcuts.save).toBe('Ctrl+S');
+  });
+
+  it('mergeIntoUserGuide merges shortcuts + dedupes tips', () => {
+    const app = mergeIntoUserGuide('Notepad', {
+      shortcuts: { word_count: 'Ctrl+Shift+W' },
+      tips: ['Save before exit', 'Save before exit'], // duplicate
+    });
+    expect(app).toBe('notepad');
+
+    const overridePath = path.join(tmpHome, '.clawdcursor', 'ui-knowledge', 'notepad.json');
+    const written = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
+    expect(written.shortcuts.word_count).toBe('Ctrl+Shift+W');
+    expect(written.shortcuts.save).toBe('Ctrl+S'); // bundled preserved
+    expect(written.tips.filter((t: string) => t === 'Save before exit')).toHaveLength(1);
+  });
+
+  it('saveLearnedLesson caps at 20 entries FIFO', () => {
+    for (let i = 0; i < 25; i++) {
+      saveLearnedLesson('Notepad', `task number ${i}`, [
+        { action: 'type', description: 'typing' },
+      ]);
+    }
+    const overridePath = path.join(tmpHome, '.clawdcursor', 'ui-knowledge', 'notepad.json');
+    const written = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
+    const keys = Object.keys(written.learnedWorkflows);
+    expect(keys.length).toBe(20);
+    expect(keys).not.toContain('task_number_0'); // oldest evicted
+    expect(keys).toContain('task_number_24');    // newest kept
+  });
+
+  it('saveLearnedLesson ignores empty / done-only action logs', () => {
+    saveLearnedLesson('Notepad', 'no-op task', [
+      { action: 'done', description: 'finished' },
+    ]);
+    const overridePath = path.join(tmpHome, '.clawdcursor', 'ui-knowledge', 'notepad.json');
+    expect(fs.existsSync(overridePath)).toBe(false);
+  });
+
+  it('subsequent loadGuide picks up learned workflows after write', () => {
+    saveLearnedLesson('Notepad', 'find and replace text', [
+      { action: 'key', description: 'press: Ctrl+H' },
+      { action: 'type', description: 'replacement text' },
+    ]);
+    const g = loadGuide('notepad') as any;
+    expect(g.learnedWorkflows.find_and_replace_text).toMatch(/Ctrl\+H/);
   });
 });
 

@@ -285,4 +285,16 @@ describe('extras — daemon diagnostics', () => {
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/processName/);
   });
+
+  it('learn_app returns the resolved app key in the success payload', async () => {
+    const result = await findTool(tools, 'learn_app').handler(
+      { processName: 'EXCEL' },
+      makeCtx(),
+    );
+    expect(result.isError).toBeFalsy();
+    const payload = JSON.parse(result.text);
+    expect(payload.saved).toBe(true);
+    expect(payload.processName).toBe('EXCEL');
+    expect(payload.app).toBe('excel'); // detectApp lower-cased it via TITLE_FALLBACKS
+  });
 });

@@ -20,6 +20,7 @@
  */
 
 import type { ToolDefinition } from './types';
+import { saveLearnedLesson, mergeIntoUserGuide, resolveAppKey } from '../llm/knowledge/loader';
 
 function notSupported(tool: string): { text: string; isError: true } {
   return {
@@ -900,39 +901,33 @@ export function getExtraTools(): ToolDefinition[] {
             if (typeof raw !== 'string' || !raw.trim()) return undefined;
             try { return JSON.parse(raw); } catch { return undefined; }
           };
-          const actions = parseSafe(actionsJson);
+          const actions   = parseSafe(actionsJson);
           const shortcuts = parseSafe(shortcutsJson);
-          const tips = parseSafe(tipsJson);
+          const tips      = parseSafe(tipsJson);
 
-          // Reach into the compiled guide-loader so the same persisted JSON
-          // shape is shared with the legacy /learn REST handler.
-          const { saveLesson, loadGuide } = require('../llm/guide-loader');
-          const fsMod = await import('fs');
-          const pathMod = await import('path');
-
-          if (task && Array.isArray(actions)) {
-            saveLesson(processName, task, actions);
+          // Writes go through the live loader → user-override dir
+          // (`~/.clawdcursor/ui-knowledge/{app}.json`). The bundled source
+          // tree is never modified. detectApp resolves "EXCEL"/"winword"/etc.
+          // to the canonical app key so writes don't fork the filename space.
+          if (typeof task === 'string' && task && Array.isArray(actions)) {
+            saveLearnedLesson(processName, task, actions);
           }
-          const guidesDir = pathMod.join(__dirname, '..', 'llm', 'knowledge', 'guides');
-          const guide = loadGuide(processName);
-          if (guide && (shortcuts || tips)) {
-            const guidePath = pathMod.join(
-              guidesDir,
-              (guide.processNames?.[0] || processName) + '.json',
-            );
-            if (fsMod.existsSync(guidePath)) {
-              const raw = JSON.parse(fsMod.readFileSync(guidePath, 'utf8'));
-              if (shortcuts && typeof shortcuts === 'object') {
-                raw.shortcuts = { ...raw.shortcuts, ...(shortcuts as Record<string, unknown>) };
-              }
-              if (tips && Array.isArray(tips)) {
-                raw.tips = [...new Set([...(raw.tips || []), ...(tips as string[])])];
-              }
-              fsMod.writeFileSync(guidePath, JSON.stringify(raw, null, 2));
-            }
+          if (shortcuts || tips) {
+            mergeIntoUserGuide(processName, {
+              shortcuts: shortcuts && typeof shortcuts === 'object'
+                ? shortcuts as Record<string, string>
+                : undefined,
+              tips: Array.isArray(tips) ? tips as string[] : undefined,
+            });
           }
 
-          return { text: JSON.stringify({ saved: true, processName }) };
+          return {
+            text: JSON.stringify({
+              saved: true,
+              processName,
+              app: resolveAppKey(processName),
+            }),
+          };
         } catch (err) {
           return { text: `learn_app: ${(err as Error).message}`, isError: true };
         }
