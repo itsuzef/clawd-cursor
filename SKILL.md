@@ -80,7 +80,7 @@ metadata:
 >   both palettes - request the compact catalog by filtering `tools/list`
 >   results to the 6 compound names below.
 >
-> Granular mode's 93 tools are kept for back-compat. Compact's 6 tools are much smaller and reduce mis-tool-selection. Use granular only if your runtime MUST have every primitive as its own top-level schema.
+> Granular mode's 97 tools are kept for back-compat. Compact's 6 tools are much smaller and reduce mis-tool-selection. Use granular only if your runtime MUST have every primitive as its own top-level schema.
 
 If you connect via MCP with `--compact`, you get a single tool that takes the
 whole task:
@@ -227,8 +227,8 @@ v0.9 collapses everything onto **MCP — one protocol, two transports**. There i
 
 | Mode | Command | Transport | Brain | Tools available |
 |------|---------|-----------|-------|-----------------|
-| `mcp` | `clawdcursor mcp [--compact]` | stdio | **You** (editor host) | 93 granular (default) or 6 compact (`--compact`) |
-| `agent --no-llm` or `agent` with no LLM configured | `clawdcursor agent --no-llm` | HTTP `/mcp` | **You** (HTTP client) | 93 granular + 6 compact, both via the same `/mcp` endpoint |
+| `mcp` | `clawdcursor mcp [--compact]` | stdio | **You** (editor host) | 97 granular (default) or 6 compact (`--compact`) |
+| `agent --no-llm` or `agent` with no LLM configured | `clawdcursor agent --no-llm` | HTTP `/mcp` | **You** (HTTP client) | 97 granular + 6 compact, both via the same `/mcp` endpoint |
 | `agent` (LLM configured)    | `clawdcursor agent` | HTTP `/mcp` | Built-in LLM pipeline | All of the above PLUS the autonomous `submit_task` MCP tool — hand it a plain-English task |
 
 In `mcp` (stdio) and tools-only `agent` (HTTP): **you reason, clawdcursor acts.** There is no built-in LLM in the loop. You call tools, interpret results, decide next steps. In autonomous `agent` mode (LLM configured): clawdcursor reasons AND acts — call the `submit_task` MCP tool with a natural-language instruction, then poll `agent_status`.
@@ -253,7 +253,7 @@ The `start` and `serve` verbs from v0.8 still work as deprecation aliases (they 
 }
 ```
 
-**Granular - 93 individual tools (power-user, back-compat, larger prompt budget):**
+**Granular - 97 individual tools (power-user, back-compat, larger prompt budget):**
 ```json
 {
   "mcpServers": {

@@ -183,11 +183,11 @@ Anthropic `computer_20250124`-style: one tool per capability, an `action` enum f
 | `computer` | `screenshot`, `click`, `double_click`, `right_click`, `triple_click`, `hover`, `scroll`, `scroll_horizontal`, `drag`, `drag_path`, `type`, `key`, `wait` |
 | `accessibility` | `read_tree`, `find`, `get_element`, `focused`, `invoke`, `focus`, `set_value`, `get_value`, `expand`, `collapse`, `toggle`, `select`, `state`, `list_children`, `wait_for` |
 | `window` | `list`, `active`, `focus`, `maximize`, `minimize`, `restore`, `close`, `resize`, `list_displays`, `screen_size`, `open_app`, `open_file`, `open_url`, `switch_tab`, `navigate` |
-| `system` | `clipboard_read`, `clipboard_write`, `system_time`, `ocr`, `undo`, `shortcuts_list`, `shortcuts_run`, `delegate`, `detect_webview`, `relaunch_with_cdp` |
+| `system` | `clipboard_read`, `clipboard_write`, `system_time`, `ocr`, `undo`, `shortcuts_list`, `shortcuts_run`, `delegate`, `detect_webview`, `relaunch_with_cdp`, `app_guide`, `detect_app`, `classify_task`, `system_prompt` |
 | `browser` | `connect`, `page_context`, `read_text`, `click`, `type`, `select_option`, `evaluate`, `wait_for`, `list_tabs`, `switch_tab`, `scroll` |
 | `task` | `{instruction: string}` &mdash; hand off the whole task to the pipeline. No `action` enum. |
 
-### Granular &mdash; 93 individual tools
+### Granular &mdash; 97 individual tools
 
 One schema per verb. Use this when your runtime requires every primitive as a top-level tool. The full catalog is visible through MCP `tools/list` on either transport.
 
@@ -274,7 +274,7 @@ Five directories. Everything else is a leaf module.
 | Directory | What lives here |
 |---|---|
 | `src/core/` | Pipeline orchestrator, agent loop, router, preprocessor, sense (a11y/snapshot/fingerprint), classify, decompose, skills cache, safety gate, ground-truth verifier, Reflector. |
-| `src/tools/` | The 93 granular tools + 6 compound aggregators, playbooks (`compose-send`, `find-replace`), tool registry, dispatch. |
+| `src/tools/` | The 97 granular tools + 6 compound aggregators, playbooks (`compose-send`, `find-replace`), tool registry, dispatch. |
 | `src/platform/` | `PlatformAdapter` interface + Windows / macOS / Linux / Wayland implementations, OCR engine, CDP driver, URI handler. |
 | `src/llm/` | Provider clients (Claude, GPT, Gemini, Llama, Kimi, Ollama, &hellip;), credentials, model config, guide loader. |
 | `src/surface/` | CLI (`clawdcursor`), MCP server (stdio + HTTP), dashboard, doctor, onboarding, readiness probes. |
@@ -339,7 +339,7 @@ clawdcursor task <t>        Send a task to the running agent
 
 Options:
   --port <port>          Default: 3847
-  --compact              MCP only: expose 6 compound tools instead of 93 granular
+  --compact              MCP only: expose 6 compound tools instead of 97 granular
   --provider <name>      `agent` only: anthropic | openai | gemini | ollama | ...
   --accept               `agent` and `consent` only: skip the consent prompt
 ```

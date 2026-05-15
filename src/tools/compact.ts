@@ -3,7 +3,7 @@
  * primitive, Anthropic-Computer-Use-style.
  *
  * Why this exists:
- *   An agent driving clawdcursor via MCP otherwise sees 93 granular
+ *   An agent driving clawdcursor via MCP otherwise sees 97 granular
  *   tool schemas (~18,000 tokens of tool catalog). Most models
  *   over-think the choice, pick near-duplicates, and burn context.
  *   This file collapses the granular tools into 6 action-discriminated
@@ -22,7 +22,7 @@
  * pick which shape to consume.
  *
  * Selection:
- *   `clawdcursor mcp`             → 93 granular tools (back-compat)
+ *   `clawdcursor mcp`             → 97 granular tools (back-compat)
  *   `clawdcursor mcp --compact`   → 6 compound tools (this file)
  *   GET /tools?mode=compact      → REST gets the same compact schemas
  *
@@ -131,6 +131,12 @@ const SYSTEM_ACTIONS: ActionRoute[] = [
   // v0.8.2 — Electron/WebView2 bridge
   { action: 'detect_webview',  delegate: 'detect_webview_apps' },
   { action: 'relaunch_with_cdp', delegate: 'relaunch_with_cdp' },
+  // v0.9.2 — pipeline introspection (give external brains the same context
+  // the autonomous loop's LLM gets injected automatically).
+  { action: 'app_guide',       delegate: 'get_app_guide' },
+  { action: 'detect_app',      delegate: 'detect_app' },
+  { action: 'classify_task',   delegate: 'classify_task' },
+  { action: 'system_prompt',   delegate: 'get_system_prompt' },
 ];
 
 const BROWSER_ACTIONS: ActionRoute[] = [
