@@ -618,6 +618,68 @@ clawdcursor guides submit my-app.json</code></pre>
     </div>
   </section>
 
+  <!-- Tools catalog (collapsed by default) -->
+  <section class="sect" id="tools-list">
+    <details class="cli-details">
+      <summary class="cli-summary">
+        <span class="sect-label" style="margin-bottom:0;">Tools</span>
+        <span class="cli-summary-title">97 desktop tools <span class="cli-summary-chev" aria-hidden="true">›</span></span>
+        <span class="cli-summary-sub">6 compact compounds covering every primitive. Each row lists the actions you pass via <code style="font-size:0.85em">{ "action": "…" }</code>. Use the compact form unless your runtime needs every verb as a top-level schema.</span>
+      </summary>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0;margin-top:18px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.03);">
+              <th style="text-align:left;padding:12px 16px;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);font-weight:600;border-bottom:1px solid var(--border);">Compound</th>
+              <th style="text-align:left;padding:12px 16px;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);font-weight:600;border-bottom:1px solid var(--border);">Purpose</th>
+              <th style="text-align:left;padding:12px 16px;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);font-weight:600;border-bottom:1px solid var(--border);">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">computer</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Mouse, keyboard, screenshots. The raw I/O surface.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;"><code>screenshot</code> · <code>click</code> · <code>double_click</code> · <code>right_click</code> · <code>triple_click</code> · <code>hover</code> · <code>scroll</code> · <code>scroll_horizontal</code> · <code>drag</code> · <code>drag_path</code> · <code>type</code> · <code>key</code> · <code>wait</code></td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">accessibility</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Drive UI by element name, not by pixel. Survives DPI, resize, layout shifts.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;"><code>read_tree</code> · <code>find</code> · <code>get_element</code> · <code>focused</code> · <code>invoke</code> · <code>focus</code> · <code>set_value</code> · <code>get_value</code> · <code>expand</code> · <code>collapse</code> · <code>toggle</code> · <code>select</code> · <code>state</code> · <code>list_children</code> · <code>wait_for</code></td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">window</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Launch, focus, resize. App-level state management.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;"><code>list</code> · <code>active</code> · <code>focus</code> · <code>maximize</code> · <code>minimize</code> · <code>restore</code> · <code>close</code> · <code>resize</code> · <code>list_displays</code> · <code>screen_size</code> · <code>open_app</code> · <code>open_file</code> · <code>open_url</code> · <code>switch_tab</code> · <code>navigate</code></td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">system</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Clipboard, OCR, shortcuts &mdash; plus pipeline introspection (classify, app-guide, system-prompt). The meta surface for an external brain.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;"><code>clipboard_read</code> · <code>clipboard_write</code> · <code>system_time</code> · <code>ocr</code> · <code>undo</code> · <code>shortcuts_list</code> · <code>shortcuts_run</code> · <code>delegate</code> · <code>detect_webview</code> · <code>relaunch_with_cdp</code> · <code>app_guide</code> · <code>detect_app</code> · <code>classify_task</code> · <code>system_prompt</code></td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">browser</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Chrome DevTools Protocol &mdash; real DOM access for Electron / WebView2 apps whose a11y tree is sparse.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;"><code>connect</code> · <code>page_context</code> · <code>read_text</code> · <code>click</code> · <code>type</code> · <code>select_option</code> · <code>evaluate</code> · <code>wait_for</code> · <code>list_tabs</code> · <code>switch_tab</code> · <code>scroll</code></td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px;vertical-align:top;"><code style="color:var(--accent2);font-weight:600;">task</code></td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);">Hand off the whole task to clawdcursor's autonomous loop. <strong>Daemon mode only</strong> &mdash; requires <code>clawdcursor agent</code> with an LLM configured.</td>
+              <td style="padding:12px 16px;vertical-align:top;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:0.78rem;line-height:1.7;">single arg: <code>{ instruction: string }</code> &mdash; no action enum</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p style="color:var(--text3);font-size:0.78rem;margin-top:14px;line-height:1.6;">
+        Compact form: <code style="font-size:0.9em;color:var(--accent2);">computer({ "action": "key", "combo": "mod+s" })</code>.
+        Granular form (one tool per verb): <code style="font-size:0.9em;color:var(--accent2);">key_press({ "key": "mod+s" })</code>.
+        Both produce identical effects through the same <code>safety.evaluate()</code> chokepoint.
+        See <a href="https://github.com/AmrDab/clawdcursor/blob/main/schema.snapshot.json" target="_blank" rel="noopener" style="color:var(--accent2);">schema.snapshot.json</a> for every parameter.
+      </p>
+    </details>
+  </section>
+
   <!-- CLI reference (collapsed by default) -->
   <section class="sect" id="cli">
     <details class="cli-details">
@@ -642,16 +704,8 @@ clawdcursor agent --no-llm   <span style="color:var(--text3)"># tool surface onl
 clawdcursor stop             <span style="color:var(--text3)"># stop every running mode</span>
 clawdcursor uninstall        <span style="color:var(--text3)"># remove all clawdcursor config and data</span>
 
-<span style="color:var(--text3)"># Guides marketplace</span>
-clawdcursor guides list                  <span style="color:var(--text3)"># what's cached + ratings</span>
-clawdcursor guides info &lt;app&gt;            <span style="color:var(--text3)"># cache metadata for one app</span>
-clawdcursor guides available             <span style="color:var(--text3)"># browse the public registry</span>
-clawdcursor guides install &lt;app&gt;         <span style="color:var(--text3)"># pre-warm cache (--all for offline prep)</span>
-clawdcursor guides refresh &lt;app&gt;         <span style="color:var(--text3)"># force re-fetch</span>
-clawdcursor guides remove &lt;app&gt;          <span style="color:var(--text3)"># evict from cache</span>
-clawdcursor guides clean                 <span style="color:var(--text3)"># wipe cache</span>
-clawdcursor guides lint &lt;file.json&gt;      <span style="color:var(--text3)"># validate a local guide</span>
-clawdcursor guides submit &lt;file.json&gt;    <span style="color:var(--text3)"># lint + print PR instructions</span></code></pre>
+<span style="color:var(--text3)"># Guides — see the Guides Marketplace section above, or run</span>
+<span style="color:var(--text3"># `clawdcursor guides --help` for the full set.</span></code></pre>
       </div>
     </details>
   </section>
