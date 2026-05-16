@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import pc from 'picocolors';
 import { VERSION } from './version';
 
 const CONSENT_DIR = path.join(os.homedir(), '.clawdcursor');
@@ -40,31 +41,37 @@ export function writeConsentFile(): void {
 
 /** Print the big ASCII banner — only called during first-run onboarding */
 function printBanner(): void {
-  const G = '\x1b[32m', B = '\x1b[1m\x1b[32m', R = '\x1b[0m', D = '\x1b[90m';
-  process.stdout.write(
-    `\n${G}\n` +
+  const cat =
     `   /\\___/\\\n` +
     `  ( >^.^< )   claw\n` +
     `   )     (    claw\n` +
-    `  (_)_(_)_)\n` +
-    `${R}\n` +
-    `${B}\n` +
-    `  \u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2557      \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557    \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n` +
-    ` \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2551     \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551    \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\n` +
-    ` \u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2551 \u2588\u2557 \u2588\u2588\u2551\u2588\u2588\u2551  \u2588\u2588\u2551\n` +
-    ` \u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2588\u2557\u2588\u2588\u2551\u2588\u2588\u2551  \u2588\u2588\u2551\n` +
-    ` \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2554\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\n` +
-    `  \u255a\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d \u255a\u2550\u2550\u255d\u255a\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d\n` +
-    `${R}${G}\n` +
-    `  \u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557\n` +
-    ` \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\n` +
-    ` \u2588\u2588\u2551     \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\n` +
-    ` \u2588\u2588\u2551     \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u255a\u2550\u2550\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\n` +
-    ` \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2551  \u2588\u2588\u2551\n` +
-    `  \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d  \u255a\u2550\u255d\n` +
-    `${R}\n` +
-    `${D}  OS-level Desktop Automation Server${R}\n` +
-    `${D}  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500${R}\n\n`
+    `  (_)_(_)_)`;
+
+  const clawBlock =
+    `  ██████╗██╗      █████╗ ██╗    ██╗██████╗\n` +
+    ` ██╔════╝██║     ██╔══██╗██║    ██║██╔══██╗\n` +
+    ` ██║     ██║     ███████║██║ █╗ ██║██║  ██║\n` +
+    ` ██║     ██║     ██╔══██║██║███╗██║██║  ██║\n` +
+    ` ╚██████╗███████╗██║  ██║╚███╔███╔╝██████╔╝\n` +
+    `  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═════╝`;
+
+  const cursorBlock =
+    `  ██████╗██╗   ██╗██████╗ ███████╗ ██████╗ ██████╗\n` +
+    ` ██╔════╝██║   ██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗\n` +
+    ` ██║     ██║   ██║██████╔╝█████╗  ██║   ██║██████╔╝\n` +
+    ` ██║     ██║   ██║██╔══██╗╚════██╗██║   ██║██╔══██╗\n` +
+    ` ╚██████╗╚██████╔╝██║  ██║███████║╚██████╔╝██║  ██║\n` +
+    `  ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝`;
+
+  const footer =
+    `  OS-level Desktop Automation Server\n` +
+    `  ─────────────────────────────────────────────`;
+
+  process.stdout.write(
+    `\n${pc.green(cat)}\n\n` +
+    `${pc.bold(pc.green(clawBlock))}\n` +
+    `${pc.green(cursorBlock)}\n\n` +
+    `${pc.gray(footer)}\n\n`,
   );
 }
 
@@ -79,40 +86,49 @@ export async function runOnboarding(context: 'start' | 'consent' = 'start', star
   printBanner();
 
   const contextNote = context === 'start'
-    ? `\x1b[90m  You are starting:\x1b[0m\n` +
-      `\x1b[90m  \u2192 AI Agent + MCP HTTP transport on \x1b[0m\x1b[36mlocalhost:${startPort}\x1b[0m\n` +
-      `\x1b[90m  \u2192 Any local process with the bearer token can call tools\x1b[0m\n`
-    : `\x1b[90m  This one-time consent covers both transports of clawdcursor:\x1b[0m\n` +
-      `\x1b[90m  \u2192 stdio MCP   \x1b[0m\x1b[90m(Claude Code, Cursor, Windsurf, Zed \u2014 your editor spawns it)\x1b[0m\n` +
-      `\x1b[90m  \u2192 HTTP MCP    \x1b[0m\x1b[90m(\x1b[0m\x1b[36mclawdcursor agent\x1b[0m\x1b[90m \u2014 daemon for the autonomous agent)\x1b[0m\n`;
+    ? pc.gray('  You are starting:') + '\n' +
+      `${pc.gray('  → AI Agent + MCP HTTP transport on ')}${pc.cyan(`localhost:${startPort}`)}\n` +
+      pc.gray('  → Any local process with the bearer token can call tools') + '\n'
+    : pc.gray('  This one-time consent covers both transports of clawdcursor:') + '\n' +
+      `${pc.gray('  → stdio MCP   ')}${pc.gray('(Claude Code, Cursor, Windsurf, Zed — your editor spawns it)')}\n` +
+      `${pc.gray('  → HTTP MCP    ')}${pc.gray('(')}${pc.cyan('clawdcursor agent')}${pc.gray(' — daemon for the autonomous agent)')}\n`;
 
-  console.log(`
-\x1b[33m
-  \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
-  \u2551                                                              \u2551
-  \u2551           \u26a0   DESKTOP CONTROL WARNING   \u26a0                   \u2551
-  \u2551                                                              \u2551
-  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
-\x1b[0m
-\x1b[90m  clawdcursor gives AI models full control of your desktop:\x1b[0m
+  const warningBox = pc.yellow(
+    `  ╔${'═'.repeat(63)}╗\n` +
+    `  ║                                                              ║\n` +
+    `  ║           ⚠   DESKTOP CONTROL WARNING   ⚠                   ║\n` +
+    `  ║                                                              ║\n` +
+    `  ╚${'═'.repeat(63)}╝`,
+  );
 
-\x1b[31m  ●\x1b[0m Mouse clicks and keyboard input anywhere on screen
-\x1b[31m  ●\x1b[0m Screenshot capture of your entire display
-\x1b[31m  ●\x1b[0m Read and write OS clipboard
-\x1b[31m  ●\x1b[0m Open, close, and switch between applications
-\x1b[31m  ●\x1b[0m Browser DOM interaction via Chrome DevTools Protocol
-\x1b[31m  ●\x1b[0m Read accessibility tree (window contents, UI elements)
+  const capabilities = [
+    'Mouse clicks and keyboard input anywhere on screen',
+    'Screenshot capture of your entire display',
+    'Read and write OS clipboard',
+    'Open, close, and switch between applications',
+    'Browser DOM interaction via Chrome DevTools Protocol',
+    'Read accessibility tree (window contents, UI elements)',
+  ].map(line => `${pc.red('  ●')} ${line}`).join('\n');
 
-${contextNote}
-\x1b[32m  SAFETY NOTES:\x1b[0m
-\x1b[90m  ●  Only run on a machine you control\x1b[0m
-\x1b[90m  ●  Only connect AI models you trust\x1b[0m
-\x1b[90m  ●  Server binds to localhost only (127.0.0.1)\x1b[0m
-\x1b[90m  ●  Dangerous key combos (Alt+F4, Ctrl+Alt+Del) are blocked\x1b[0m
-\x1b[90m  ●  Run \x1b[0m\x1b[36mclawdcursor stop\x1b[0m\x1b[90m to shut down when not in use\x1b[0m
+  const safetyNotes = [
+    '  ●  Only run on a machine you control',
+    '  ●  Only connect AI models you trust',
+    '  ●  Server binds to localhost only (127.0.0.1)',
+    '  ●  Dangerous key combos (Alt+F4, Ctrl+Alt+Del) are blocked',
+  ].map(line => pc.gray(line)).join('\n');
 
-\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m
-`);
+  const divider = '  ' + '─'.repeat(58);
+
+  console.log(
+    `\n${warningBox}\n\n` +
+    `${pc.gray('  clawdcursor gives AI models full control of your desktop:')}\n\n` +
+    `${capabilities}\n\n` +
+    `${contextNote}` +
+    `${pc.green('  SAFETY NOTES:')}\n` +
+    `${safetyNotes}\n` +
+    `${pc.gray('  ●  Run ')}${pc.cyan('clawdcursor stop')}${pc.gray(' to shut down when not in use')}\n\n` +
+    `${pc.gray(divider)}\n`,
+  );
 
   const rl = readline.createInterface({
     input: process.stdin,
