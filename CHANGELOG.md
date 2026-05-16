@@ -2,7 +2,7 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
-## [0.9.2] - 2026-05-15 — fix: stale PID lock + orphan accumulation block MCP reconnect
+## [Unreleased] — fix: stale PID lock + orphan accumulation block MCP reconnect
 
 User-reported on Windows 11 + Claude Code: `/mcp` reconnect intermittently
 failed with `Failed to reconnect to clawdcursor: -32000`, and once it
