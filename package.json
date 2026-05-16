@@ -29,6 +29,20 @@
   "bin": {
     "clawdcursor": "dist/surface/cli.js"
   },
+  "files": [
+    "dist/",
+    "scripts/verify-install.js",
+    "scripts/sync-version.ts",
+    "native/build.sh",
+    "native/Package.swift",
+    "native/Sources/",
+    "native/entitlements.plist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "SKILL.md"
+  ],
   "scripts": {
     "postinstall": "node scripts/verify-install.js || true",
     "build": "tsc && node dist/postbuild.js",

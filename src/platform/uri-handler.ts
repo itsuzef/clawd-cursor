@@ -146,11 +146,17 @@ async function snapshotProcessWindows(processNameLower: string): Promise<Set<str
   try {
     // Use PowerShell to enumerate; it's already a dependency for the
     // a11y bridge so we're not adding a new runtime.
+    //
+    // processNameLower flows in from registry / WindowsApps lookups (not
+    // LLM-controlled), but defense-in-depth: double single-quotes to
+    // escape any embedded apostrophe so it can't break out of the PS
+    // string literal. Same pattern as Windows.psQuote.
+    const safeName = processNameLower.replace(/'/g, "''");
     const { stdout } = await execFileAsync(
       'powershell.exe',
       [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
-        `Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' -and $_.ProcessName.ToLower() -eq '${processNameLower}' } | ForEach-Object { "$($_.MainWindowHandle)|$($_.MainWindowTitle)" }`,
+        `Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' -and $_.ProcessName.ToLower() -eq '${safeName}' } | ForEach-Object { "$($_.MainWindowHandle)|$($_.MainWindowTitle)" }`,
       ],
       { timeout: 3000 },
     );

@@ -962,14 +962,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     setTimeout(check, 1500);
   }
 
-  // Confirm/reject
+  // Confirm/reject — placeholder. The /confirm endpoint was removed in
+  // the v0.9 REST→MCP collapse; the human-in-the-loop confirm flow now
+  // surfaces through the editor host's tool-approval UI (or in the
+  // dashboard's pending-task list, server-side). Left as a no-op visible
+  // dismiss so the banner can be cleared from the UI while the new flow
+  // is wired up; the LLM-side confirmation is enforced server-side by
+  // the safety gate regardless.
   window.confirmAction = async function(approved) {
     try {
-      await fetch('/confirm', {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ approved })
-      });
+      // Server-side: confirmation is decided by the safety-gate module,
+      // not by a dashboard POST. This handler only dismisses the banner.
+      void approved;
       confirmBanner.classList.remove('visible');
     } catch(e) {
       alert('Failed to send confirmation: ' + e.message);
@@ -1054,13 +1058,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     // backslashes get stripped at parse time (\\s in source → s at runtime).
     // To preserve a literal backslash for the inner regex, we double-escape.
     var patterns = [
-      /sk-[a-zA-Z0-9]{20,}/,            // OpenAI / generic API keys
-      /sk-ant-[a-zA-Z0-9-]{20,}/,        // Anthropic keys
-      /password\\s*[:=]\\s*\\S+/i,      // password: xxx
-      /secret\\s*[:=]\\s*\\S+/i,        // secret: xxx
-      /token\\s*[:=]\\s*\\S+/i,         // token: xxx
-      /api[_-]?key\\s*[:=]\\s*\\S+/i,   // api_key: xxx
-      /Bearer\\s+[a-zA-Z0-9._-]{20,}/   // Bearer tokens
+      /sk-[a-zA-Z0-9_-]{20,}/,                        // OpenAI / generic API keys (incl. sk-proj-)
+      /sk-ant-[a-zA-Z0-9-]{20,}/,                      // Anthropic keys
+      /sk_(?:live|test)_[a-zA-Z0-9]{20,}/,             // Stripe secret keys
+      /rk_(?:live|test)_[a-zA-Z0-9]{20,}/,             // Stripe restricted keys
+      /gh[posru]_[A-Za-z0-9_]{30,}/,                   // GitHub PAT (ghp_, gho_, ghu_, ghs_, ghr_)
+      /xox[abprs]-[A-Za-z0-9-]{10,}/,                  // Slack tokens
+      /AKIA[0-9A-Z]{16}/,                              // AWS access key id
+      /ya29\\.[A-Za-z0-9_-]{20,}/,                     // Google OAuth access token
+      /eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\./,      // JWT (header.payload.…)
+      /password\\s*[:=]\\s*\\S+/i,                    // password: xxx
+      /secret\\s*[:=]\\s*\\S+/i,                      // secret: xxx
+      /token\\s*[:=]\\s*\\S+/i,                       // token: xxx
+      /api[_-]?key\\s*[:=]\\s*\\S+/i,                 // api_key: xxx
+      /Bearer\\s+[a-zA-Z0-9._-]{20,}/                 // Bearer tokens
     ];
     for (var i = 0; i < patterns.length; i++) {
       if (patterns[i].test(text)) return true;

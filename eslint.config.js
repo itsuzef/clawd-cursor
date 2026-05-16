@@ -79,10 +79,21 @@ module.exports = [
       },
     },
   },
-  // Test file overrides — vitest globals
+  // Test file overrides — vitest globals + non-project parsing.
+  //
+  // tsconfig.json excludes src/__tests__ from the build (so dist/ stays
+  // lean for npm publish). That means @typescript-eslint can't find a
+  // project that includes test files, which trips "parserOptions.project
+  // has been provided" errors. Drop to project-less parsing for tests —
+  // they get linted for syntax + rule violations but skip type-aware
+  // checks, which is the correct trade-off (tests already get full
+  // type-checking via tsconfig.tests.json + `npm run typecheck:tests`).
   {
     files: ['**/*.test.ts', 'tests/**/*.ts', 'src/__tests__/**/*.ts'],
     languageOptions: {
+      parserOptions: {
+        project: null,
+      },
       globals: {
         describe: 'readonly',
         it: 'readonly',
@@ -93,6 +104,9 @@ module.exports = [
         beforeAll: 'readonly',
         afterAll: 'readonly',
         test: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
       },
     },
   },
