@@ -1050,14 +1050,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
 
   function looksLikeCredential(text) {
+    // NOTE: this code lives inside an outer JS template literal, so single
+    // backslashes get stripped at parse time (\\s in source → s at runtime).
+    // To preserve a literal backslash for the inner regex, we double-escape.
     var patterns = [
-      /sk-[a-zA-Z0-9]{20,}/,        // OpenAI / generic API keys
-      /sk-ant-[a-zA-Z0-9-]{20,}/,    // Anthropic keys
-      /password\s*[:=]\s*\S+/i,      // password: xxx
-      /secret\s*[:=]\s*\S+/i,        // secret: xxx
-      /token\s*[:=]\s*\S+/i,         // token: xxx
-      /api[_-]?key\s*[:=]\s*\S+/i,   // api_key: xxx
-      /Bearer\s+[a-zA-Z0-9._-]{20,}/ // Bearer tokens
+      /sk-[a-zA-Z0-9]{20,}/,            // OpenAI / generic API keys
+      /sk-ant-[a-zA-Z0-9-]{20,}/,        // Anthropic keys
+      /password\\s*[:=]\\s*\\S+/i,      // password: xxx
+      /secret\\s*[:=]\\s*\\S+/i,        // secret: xxx
+      /token\\s*[:=]\\s*\\S+/i,         // token: xxx
+      /api[_-]?key\\s*[:=]\\s*\\S+/i,   // api_key: xxx
+      /Bearer\\s+[a-zA-Z0-9._-]{20,}/   // Bearer tokens
     ];
     for (var i = 0; i < patterns.length; i++) {
       if (patterns[i].test(text)) return true;

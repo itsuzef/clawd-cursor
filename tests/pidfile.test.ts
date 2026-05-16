@@ -1,7 +1,7 @@
 /**
  * Tests for the single-instance pidfile lock.
  *
- * Covers the failure modes the v0.9.2 fix addresses:
+ * Covers the failure modes the JSON-lockfile + start-time-verify fix addresses:
  *   - Stale lockfile (PID dead) → cleared, claim succeeds.
  *   - Recycled PID with start-time mismatch → cleared, claim succeeds.
  *   - Genuine duplicate (PID alive + start time matches) → claim returns the pid.

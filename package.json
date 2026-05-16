@@ -1,6 +1,6 @@
 {
   "name": "clawdcursor",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
   "homepage": "https://clawdcursor.com",
   "repository": {
@@ -44,7 +44,9 @@
     "test:mcp-schema-snapshot": "tsx scripts/build-mcp-schema.ts",
     "test:mcp-schema-snapshot:update": "tsx scripts/build-mcp-schema.ts --write",
     "typecheck": "tsc --noEmit",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json"
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "sync-version": "tsx scripts/sync-version.ts",
+    "version": "tsx scripts/sync-version.ts && git add SKILL.md docs/index.html docs/install.sh docs/install.ps1"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

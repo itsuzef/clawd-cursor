@@ -607,7 +607,6 @@ export function getExtraTools(): ToolDefinition[] {
           // window. The reliable path is to resolve the registered handler
           // executable and invoke IT directly, then verify a new visible
           // top-level window actually appeared.
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { resolveSchemeHandlerExecutable, launchHandlerAndVerify } = await import('../platform/uri-handler');
           const exe = await resolveSchemeHandlerExecutable(scheme);
           if (!exe) {

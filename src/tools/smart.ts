@@ -12,7 +12,7 @@
  * OCR coords and a11y coords both match nut-js mouseClick coords directly.
  */
 
-import type { ToolDefinition, ToolContext } from './types';
+import type { ToolDefinition } from './types';
 import { OcrEngine } from '../platform/ocr-engine';
 import { getBrowserProcessNames } from '../llm/browser-config';
 

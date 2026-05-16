@@ -231,9 +231,9 @@ async function dispatchCompound(
   }
 
   // Strip the `action` key + apply any remapping before forwarding.
-  const { action: _a, ...rest } = args;
   const forwarded: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rest)) {
+  for (const [k, v] of Object.entries(args)) {
+    if (k === 'action') continue;
     const mapped = route.argRemap?.[k] ?? k;
     forwarded[mapped] = v;
   }

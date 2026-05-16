@@ -1223,10 +1223,10 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
     console.log(`   Two ways to use clawdcursor — pick the one that fits your setup:\n`);
     console.log(`   ${pc.bold('1. As an MCP server for your editor')} ${pc.gray('(Claude Code, Cursor, Windsurf, Zed)')}`);
     console.log(`      Register ${pc.cyan('clawdcursor mcp')} in your editor's MCP config.`);
-    console.log(`      Your editor's AI gets 93 desktop tools (or 6 compound via ${pc.cyan('--compact')}).`);
+    console.log(`      Your editor's AI gets 97 desktop tools (or 6 compound via ${pc.cyan('--compact')}).`);
     console.log(`      Stdio transport — no daemon, no port, no token.\n`);
     console.log(`   ${pc.bold('2. As a local HTTP daemon')} ${pc.gray('(for any HTTP client, or for the built-in autonomous agent)')}`);
-    console.log(`      Run ${pc.cyan('clawdcursor agent')} — exposes the same 93 tools at ${pc.cyan('POST /mcp')} on ${pc.cyan(':3847')}.`);
+    console.log(`      Run ${pc.cyan('clawdcursor agent')} — exposes the same 97 tools at ${pc.cyan('POST /mcp')} on ${pc.cyan(':3847')}.`);
     console.log(`      With an LLM configured ${pipeline.layer2.enabled ? pc.green('(you have one)') : pc.yellow(`(none yet — re-run ${pc.cyan('clawdcursor doctor')} after adding a key)`)},`);
     console.log(`      you also get ${pc.cyan('clawdcursor task "<plain English>"')} for end-to-end autonomous runs.\n`);
     console.log(`   Run now:`);

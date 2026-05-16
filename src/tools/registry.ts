@@ -84,7 +84,7 @@ export function getTools(options?: GetToolsOptions): ToolDefinition[] {
   return all;
 }
 
-/** Get all registered GRANULAR tools (the 74-tool surface). Back-compat wrapper around getTools(). */
+/** Get all registered GRANULAR tools (the full primitive surface). Back-compat wrapper around getTools(). */
 export function getAllTools(): ToolDefinition[] {
   return getTools();
 }

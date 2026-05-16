@@ -37,4 +37,32 @@ describe('version drift guard', () => {
     }
     expect(offenders, `Hardcoded version "${needle}" found. Import VERSION from './version' instead.`).toEqual([]);
   });
+
+  // Inverse guard for off-tree version literals. SKILL.md frontmatter and
+  // docs/index.html / install.{sh,ps1} all carry the version intentionally
+  // — they're sync'd from package.json by `npm run sync-version` on every
+  // release. If any of them drifts, fail the build and tell the dev to run
+  // the sync. Keeps `npm version <bump>` honest even if its lifecycle hook
+  // is bypassed (e.g. someone hand-edits package.json).
+  it('SKILL.md + docs/ + install scripts match package.json version', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')) as { version: string };
+    const needle = pkg.version;
+
+    const skill = readFileSync(join(ROOT, 'SKILL.md'), 'utf-8');
+    const skillMatch = skill.match(/^version:\s*(\d+\.\d+\.\d+)/m);
+    expect(skillMatch?.[1], 'SKILL.md frontmatter version drifted; run `npm run sync-version`').toBe(needle);
+
+    const indexHtml = readFileSync(join(ROOT, 'docs', 'index.html'), 'utf-8');
+    const titleMatch = indexHtml.match(/<title>Clawd Cursor v(\d+\.\d+\.\d+)/);
+    expect(titleMatch?.[1], 'docs/index.html <title> drifted; run `npm run sync-version`').toBe(needle);
+
+    const heroBadgeMatch = indexHtml.match(/<div class="hero-badge"><div class="pulse"><\/div>\s*v(\d+\.\d+\.\d+)/);
+    expect(heroBadgeMatch?.[1], 'docs/index.html hero badge drifted; run `npm run sync-version`').toBe(needle);
+
+    for (const installer of ['install.sh', 'install.ps1']) {
+      const text = readFileSync(join(ROOT, 'docs', installer), 'utf-8');
+      const m = text.match(/# Specify version: \$?(?:env:)?VERSION=?'?(?:v)(\d+\.\d+\.\d+)'?/);
+      expect(m?.[1], `docs/${installer} pin example drifted; run \`npm run sync-version\``).toBe(needle);
+    }
+  });
 });
