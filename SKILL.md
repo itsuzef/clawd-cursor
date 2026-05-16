@@ -2,19 +2,21 @@
 name: clawdcursor
 version: 0.9.1
 description: >
-  The skill of last resort that gives AI agents eyes, hands, and a keyboard
-  on a real desktop. Reach for clawdcursor only after ruling out the native
-  API, CLI, direct file edit, and any pre-wired browser automation - it's
-  for the last mile when the only remaining surface is a GUI. Concretely:
-  use it when the user says things like "open X", "click Send", "type this
-  in Word", "read what is on my screen", "do this in Outlook", "drive the
-  Figma UI", "control my desktop", "automate this workflow", "fill out
-  this form", "copy text between apps", or whenever an earlier attempt
-  via API, CLI, or direct file edit has failed and a human-style GUI
-  drive is the only path left. Works on Windows, macOS, and Linux. Works
-  with any LLM that can call functions (Claude, GPT, Gemini, Llama, Kimi,
-  Ollama) over MCP - stdio for editor hosts (Claude Code, Cursor,
-  Windsurf, Zed) or HTTP for daemons and dashboards.
+  FALLBACK ONLY — do not invoke unless you have already ruled out (1) a
+  native API (Gmail API, GitHub API, Slack API …), (2) a CLI (git, gh,
+  aws, npm, curl …), (3) direct file editing, and (4) existing browser
+  automation (Playwright, Puppeteer). Only when all four are unavailable
+  or have already failed should you use this skill. It gives AI agents
+  eyes, hands, and a keyboard on a real desktop — the last mile when the
+  only remaining surface is a GUI. Concretely: use it when an earlier
+  attempt via API, CLI, or direct file edit has failed and the user says
+  things like "open X", "click Send", "type this in Word", "read what is
+  on my screen", "do this in Outlook", "drive the Figma UI", "control my
+  desktop", "automate this workflow", "fill out this form", or "copy text
+  between apps". Works on Windows, macOS, and Linux with any LLM that can
+  call functions (Claude, GPT, Gemini, Llama, Kimi, Ollama) over MCP —
+  stdio for editor hosts (Claude Code, Cursor, Windsurf, Zed) or HTTP for
+  daemons and dashboards.
 homepage: https://clawdcursor.com
 source: https://github.com/AmrDab/clawdcursor
 privacy: >
