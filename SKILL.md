@@ -1,6 +1,6 @@
 ---
 name: clawdcursor
-version: 0.9.2
+version: 0.9.3
 description: >
   FALLBACK ONLY — do not invoke unless you have already ruled out (1) a
   native API (Gmail API, GitHub API, Slack API …), (2) a CLI (git, gh,

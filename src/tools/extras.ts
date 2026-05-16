@@ -908,10 +908,21 @@ export function getExtraTools(): ToolDefinition[] {
           // (`~/.clawdcursor/ui-knowledge/{app}.json`). The bundled source
           // tree is never modified. detectApp resolves "EXCEL"/"winword"/etc.
           // to the canonical app key so writes don't fork the filename space.
-          if (typeof task === 'string' && task && Array.isArray(actions)) {
-            saveLearnedLesson(processName, task, actions);
+          //
+          // Track what we actually wrote so the response can't claim
+          // `saved: true` when the caller passed only `processName` (or
+          // only invalid JSON in the *Json fields) and both branches
+          // skipped — the previous shape lied silently in that case.
+          const wroteLesson = typeof task === 'string' && !!task && Array.isArray(actions);
+          const wroteGuide = !!(shortcuts || tips);
+          if (wroteLesson) {
+            saveLearnedLesson(
+              processName,
+              task as string,
+              actions as Array<{ action: string; description?: string }>,
+            );
           }
-          if (shortcuts || tips) {
+          if (wroteGuide) {
             mergeIntoUserGuide(processName, {
               shortcuts: shortcuts && typeof shortcuts === 'object'
                 ? shortcuts as Record<string, string>
@@ -920,11 +931,27 @@ export function getExtraTools(): ToolDefinition[] {
             });
           }
 
+          if (!wroteLesson && !wroteGuide) {
+            return {
+              text: JSON.stringify({
+                saved: false,
+                processName,
+                app: resolveAppKey(processName),
+                reason: 'no writable payload — supply taskJson+actionsJson (lesson) and/or shortcutsJson/tipsJson (guide overrides)',
+              }),
+              isError: true,
+            };
+          }
+
           return {
             text: JSON.stringify({
               saved: true,
               processName,
               app: resolveAppKey(processName),
+              wrote: {
+                lesson: wroteLesson,
+                guide: wroteGuide,
+              },
             }),
           };
         } catch (err) {

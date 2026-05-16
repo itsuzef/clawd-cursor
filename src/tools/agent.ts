@@ -114,10 +114,11 @@ export function getAgentTools(): ToolDefinition[] {
     {
       name: 'screenshot_full',
       description:
-        'Capture the full primary display and return it as a base64-encoded ' +
-        'PNG. Equivalent to desktop_screenshot but returns the full frame ' +
-        'unconditionally (no region cropping). Useful for the dashboard\'s ' +
-        '/screenshot REST replacement.',
+        'Capture the full primary display. Returns base64 image bytes plus a ' +
+        '`format` field (`jpeg` by default, `png` if configured); the MCP ' +
+        '`image.mimeType` is set to match. Equivalent to desktop_screenshot ' +
+        'but returns the full frame unconditionally (no region cropping). ' +
+        'Useful for the dashboard\'s /screenshot REST replacement.',
       parameters: {},
       category: 'perception',
       compactGroup: 'computer',
@@ -126,19 +127,22 @@ export function getAgentTools(): ToolDefinition[] {
         try {
           await ctx.ensureInitialized();
           const frame = await ctx.desktop.captureForLLM();
-          // captureForLLM returns { buffer, scaleFactor, llmWidth, llmHeight }
-          // Encode as base64 in the MCP image content shape so clients can
-          // render or hand it to a vision model directly.
+          // captureForLLM returns { buffer, scaleFactor, llmWidth, llmHeight,
+          // format }. Format is configured per-capture (`'jpeg'` by default,
+          // sometimes `'png'`); use it to set the correct mimeType instead
+          // of the previous hardcoded 'image/png' which lied for the JPEG path.
           const b64 = Buffer.isBuffer(frame.buffer)
             ? frame.buffer.toString('base64')
             : Buffer.from(frame.buffer).toString('base64');
+          const mimeType = frame.format === 'png' ? 'image/png' : 'image/jpeg';
           return {
             text: JSON.stringify({
               scaleFactor: frame.scaleFactor,
               llmWidth: frame.llmWidth,
               llmHeight: frame.llmHeight,
+              format: frame.format,
             }),
-            image: { data: b64, mimeType: 'image/png' },
+            image: { data: b64, mimeType },
           };
         } catch (err) {
           return { text: `Screenshot failed: ${(err as Error).message}`, isError: true };

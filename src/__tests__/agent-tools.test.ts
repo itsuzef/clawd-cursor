@@ -81,10 +81,15 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     desktop: {
       captureForLLM: vi.fn(async () => ({
-        buffer: Buffer.from('PNG_BYTES'),
+        buffer: Buffer.from('JPEG_BYTES'),
         scaleFactor: 1,
         llmWidth: 1280,
         llmHeight: 720,
+        // Real captureForLLM returns the configured capture format
+        // ('jpeg' by default; 'png' when CLAWD_SCREENSHOT_FORMAT=png).
+        // Include it in the mock so screenshot_full's mimeType / meta.format
+        // assertions match the real shape.
+        format: 'jpeg',
       })),
     } as any,
     a11y: {} as any,
@@ -183,16 +188,22 @@ describe('agent tools — abort_task / agent_status', () => {
 describe('agent tools — screenshot_full', () => {
   const tools = getAgentTools();
 
-  it('captures the primary display and returns base64 PNG', async () => {
+  it('captures the primary display and returns base64 image with matching mimeType', async () => {
     const tool = findTool(tools, 'screenshot_full');
     const ctx = makeCtx();
     const result = await tool.handler({}, ctx);
     expect(result.isError).toBeFalsy();
-    expect(result.image?.mimeType).toBe('image/png');
+    // mimeType now follows the captured frame's format (jpeg default, png if
+    // configured). The previous test asserted a hardcoded 'image/png' which
+    // lied for the JPEG path; assert mimeType matches the meta `format`
+    // field so the test stays correct regardless of capture config.
+    expect(result.image?.mimeType).toMatch(/^image\/(png|jpeg)$/);
     expect(result.image?.data).toBeTruthy();
     const meta = JSON.parse(result.text);
     expect(meta.scaleFactor).toBe(1);
     expect(meta.llmWidth).toBe(1280);
+    expect(meta.format).toMatch(/^(png|jpeg)$/);
+    expect(result.image?.mimeType).toBe(`image/${meta.format}`);
   });
 });
 
@@ -287,8 +298,18 @@ describe('extras — daemon diagnostics', () => {
   });
 
   it('learn_app returns the resolved app key in the success payload', async () => {
+    // Supply a real lesson payload so the handler has something to persist.
+    // Previously this test passed only `processName` and asserted
+    // `saved: true` — that masked the silent no-op bug fixed in 0.9.3
+    // (the handler returned saved:true even when nothing was written).
     const result = await findTool(tools, 'learn_app').handler(
-      { processName: 'EXCEL' },
+      {
+        processName: 'EXCEL',
+        // `task` is a direct string parameter on the schema, not `taskJson`.
+        // `actionsJson` IS the JSON-string convention.
+        task: 'format cells',
+        actionsJson: JSON.stringify([{ action: 'click', description: 'Home tab' }]),
+      },
       makeCtx(),
     );
     expect(result.isError).toBeFalsy();
@@ -296,5 +317,19 @@ describe('extras — daemon diagnostics', () => {
     expect(payload.saved).toBe(true);
     expect(payload.processName).toBe('EXCEL');
     expect(payload.app).toBe('excel'); // detectApp lower-cased it via TITLE_FALLBACKS
+    expect(payload.wrote?.lesson).toBe(true);
+  });
+
+  it('learn_app returns saved:false + reason when no writable payload is supplied', async () => {
+    // Regression guard for the silent no-op bug fixed in 0.9.3.
+    const result = await findTool(tools, 'learn_app').handler(
+      { processName: 'EXCEL' },
+      makeCtx(),
+    );
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.text);
+    expect(payload.saved).toBe(false);
+    expect(payload.reason).toMatch(/no writable payload/);
+    expect(payload.app).toBe('excel');
   });
 });

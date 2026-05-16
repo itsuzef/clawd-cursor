@@ -181,7 +181,24 @@ function buildCompoundSchema(
         ? Object.entries(route.argRemap).find(([, v]) => v === pname)?.[0]
         : undefined;
       const targetName = remappedFrom ?? pname;
-      if (targetName in schema) continue; // First delegate to declare a name wins.
+      if (targetName in schema) {
+        // Field already declared by an earlier delegate. The first-wins
+        // policy is fine for type/description (they should match), but
+        // for an `enum` constraint we have to UNION the values across
+        // delegates — otherwise `mouse_scroll`'s `direction: ['up','down']`
+        // wins and `mouse_scroll_horizontal`'s `['left','right']` becomes
+        // invisible to the schema, so an LLM calling
+        // `computer({action:'scroll_horizontal', direction:'left'})`
+        // violates the published schema.
+        const existing = schema[targetName];
+        if (Array.isArray(existing.enum) && Array.isArray(pdef.enum)) {
+          const merged = Array.from(new Set([...existing.enum, ...pdef.enum]));
+          if (merged.length !== existing.enum.length) {
+            existing.enum = merged;
+          }
+        }
+        continue;
+      }
       schema[targetName] = {
         ...pdef,
         required: false, // Every arg is optional on the compound — sub-actions enforce their own.
@@ -306,9 +323,11 @@ export function getCompactTools(): ToolDefinition[] {
     {
       name: 'task',
       description:
+        '**Requires the `clawdcursor agent` daemon to be running** (binds 127.0.0.1:3847 with an LLM configured). ' +
         'Hand clawdcursor a WHOLE natural-language task and let its internal pipeline decide how to execute it (router → blind agent → hybrid → vision fallback). ' +
         'Use this when you don\'t want to micromanage every primitive — clawdcursor decomposes the task, picks the cheapest execution path, and returns a trace. ' +
-        'The `computer`/`accessibility`/`window`/`system`/`browser` compounds are for when you want step-level control yourself.',
+        'The `computer`/`accessibility`/`window`/`system`/`browser` compounds are for when you want step-level control yourself. ' +
+        'If the daemon isn\'t running you get a clear error telling you how to start it.',
       parameters: {
         instruction: {
           type: 'string',

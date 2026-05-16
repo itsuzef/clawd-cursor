@@ -463,7 +463,7 @@
     },
     {
       "name": "delegate_to_agent",
-      "description": "Delegate a task to clawdcursor's autonomous pipeline (runs independently with its own LLM reasoning). Returns when the task completes or times out.",
+      "description": "**Requires the `clawdcursor agent` daemon to be running** (binds 127.0.0.1:3847). Delegates a task to clawdcursor's autonomous pipeline (runs independently with its own LLM reasoning). Returns when the task completes or times out. If you see ECONNREFUSED, start the daemon with `clawdcursor agent` and retry.",
       "category": "orchestration",
       "parameters": {
         "type": "object",
@@ -1594,7 +1594,7 @@
     },
     {
       "name": "screenshot_full",
-      "description": "Capture the full primary display and return it as a base64-encoded PNG. Equivalent to desktop_screenshot but returns the full frame unconditionally (no region cropping). Useful for the dashboard's /screenshot REST replacement.",
+      "description": "Capture the full primary display. Returns base64 image bytes plus a `format` field (`jpeg` by default, `png` if configured); the MCP `image.mimeType` is set to match. Equivalent to desktop_screenshot but returns the full frame unconditionally (no region cropping). Useful for the dashboard's /screenshot REST replacement.",
       "category": "perception",
       "parameters": {
         "type": "object",

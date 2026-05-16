@@ -3,6 +3,16 @@
 # Keeps UI Automation assemblies and Win32 types loaded between calls —
 # eliminates 200-500ms PowerShell startup overhead on every a11y operation.
 
+# Force UTF-8 on stdin/stdout so non-ASCII window titles, accessibility
+# names, and clipboard contents survive the round-trip to Node. Without
+# this, PowerShell uses the system code page (Windows-1252 in most
+# locales) while Node decodes as UTF-8 — every non-ASCII char arrives as
+# `?` or `�`. Also sets $OutputEncoding so PS-side `ConvertTo-Json`
+# doesn't re-encode the output through the legacy console codepath.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$OutputEncoding           = [System.Text.Encoding]::UTF8
+
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes

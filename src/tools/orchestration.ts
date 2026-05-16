@@ -86,7 +86,10 @@ export function getOrchestrationTools(): ToolDefinition[] {
   return [
     {
       name: 'delegate_to_agent',
-      description: "Delegate a task to clawdcursor's autonomous pipeline (runs independently with its own LLM reasoning). Returns when the task completes or times out.",
+      description:
+        "**Requires the `clawdcursor agent` daemon to be running** (binds 127.0.0.1:3847). " +
+        "Delegates a task to clawdcursor's autonomous pipeline (runs independently with its own LLM reasoning). " +
+        "Returns when the task completes or times out. If you see ECONNREFUSED, start the daemon with `clawdcursor agent` and retry.",
       parameters: {
         task: { type: 'string', description: 'Natural language task description', required: true },
         timeout: { type: 'number', description: 'Timeout in seconds (default: 300)', required: false },
@@ -242,8 +245,27 @@ export function getOrchestrationTools(): ToolDefinition[] {
         try {
           const userDataDir = path.join(process.env.TEMP || process.env.TMPDIR || '/tmp', 'clawdcursor-edge');
           if (process.platform === 'win32') {
-            await execFileAsync('powershell.exe', ['-NoProfile', '-Command',
-              `Start-Process "msedge" -ArgumentList @("--remote-debugging-port=${DEFAULT_CDP_PORT}","--user-data-dir=${userDataDir}","--no-first-run","--disable-default-apps","${url}")`
+            // Direct exec instead of `powershell -Command "Start-Process …"`:
+            // the previous form interpolated `url` into a PowerShell string,
+            // letting a crafted URL (`")` / `$()` / backtick) escape the
+            // quoting and run arbitrary code. execFile with argv is safe.
+            // Edge installs in well-known locations; fall back to the one
+            // that exists. `where.exe msedge` would also work but adds an
+            // extra spawn for the common case.
+            const edgeCandidates = [
+              path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+              path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+            ];
+            const edgeExe = edgeCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+            if (!edgeExe) {
+              throw new Error('msedge.exe not found in standard install locations');
+            }
+            await execFileAsync(edgeExe, [
+              `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
+              `--user-data-dir=${userDataDir}`,
+              '--no-first-run',
+              '--disable-default-apps',
+              url,
             ], { timeout: 10000 });
           } else if (process.platform === 'darwin') {
             await execFileAsync('open', ['-a', 'Google Chrome', '--args',

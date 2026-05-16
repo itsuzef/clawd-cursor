@@ -4,6 +4,12 @@
 
 param([string]$ImagePath)
 
+# Force UTF-8 on stdout so non-ASCII recognized text (emoji, accented
+# characters, CJK) survives the round-trip to Node. PowerShell defaults
+# to the system code page; Node decodes as UTF-8.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding           = [System.Text.Encoding]::UTF8
+
 try {
     # Resolve to absolute path (required by WinRT StorageFile API)
     $ImagePath = (Resolve-Path $ImagePath -ErrorAction Stop).Path
