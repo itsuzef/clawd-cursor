@@ -1216,8 +1216,19 @@ program
       console.error('Subsystem init failed:', err?.message);
     });
 
-    // Release pidfile on exit so a fresh restart can claim it immediately
-    const releaseMcp = () => { releasePidFile('mcp'); process.exit(0); };
+    // Release pidfile on exit so a fresh restart can claim it immediately.
+    // Guard against double-fire (both 'end' and 'close' can emit on the
+    // same stdin teardown) and defer exit via setImmediate so libuv finishes
+    // its stream-close bookkeeping before the process shuts down — calling
+    // process.exit() synchronously inside a stdin 'end' handler causes
+    // SIGSEGV on Linux where libuv is still unwinding the read handle.
+    let mcpExiting = false;
+    const releaseMcp = () => {
+      if (mcpExiting) return;
+      mcpExiting = true;
+      releasePidFile('mcp');
+      setImmediate(() => process.exit(0));
+    };
     process.on('SIGINT', releaseMcp);
     process.on('SIGTERM', releaseMcp);
 
