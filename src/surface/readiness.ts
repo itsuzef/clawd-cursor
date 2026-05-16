@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import pc from 'picocolors';
 import { hasConsent } from './onboarding';
 import { checkPermissionsQuick, isMacOS } from '../platform/native-helper';
 import { getPackageRoot } from '../paths';
@@ -166,53 +167,46 @@ export async function getReadinessStatus(): Promise<ReadinessStatus> {
  */
 export async function printStatusReport(): Promise<void> {
   const status = await getReadinessStatus();
-  
-  const G = '\x1b[32m';  // Green
-  const R = '\x1b[31m';  // Red
-  const Y = '\x1b[33m';  // Yellow
-  const B = '\x1b[1m';   // Bold
-  const D = '\x1b[90m';  // Dim
-  const X = '\x1b[0m';   // Reset
-  
-  const check = (ok: boolean) => ok ? `${G}✓${X}` : `${R}✗${X}`;
-  const warn = (ok: boolean) => ok ? `${G}✓${X}` : `${Y}⚠${X}`;
-  
-  console.log(`\n${B}🐾 Clawd Cursor Status${X}\n`);
-  console.log(`${D}${'─'.repeat(50)}${X}`);
-  
+
+  const check = (ok: boolean) => ok ? pc.green('✓') : pc.red('✗');
+  const warn = (ok: boolean) => ok ? pc.green('✓') : pc.yellow('⚠');
+
+  console.log(`\n${pc.bold('🐾 Clawd Cursor Status')}\n`);
+  console.log(pc.gray('─'.repeat(50)));
+
   // Consent
   console.log(`${check(status.consent.granted)} Consent: ${status.consent.granted ? 'Granted' : 'Not granted'}`);
-  
+
   // macOS Permissions
   if (status.macPermissions) {
     console.log(`${check(status.macPermissions.accessibility)} Accessibility: ${status.macPermissions.accessibility ? 'Granted' : 'Not granted'}`);
-    console.log(`${warn(status.macPermissions.screenRecording)} Screen Recording: ${status.macPermissions.screenRecording ? 'Granted' : 'Not granted'} ${!status.macPermissions.screenRecording ? D + '(optional)' + X : ''}`);
+    console.log(`${warn(status.macPermissions.screenRecording)} Screen Recording: ${status.macPermissions.screenRecording ? 'Granted' : 'Not granted'} ${!status.macPermissions.screenRecording ? pc.gray('(optional)') : ''}`);
   } else if (process.platform !== 'darwin') {
-    console.log(`${G}✓${X} Platform: ${process.platform} ${D}(no special permissions needed)${X}`);
+    console.log(`${pc.green('✓')} Platform: ${process.platform} ${pc.gray('(no special permissions needed)')}`);
   }
-  
+
   // AI Config
   console.log(`${check(status.aiConfig.configured)} AI Config: ${status.aiConfig.configured ? 'Found' : 'Not configured'}`);
   if (status.aiConfig.configured) {
     console.log(`  ${check(status.aiConfig.hasTextModel)} Text model: ${status.aiConfig.hasTextModel ? 'Configured' : 'Not set'}`);
-    console.log(`  ${warn(status.aiConfig.hasVisionModel)} Vision model: ${status.aiConfig.hasVisionModel ? 'Configured' : 'Not set'} ${!status.aiConfig.hasVisionModel ? D + '(optional)' + X : ''}`);
+    console.log(`  ${warn(status.aiConfig.hasVisionModel)} Vision model: ${status.aiConfig.hasVisionModel ? 'Configured' : 'Not set'} ${!status.aiConfig.hasVisionModel ? pc.gray('(optional)') : ''}`);
   }
-  
-  console.log(`${D}${'─'.repeat(50)}${X}`);
-  
+
+  console.log(pc.gray('─'.repeat(50)));
+
   // Overall Status
   if (status.ready) {
-    console.log(`\n${G}${B}✓ Ready for desktop control${X}\n`);
+    console.log(`\n${pc.green(pc.bold('✓ Ready for desktop control'))}\n`);
   } else if (status.readyForDesktopControl) {
-    console.log(`\n${Y}${B}⚠ Desktop control ready, but AI not configured${X}`);
+    console.log(`\n${pc.yellow(pc.bold('⚠ Desktop control ready, but AI not configured'))}`);
     console.log(`  Layer 1 (Action Router) will work without AI.\n`);
   } else {
-    console.log(`\n${R}${B}✗ Not ready for desktop control${X}\n`);
+    console.log(`\n${pc.red(pc.bold('✗ Not ready for desktop control'))}\n`);
   }
-  
+
   // Next Steps
   if (status.nextSteps.length > 0) {
-    console.log(`${B}Next steps:${X}`);
+    console.log(pc.bold('Next steps:'));
     status.nextSteps.forEach((step, i) => {
       console.log(`  ${i + 1}. ${step}`);
     });

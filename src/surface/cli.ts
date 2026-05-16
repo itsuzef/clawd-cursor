@@ -55,6 +55,7 @@ import { resolveApiConfig } from '../llm/credentials';
 import { resolveConfig } from '../llm/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import pc from 'picocolors';
 import { migrateFromLegacyDir, getPackageRoot } from '../paths';
 import { ensureHostAppRunning, stopHostApp } from '../platform/native-helper';
 
@@ -303,7 +304,7 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     || (resolved.visionBaseUrl && resolved.visionModel)
   );
   const modeLabel = llmAvailable ? '' : ' (tools-only)';
-  console.log(`\x1b[32m✓\x1b[0m \x1b[1mclawdcursor\x1b[0m \x1b[90mv${VERSION}\x1b[0m \x1b[90m— desktop control active on ${config.server.host}:${config.server.port}${modeLabel}\x1b[0m`);
+  console.log(`${pc.green('✓')} ${pc.bold('clawdcursor')} ${pc.gray(`v${VERSION}`)} ${pc.gray(`— desktop control active on ${config.server.host}:${config.server.port}${modeLabel}`)}`);
 
   // ── Agent (only when an LLM is configured) ──
   let agent: Agent | undefined;
@@ -425,9 +426,9 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
   app.listen(config.server.port, config.server.host, async () => {
     const serverToken = initServerToken();
     const tokenPath = path.join(require('os').homedir(), '.clawdcursor', 'token');
-    console.log(`\n\x1b[32m${e('🌐', '[NET]')} API server:\x1b[0m http://${config.server.host}:${config.server.port}`);
-    console.log(`\x1b[33m${e('🔑', '[KEY]')} Auth token:\x1b[0m ${serverToken.slice(0, 8)}...`);
-    console.log(`\x1b[90m   (full token saved to ${tokenPath})\x1b[0m`);
+    console.log(`\n${pc.green(`${e('🌐', '[NET]')} API server:`)} http://${config.server.host}:${config.server.port}`);
+    console.log(`${pc.yellow(`${e('🔑', '[KEY]')} Auth token:`)} ${serverToken.slice(0, 8)}...`);
+    console.log(pc.gray(`   (full token saved to ${tokenPath})`));
     console.log(`\nSurviving HTTP routes:`);
     console.log(`  GET  /         — Dashboard (calls /mcp via JSON-RPC)`);
     console.log(`  GET  /health   — Readiness probe (no auth)`);
@@ -435,7 +436,7 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
     console.log(`\nMCP endpoint (the only protocol):`);
     console.log(`  POST /mcp      — JSON-RPC tools/call & tools/list (auth)`);
     console.log(`  GET  /mcp      — SSE notifications (auth)`);
-    console.log(`\nAll mutating endpoints require: \x1b[36mAuthorization: Bearer <token>\x1b[0m`);
+    console.log(`\nAll mutating endpoints require: ${pc.cyan('Authorization: Bearer <token>')}`);
 
     if (llmAvailable) {
       const { loadPipelineConfig } = await import('./doctor');
@@ -472,8 +473,8 @@ async function runAgentMode(opts: AgentModeOpts): Promise<void> {
             const textBase    = pipelineConfig.layer2?.baseUrl || '(provider default)';
             const visionBase  = pipelineConfig.layer3?.baseUrl || textBase;
             const visionState = pipelineConfig.layer3?.enabled === false ? ' [disabled]' : '';
-            console.log(`\x1b[90m   text  : ${textModel}   ← ${textBase}\x1b[0m`);
-            console.log(`\x1b[90m   vision: ${visionModel}${visionState}   ← ${visionBase}\x1b[0m`);
+            console.log(pc.gray(`   text  : ${textModel}   ← ${textBase}`));
+            console.log(pc.gray(`   vision: ${visionModel}${visionState}   ← ${visionBase}`));
           } catch { /* non-fatal — boot continues either way */ }
         } catch (err: any) {
           if (err.name === 'LLMAuthError') {
@@ -1329,19 +1330,15 @@ program
 
 /** Two-path "what to do next" panel shown after consent and after doctor success. */
 function printPostConsentNextSteps(): void {
-  const cyan = '\x1b[36m';
-  const dim  = '\x1b[90m';
-  const bold = '\x1b[1m';
-  const r    = '\x1b[0m';
   console.log('');
-  console.log(`  ${bold}Two ways to use clawdcursor:${r}`);
+  console.log(`  ${pc.bold('Two ways to use clawdcursor:')}`);
   console.log('');
-  console.log(`  ${cyan}→ As an autonomous AI agent${r} ${dim}(clawdcursor brings the brain)${r}`);
-  console.log(`       1. ${cyan}clawdcursor doctor${r}    Configure your AI provider + models`);
-  console.log(`       2. ${cyan}clawdcursor agent${r}     Start the daemon (HTTP + MCP on :3847)`);
+  console.log(`  ${pc.cyan('→ As an autonomous AI agent')} ${pc.gray('(clawdcursor brings the brain)')}`);
+  console.log(`       1. ${pc.cyan('clawdcursor doctor')}    Configure your AI provider + models`);
+  console.log(`       2. ${pc.cyan('clawdcursor agent')}     Start the daemon (HTTP + MCP on :3847)`);
   console.log('');
-  console.log(`  ${cyan}→ As an MCP tool server${r} ${dim}(your editor brings the brain)${r}`);
-  console.log(`       Register ${cyan}clawdcursor mcp${r} with Claude Code, Cursor, Windsurf, Zed, etc.`);
+  console.log(`  ${pc.cyan('→ As an MCP tool server')} ${pc.gray('(your editor brings the brain)')}`);
+  console.log(`       Register ${pc.cyan('clawdcursor mcp')} with Claude Code, Cursor, Windsurf, Zed, etc.`);
   console.log(`       No daemon, no API key — your editor spawns clawdcursor on demand.`);
   console.log('');
 }

@@ -16,6 +16,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import pc from 'picocolors';
 import { NativeDesktop } from '../platform/native-desktop';
 import { AccessibilityBridge } from '../platform/accessibility';
 import {
@@ -1220,16 +1221,16 @@ function printSummary(results: DiagResult[], pipeline: PipelineConfig): void {
   if (allOk) {
     console.log(`✅ All systems go!\n`);
     console.log(`   Two ways to use clawdcursor — pick the one that fits your setup:\n`);
-    console.log(`   \x1b[1m1. As an MCP server for your editor\x1b[0m \x1b[90m(Claude Code, Cursor, Windsurf, Zed)\x1b[0m`);
-    console.log(`      Register \x1b[36mclawdcursor mcp\x1b[0m in your editor's MCP config.`);
-    console.log(`      Your editor's AI gets 93 desktop tools (or 6 compound via \x1b[36m--compact\x1b[0m).`);
+    console.log(`   ${pc.bold('1. As an MCP server for your editor')} ${pc.gray('(Claude Code, Cursor, Windsurf, Zed)')}`);
+    console.log(`      Register ${pc.cyan('clawdcursor mcp')} in your editor's MCP config.`);
+    console.log(`      Your editor's AI gets 93 desktop tools (or 6 compound via ${pc.cyan('--compact')}).`);
     console.log(`      Stdio transport — no daemon, no port, no token.\n`);
-    console.log(`   \x1b[1m2. As a local HTTP daemon\x1b[0m \x1b[90m(for any HTTP client, or for the built-in autonomous agent)\x1b[0m`);
-    console.log(`      Run \x1b[36mclawdcursor agent\x1b[0m — exposes the same 93 tools at \x1b[36mPOST /mcp\x1b[0m on \x1b[36m:3847\x1b[0m.`);
-    console.log(`      With an LLM configured ${pipeline.layer2.enabled ? '\x1b[32m(you have one)\x1b[0m' : '\x1b[33m(none yet — re-run \x1b[36mclawdcursor doctor\x1b[33m after adding a key)\x1b[0m'},`);
-    console.log(`      you also get \x1b[36mclawdcursor task "<plain English>"\x1b[0m for end-to-end autonomous runs.\n`);
+    console.log(`   ${pc.bold('2. As a local HTTP daemon')} ${pc.gray('(for any HTTP client, or for the built-in autonomous agent)')}`);
+    console.log(`      Run ${pc.cyan('clawdcursor agent')} — exposes the same 93 tools at ${pc.cyan('POST /mcp')} on ${pc.cyan(':3847')}.`);
+    console.log(`      With an LLM configured ${pipeline.layer2.enabled ? pc.green('(you have one)') : pc.yellow(`(none yet — re-run ${pc.cyan('clawdcursor doctor')} after adding a key)`)},`);
+    console.log(`      you also get ${pc.cyan('clawdcursor task "<plain English>"')} for end-to-end autonomous runs.\n`);
     console.log(`   Run now:`);
-    console.log(`     \x1b[36mclawdcursor agent\x1b[0m   \x1b[90m# or skip the daemon and wire \`clawdcursor mcp\` into your editor\x1b[0m`);
+    console.log(`     ${pc.cyan('clawdcursor agent')}   ${pc.gray('# or skip the daemon and wire `clawdcursor mcp` into your editor')}`);
   } else {
     const failures = results.filter(r => !r.ok);
     console.log(`⚠️  ${failures.length} issue(s) detected:`);
