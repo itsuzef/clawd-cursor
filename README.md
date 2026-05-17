@@ -5,7 +5,7 @@
 <h1 align="center">Clawd Cursor</h1>
 
 <p align="center">
-  <strong>Eyes, hands, and a keyboard for any AI agent on a real desktop.</strong><br>
+  <strong>A cursor and a keyboard for any AI agent on a real desktop.</strong><br>
   Any model. Any app. One MCP entry. Local-only.
 </p>
 

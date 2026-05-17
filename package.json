@@ -1,7 +1,7 @@
 {
   "name": "clawdcursor",
   "version": "0.9.3",
-  "description": "The skill that gives any AI agent eyes, hands, and a keyboard on a real desktop. Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
+  "description": "The skill that gives any AI agent a cursor and a keyboard on a real desktop. Open source (MIT). Model-agnostic — works with Claude, GPT, Gemini, Llama, or any tool-calling model — on Windows, macOS, and Linux.",
   "homepage": "https://clawdcursor.com",
   "repository": {
     "type": "git",

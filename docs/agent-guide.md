@@ -7,9 +7,9 @@
 
 ## One-line summary
 
-clawdcursor is the skill that gives AI agents eyes, hands, and ears on a real
-desktop. If a human can do it on a screen, you can too — no app-specific API
-required.
+clawdcursor is the skill that gives AI agents a cursor and a keyboard on a real
+desktop. Open source (MIT). If a human can do it on a screen, you can too — no
+app-specific API required.
 
 ## Two ways to connect
 
