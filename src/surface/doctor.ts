@@ -1404,9 +1404,14 @@ async function checkForUpdates(results: DiagResult[]): Promise<void> {
 
       if (latestTag && latestTag !== currentVersion && compareVersions(latestTag, currentVersion) > 0) {
         console.log(`   ⬆️  Update available: v${latestTag} (you have v${currentVersion})`);
+        // Recommend the canonical installer one-liner — same command users
+        // ran the first time, smart-updates an existing ~/clawdcursor clone
+        // in place via git fetch + checkout. The previous recommendation
+        // (a bare `git pull` chain) only worked from inside the install dir
+        // and assumed the user knew where it was.
         const updateCmd = process.platform === 'win32'
-          ? 'git pull origin main; npm install; npm run build'
-          : 'git pull origin main && npm install && npm run build';
+          ? 'irm https://clawdcursor.com/install.ps1 | iex'
+          : 'curl -fsSL https://clawdcursor.com/install.sh | bash';
         console.log(`   Run: ${updateCmd}`);
         results.push({
           name: 'Version',
