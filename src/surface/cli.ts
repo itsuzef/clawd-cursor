@@ -1218,23 +1218,24 @@ program
 
     // Release pidfile on exit so a fresh restart can claim it immediately.
     // Guard against double-fire (both 'end' and 'close' can emit on the
-    // same stdin teardown). Defer BOTH the filesystem unlink AND
-    // process.exit via setImmediate so libuv finishes its stream-close
-    // bookkeeping before any sync fs op or exit syscall runs. Calling
-    // either synchronously inside a stdin 'end' handler causes SIGSEGV
-    // on Linux where libuv is still unwinding the read handle.
-    // (v0.9.2 fix `3fc76b8` only deferred process.exit; the segfault
-    // persisted because releasePidFile's fs.unlinkSync was still inside
-    // the stdin callback. Both must defer together — verified by the
-    // tests/mcp-orphan-teardown.test.ts CI failure on ubuntu-latest.)
+    // same stdin teardown). Defer process.exit via setImmediate so libuv
+    // finishes its stream-close bookkeeping before the exit syscall —
+    // calling process.exit() synchronously inside a stdin 'end' handler
+    // causes SIGSEGV on Linux where libuv is still unwinding the read
+    // handle.
+    //
+    // releasePidFile MUST stay synchronous (before the setImmediate). On
+    // headless Linux CI the native subsystems (nut-js → libxdo, sharp's
+    // libvips) can still segfault during process.exit's destructor
+    // chain — so the only way to guarantee the lockfile gets cleaned up
+    // is to unlink it BEFORE any deferred work runs. The orphan-teardown
+    // test asserts lockfile-is-gone for exactly this reason.
     let mcpExiting = false;
     const releaseMcp = () => {
       if (mcpExiting) return;
       mcpExiting = true;
-      setImmediate(() => {
-        releasePidFile('mcp');
-        process.exit(0);
-      });
+      releasePidFile('mcp');                       // sync — must run before any segfault
+      setImmediate(() => process.exit(0));         // deferred — lets libuv unwind cleanly
     };
     process.on('SIGINT', releaseMcp);
     process.on('SIGTERM', releaseMcp);
