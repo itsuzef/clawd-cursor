@@ -2,6 +2,48 @@
 
 All notable changes to Clawd Cursor will be documented in this file.
 
+## [0.9.8] - 2026-05-24 — complete the Toolbox + registry metadata + site refresh
+
+### Added — smart_* and URI escape hatches reach the compound Toolbox (PR #135)
+
+Three useful granular tools were orphaned from the recommended 6-tool
+compound surface; they're now wired in (cross-OS — each underlying tool was
+already cross-platform, this only changes dispatch):
+
+- **`accessibility`** gains `smart_click` / `smart_type` / `smart_read` —
+  auto-fallback OCR → a11y → CDP by element text, no coordinates.
+- **`system`** gains `open_uri` / `build_uri` / `learn_app` — the URI escape
+  hatches (`mailto:` `tel:` `slack:` `vscode:` `spotify:` `file:` …) that
+  accomplish an intent without driving UI, plus a guide-write companion to
+  `app_guide`. `open_uri` dispatches via macOS `open`, Linux `xdg-open`, and
+  Windows registered-handler resolution.
+
+Safety: `safety.ts` gains matching `publicCompoundMap` + `TOOL_TIER` entries
+so the new actions gate correctly on the compound path (`open_uri` /
+`learn_app` → destructive, `build_uri` → read), not the `input` default.
+
+### Changed — npm registry metadata (PR #132)
+
+Added `mcpName: io.github.AmrDab/clawdcursor` (for the official MCP
+registry), refreshed the stale package description to the current
+local-MCP-server / fallback-layer positioning, and added `mcp-server` /
+`gui-automation` keywords.
+
+### Changed — website refresh (PR #134)
+
+Hero headline restored to "A cursor and a keyboard for any AI agent";
+install section rebuilt as a segmented tab bar (`npm` · Windows · macOS/Linux
+· Source) with npm a first-class option; tool-surface labels aligned to the
+README's Toolbox / Tools naming.
+
+### Fixed — CI: mcp-orphan-teardown flake on Windows (PR #133)
+
+The test is no longer skipped on Windows (the platform the orphan bug it
+guards lived on). It runs with a 20s exit budget instead of 5s — tolerating
+slow native-module teardown on windows runners while still catching a
+genuine hang. The earlier Node-20-only skip wrongly assumed Node 22 was
+immune.
+
 ## [0.9.7] - 2026-05-23 — GUI reliability + safety/efficiency tuning + npm install
 
 First release published to **npm** — `npm i -g clawdcursor` now works on
